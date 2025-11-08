@@ -1,0 +1,34 @@
+nextstep:
+----------Biểu đồ----------
+Yêu cầu cập nhật giao diện nhập thông tin lần đầu đăng nhập:
+
+Tối ưu giao diện tổng thể:
+
+Giao diện hiện tại chưa hợp lý, cần thiết kế lại để thân thiện, trực quan và dễ sử dụng hơn.
+
+Slide 1 – Linh hoạt hơn trong việc nhập thông tin:
+
+Hiện tại bắt buộc phải nhập đầy đủ mới được chuyển tiếp → cần thay đổi thành:
+
+Người dùng có thể bỏ trống hoặc nhập không đầy đủ vẫn được chuyển sang slide 2.
+
+Bổ sung 2 nút:
+
+"Bỏ qua": luôn khả dụng, cho phép chuyển sang slide 2 bất kỳ lúc nào.
+
+"Lưu": chỉ khả dụng khi có ít nhất một trường thông tin được điền hợp lệ.
+
+Nếu có thông tin nhưng không hợp lệ → hiển thị cảnh báo, không cho lưu.
+
+Slide 2 – Sửa lỗi nút "Lưu":
+
+Hiện tại cơ chế nút "Lưu" đang bị lỗi → cần kiểm tra và sửa lại để hoạt động đúng như mong đợi.
+
+----------Chatbot----------
++thêm con llm thử nghiệm
++kết nối llm thử nghiệm với dữ liệu người dùng và cho ra outputoutput
+
+----------Mô hình----------
++
+
+----------Database---------

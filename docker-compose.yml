@@ -1,0 +1,71 @@
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: edutwin_db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - edutwin_network
+
+  # Redis for session management
+  redis:
+    image: redis:7-alpine
+    container_name: edutwin_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - edutwin_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: edutwin_backend
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    networks:
+      - edutwin_network
+    restart: unless-stopped
+
+  # Frontend Streamlit App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: edutwin_frontend
+    env_file:
+      - .env
+    environment:
+      - BACKEND_URL=${BACKEND_URL}
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    networks:
+      - edutwin_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  edutwin_network:
+    driver: bridge
