@@ -15,6 +15,15 @@ services:
       - "5432:5432"
     networks:
       - edutwin_network
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+    networks:
+      - edutwin_network
 
   # Redis for session management
   redis:

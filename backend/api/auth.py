@@ -46,6 +46,7 @@ class UserProfileUpdate(BaseModel):
     phone: str | None = None
     address: str | None = None
     age: str | None = None
+    current_grade: str | None = None
 
     @field_validator("email")
     @classmethod
@@ -125,9 +126,18 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
         "phone": getattr(user, 'phone', None),
         "address": getattr(user, 'address', None),
         "age": getattr(user, 'age', None),
+        "current_grade": getattr(user, 'current_grade', None),
         "name": full_name or None,
         "role": getattr(user, 'role', 'user')
     }
+    # Flag whether this is the user's first login (no contact info provided)
+    # Also respect a persisted "first_time_completed" flag so skipping/completing onboarding
+    # is remembered across sessions.
+    try:
+        completed = SessionManager.get_first_time_completed(user.id)
+    except Exception:
+        completed = False
+    user_info["is_first_login"] = (not (user_info.get("email") or user_info.get("phone"))) and not bool(completed)
     
     session_id = SessionManager.create_session(user_info)
     
@@ -146,6 +156,31 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
     }
 
 
+@router.post("/complete-first-time")
+@require_auth
+def complete_first_time(request: Request, db: Session = Depends(get_db)):
+    """Mark current user's first-time flow as completed/skipped so subsequent logins won't show it."""
+    current = get_current_user(request)
+    if not current or not current.get("user_id"):
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+
+    user_id = current.get("user_id")
+    try:
+        SessionManager.set_first_time_completed(user_id)
+    except Exception:
+        pass
+
+    # Update session value as well so current session immediately reflects change
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        try:
+            SessionManager.update_session_fields(session_id, {"is_first_login": False})
+        except Exception:
+            pass
+
+    return {"message": "Marked first-time completed"}
+
+
 @router.post("/profile")
 @require_auth
 def update_profile(request: Request, payload: UserProfileUpdate, db: Session = Depends(get_db)):
@@ -162,6 +197,10 @@ def update_profile(request: Request, payload: UserProfileUpdate, db: Session = D
         if value is not None:
             setattr(user, field, value)
 
+    # Update user's current grade if provided
+    if getattr(payload, "current_grade", None) is not None:
+        user.current_grade = getattr(payload, "current_grade")
+
     db.commit()
     db.refresh(user)
 
@@ -170,6 +209,7 @@ def update_profile(request: Request, payload: UserProfileUpdate, db: Session = D
         "phone": user.phone,
         "address": user.address,
         "age": user.age,
+        "current_grade": user.current_grade,
     }
 
     session_id = request.cookies.get("session_id")

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint, DateTime
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint, DateTime, Text, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -17,9 +17,27 @@ class User(Base):
     phone = Column(String, nullable=True)
     address = Column(String, nullable=True)
     age = Column(String, nullable=True)
+    preferences = Column('preferences', JSON, nullable=True)
+    current_grade = Column(String, nullable=True)
+    role = Column(String, nullable=False, default="user")
 
     study_scores = relationship(
         "StudyScore",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    data_imports = relationship(
+        "DataImportLog",
+        back_populates="uploader",
+        cascade="all",
+    )
+    learning_documents = relationship(
+        "LearningDocument",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    chat_sessions = relationship(
+        "ChatSession",
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -37,6 +55,8 @@ class StudyScore(Base):
     predicted_score = Column(Float, nullable=True)
     actual_source = Column(String, nullable=True)
     predicted_source = Column(String, nullable=True)
+    actual_status = Column(String, nullable=True)
+    predicted_status = Column(String, nullable=True)
     actual_updated_at = Column(DateTime(timezone=True), nullable=True)
     predicted_updated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -47,3 +67,111 @@ class StudyScore(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "subject", "grade_level", "semester", name="uq_user_subject_grade_semester"),
     )
+
+
+class DataImportLog(Base):
+    __tablename__ = "data_import_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    filename = Column(String, nullable=False)
+    total_rows = Column(Integer, nullable=False, default=0)
+    imported_rows = Column(Integer, nullable=False, default=0)
+    skipped_rows = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    uploader = relationship("User", back_populates="data_imports")
+
+
+class LearningDocument(Base):
+    __tablename__ = "learning_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    source = Column(String, nullable=False)
+    reference_type = Column(String, nullable=True)
+    reference_id = Column(Integer, nullable=True)
+    title = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="learning_documents")
+    embeddings = relationship(
+        "KnowledgeEmbedding",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="chat_sessions")
+    messages = relationship(
+        "ChatMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at",
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String, nullable=False)  # 'user' | 'assistant' | 'system'
+    content = Column(Text, nullable=False)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    session = relationship("ChatSession", back_populates="messages")
+
+
+class KnowledgeEmbedding(Base):
+    __tablename__ = "knowledge_embeddings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("learning_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    vector_id = Column(String, unique=True, nullable=False)
+    model = Column(String, nullable=False)
+    dimension = Column(Integer, nullable=False)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    document = relationship("LearningDocument", back_populates="embeddings")
+
+
+class PendingUpdate(Base):
+    __tablename__ = "pending_updates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    update_type = Column(String, nullable=False)  # 'profile' | 'score' | 'document'
+    field = Column(String, nullable=True)
+    old_value = Column(String, nullable=True)
+    new_value = Column(String, nullable=True)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User")
+
+
+class KNNReferenceSample(Base):
+    __tablename__ = "knn_reference_samples"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sample_label = Column(String, nullable=True)
+    feature_data = Column(JSON, nullable=False)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

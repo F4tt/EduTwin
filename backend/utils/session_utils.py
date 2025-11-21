@@ -39,8 +39,10 @@ class SessionManager:
             "phone": user_data.get("phone"),
             "address": user_data.get("address"),
             "age": user_data.get("age"),
+            "current_grade": user_data.get("current_grade"),
             "name": user_data.get("name"),
             "role": user_data.get("role"),
+            "is_first_login": user_data.get("is_first_login", False),
             "created_at": datetime.utcnow().isoformat(),
             "last_activity": datetime.utcnow().isoformat()
         }
@@ -104,6 +106,23 @@ class SessionManager:
                 })
         
         return sessions
+
+    @staticmethod
+    def set_first_time_completed(user_id: int):
+        """Mark that the user has completed (or skipped) the first-time flow."""
+        try:
+            redis_client.set(f"user:{user_id}:first_time_completed", "1")
+        except Exception:
+            pass
+
+    @staticmethod
+    def get_first_time_completed(user_id: int) -> bool:
+        """Return True if user has completed first-time flow (persisted)."""
+        try:
+            val = redis_client.get(f"user:{user_id}:first_time_completed")
+            return bool(val)
+        except Exception:
+            return False
     
     @staticmethod
     def destroy_all_user_sessions(user_id: int):

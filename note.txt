@@ -1,34 +1,19 @@
-nextstep:
-----------Biểu đồ----------
-Yêu cầu cập nhật giao diện nhập thông tin lần đầu đăng nhập:
+1.Diagram
+thứ tự các môn trong chart
+từng môn thì không cần barchart
+rút gọn tên giáo dục công dân trong chart
 
-Tối ưu giao diện tổng thể:
+2.ML
+các mô hình khác
 
-Giao diện hiện tại chưa hợp lý, cần thiết kế lại để thân thiện, trực quan và dễ sử dụng hơn.
+3.LLM
+các lượt hiển thị và giao diện
+cách sinh ra nhận xét
+sửa prompt
+pipieline dữ liệu và mô hình
+Read-Write RAG (Write-Back) - đang chưa nhạy
 
-Slide 1 – Linh hoạt hơn trong việc nhập thông tin:
+sửa lỗi đổi tên session 
 
-Hiện tại bắt buộc phải nhập đầy đủ mới được chuyển tiếp → cần thay đổi thành:
 
-Người dùng có thể bỏ trống hoặc nhập không đầy đủ vẫn được chuyển sang slide 2.
-
-Bổ sung 2 nút:
-
-"Bỏ qua": luôn khả dụng, cho phép chuyển sang slide 2 bất kỳ lúc nào.
-
-"Lưu": chỉ khả dụng khi có ít nhất một trường thông tin được điền hợp lệ.
-
-Nếu có thông tin nhưng không hợp lệ → hiển thị cảnh báo, không cho lưu.
-
-Slide 2 – Sửa lỗi nút "Lưu":
-
-Hiện tại cơ chế nút "Lưu" đang bị lỗi → cần kiểm tra và sửa lại để hoạt động đúng như mong đợi.
-
-----------Chatbot----------
-+thêm con llm thử nghiệm
-+kết nối llm thử nghiệm với dữ liệu người dùng và cho ra outputoutput
-
-----------Mô hình----------
-+
-
-----------Database---------
+cách deploy docker để không reset dữ liệu mỗi lần deploy
