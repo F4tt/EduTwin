@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 from db import models
 from services.intent_detection import ScoreUpdateIntent, detect_score_update_intent
 from services.intent_detection import detect_profile_update_intent, detect_personalization_intent
+from services.intent_detection import detect_confirmation_intent, detect_cancellation_intent
 from services import memory_manager
 from services.vector_store_provider import get_vector_store
+from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification
 
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
@@ -118,13 +120,53 @@ def _build_context_blocks(user_id: Optional[int], message: str) -> List[Dict[str
     return contexts
 
 
-def _build_prompt(message: str, contexts: List[Dict[str, object]], user_profile: Optional[Dict[str, object]]) -> List[Dict[str, str]]:
+def _build_prompt(
+    message: str, 
+    contexts: List[Dict[str, object]], 
+    user_profile: Optional[Dict[str, object]], 
+    db: Optional[Session] = None, 
+    user_id: Optional[int] = None,
+    conversation_history: Optional[List[Dict[str, str]]] = None
+) -> List[Dict[str, str]]:
+    """Build optimized system prompt with dynamic context selection."""
+    
+    # Use context optimizer for intelligent context selection
+    from services.context_optimizer import get_context_optimizer
+    
+    optimizer = get_context_optimizer()
+    
+    # Build optimized context bundle
+    context_bundle = optimizer.build_optimized_context(
+        db=db,
+        user_id=user_id,
+        message=message,
+        conversation_history=conversation_history or [],
+        target_average=None  # Will be set for goal-setting contexts
+    )
+    
+    # Base instructions (always included, lightweight)
     instructions = (
         "Bạn là trợ lý học tập thông minh của nền tảng EduTwin. "
         "Luôn phản hồi bằng tiếng Việt, ngắn gọn, thân thiện và tập trung vào việc hỗ trợ học tập. "
         "Nếu có dữ liệu điểm số hoặc thông tin cá nhân liên quan, hãy ưu tiên sử dụng để cá nhân hóa câu trả lời. "
         "Nếu cần cập nhật dữ liệu, hãy yêu cầu xác nhận rõ ràng."
     )
+    
+    # Add educational knowledge only if needed and already optimized
+    if context_bundle["educational_knowledge"]:
+        instructions += f"\n\n# KIẾN THỨC:\n{context_bundle['educational_knowledge']}"
+    
+    # Add benchmark data only if needed
+    if context_bundle["benchmark_data"]:
+        instructions += f"\n\n# VỊ TRÍ HỌC SINH:\n{context_bundle['benchmark_data']}"
+    
+    # Add personalization (very small)
+    if context_bundle["personalization"]:
+        instructions += context_bundle["personalization"]
+    
+    # Add similar students only for goal setting
+    if context_bundle["similar_students"]:
+        instructions += f"\n\n# HỌC SINH TƯƠNG TỰ:\n{context_bundle['similar_students']}"
 
     # build context block
     context_texts = []
@@ -208,8 +250,100 @@ async def generate_chat_response(
     session_id: Optional[str],
 ) -> Dict[str, object]:
     user_id = user.get("user_id") if user else None
+    
+    # Check for confirmation/cancellation of pending updates FIRST
+    is_confirmation = detect_confirmation_intent(message)
+    is_cancellation = detect_cancellation_intent(message)
+    
+    confirmation_result = None
+    if user_id and (is_confirmation or is_cancellation):
+        # Get most recent pending update
+        pending_updates = memory_manager.list_pending_updates(db, user_id)
+        if pending_updates:
+            most_recent = pending_updates[0]  # Most recent first
+            
+            if is_confirmation:
+                # Apply the pending update
+                try:
+                    applied = memory_manager.apply_pending_update(db, most_recent.id, user_id)
+                    if applied:
+                        confirmation_result = {
+                            "action": "confirmed",
+                            "type": most_recent.update_type,
+                            "field": most_recent.field,
+                            "value": most_recent.new_value,
+                            "message": f"Đã cập nhật {most_recent.field} thành {most_recent.new_value}"
+                        }
+                        
+                        # If it's a score update, also update predictions
+                        if most_recent.update_type == "score":
+                            from ml import prediction_service
+                            from services.vector_store_provider import get_vector_store
+                            from services import learning_documents
+                            
+                            try:
+                                # Refresh score in vector store
+                                score_id = most_recent.metadata_.get("score_id") if most_recent.metadata_ else None
+                                if score_id:
+                                    score = db.query(models.StudyScore).filter(models.StudyScore.id == score_id).first()
+                                    if score:
+                                        vector_store = get_vector_store()
+                                        learning_documents.sync_score_embeddings(db, vector_store, [score])
+                                
+                                # Update predictions
+                                prediction_service.update_predictions_for_user(db, user_id)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    confirmation_result = {
+                        "action": "error",
+                        "message": f"Lỗi khi cập nhật: {str(e)}"
+                    }
+            
+            elif is_cancellation:
+                # Cancel the pending update
+                try:
+                    cancelled = memory_manager.cancel_pending_update(db, most_recent.id, user_id)
+                    if cancelled:
+                        confirmation_result = {
+                            "action": "cancelled",
+                            "type": most_recent.update_type,
+                            "field": most_recent.field,
+                            "message": f"Đã hủy yêu cầu cập nhật {most_recent.field}"
+                        }
+                except Exception:
+                    pass
+    
+    # If we handled a confirmation/cancellation, return early with custom response
+    if confirmation_result:
+        answer = confirmation_result["message"]
+        return {
+            "answer": answer,
+            "contexts": [],
+            "confirmation_handled": True,
+            "confirmation_result": confirmation_result,
+            "session_id": session_id
+        }
+    
     contexts = _build_context_blocks(user_id, message)
-    system_messages = _build_prompt(message, contexts, user)
+    
+    # Prepare conversation history for optimization
+    conversation_messages: List[Dict[str, str]] = []
+    if session_id:
+        sid = None
+        try:
+            sid = int(session_id)
+        except Exception:
+            sid = None
+        if sid is not None:
+            session = db.query(models.ChatSession).filter(models.ChatSession.id == sid).first()
+            if session:
+                for m in session.messages:
+                    role = m.role if m.role in ("user", "assistant", "system") else "user"
+                    conversation_messages.append({"role": role, "content": m.content})
+    
+    # Build optimized prompt with conversation history
+    system_messages = _build_prompt(message, contexts, user, db, user_id, conversation_messages)
 
     # If no session_id supplied but we have an authenticated user, create a persisted ChatSession
     # so the very first message is stored and accessible across logins.
@@ -248,41 +382,87 @@ async def generate_chat_response(
             except Exception:
                 pass
 
-    # build conversation messages: include prior session history (if available)
-    conversation_messages: List[Dict[str, str]] = []
-    if session_id:
-        sid = None
-        try:
-            sid = int(session_id)
-        except Exception:
-            sid = None
-        if sid is not None:
-            session = db.query(models.ChatSession).filter(models.ChatSession.id == sid).first()
-            if session:
-                for m in session.messages:
-                    role = m.role if m.role in ("user", "assistant", "system") else "user"
-                    conversation_messages.append({"role": role, "content": m.content})
+    # Use optimized conversation history instead of full history
+    from services.context_optimizer import get_context_optimizer
+    optimizer = get_context_optimizer()
+    optimized_history = optimizer.optimize_conversation_history(conversation_messages, message)
+    
+    # Append current user message at end
+    optimized_history.append({"role": "user", "content": message})
 
-    # current user message appended at end
-    conversation_messages.append({"role": "user", "content": message})
-
-    # finalize message list: system messages first, then history, then the current user message
-    messages = []
-    messages.extend(system_messages)
-    messages.extend(conversation_messages)
-
-    try:
-        answer = await _call_remote_llm(messages) or "Hiện tại chưa có phản hồi từ mô hình. Bạn có thể thử lại sau nhé."
-    except Exception as exc:  # noqa: BLE001
-        answer = (
-            "Xin lỗi, hệ thống không kết nối được với mô hình ngôn ngữ. "
-            "Mình sẽ cố gắng hỗ trợ dựa trên dữ liệu có sẵn.\n\n"
-            + "\n\n".join(ctx.get("content", "") for ctx in contexts[:2])
-        )
-        contexts.append({"error": str(exc)})
-
+    # CHECK INTENT FIRST - before calling LLM
     intent = detect_score_update_intent(message)
     score_suggestion = _derive_score_suggestion(db, user_id, intent)
+    
+    # Validate that we have complete information BEFORE calling LLM
+    # Check INTENT not score_suggestion, because score_suggestion gets grade/semester from DB
+    missing_info = []
+    early_return_answer = None
+    if score_suggestion and user_id and intent:
+        if not intent.grade_level:
+            missing_info.append("khối lớp (10, 11, 12)")
+        if not intent.semester:
+            missing_info.append("học kỳ (1, 2)")
+        
+        # If missing critical info, return clarification immediately WITHOUT calling LLM
+        if missing_info:
+            from core.study_constants import SUBJECT_DISPLAY
+            subject_display = SUBJECT_DISPLAY.get(score_suggestion['subject'], score_suggestion['subject'])
+            
+            early_return_answer = (
+                f"⚠️ Mình hiểu bạn muốn cập nhật điểm môn **{subject_display}** thành **{score_suggestion['suggested_score']}**, "
+                f"nhưng bạn có thể cho mình biết rõ hơn về: **{', '.join(missing_info)}** không?\n\n"
+                f"Ví dụ: 'Cập nhật điểm {subject_display} học kỳ 1 lớp 10 là {score_suggestion['suggested_score']}'"
+            )
+
+    # Finalize message list: system messages first, then optimized history
+    messages = []
+    messages.extend(system_messages)
+    messages.extend(optimized_history)
+
+    # Only call LLM if we don't have early return answer
+    if early_return_answer:
+        answer = early_return_answer
+    else:
+        try:
+            answer = await _call_remote_llm(messages) or "Hiện tại chưa có phản hồi từ mô hình. Bạn có thể thử lại sau nhé."
+        except Exception as exc:  # noqa: BLE001
+            answer = (
+                "Xin lỗi, hệ thống không kết nối được với mô hình ngôn ngữ. "
+                "Mình sẽ cố gắng hỗ trợ dựa trên dữ liệu có sẵn.\n\n"
+                + "\n\n".join(ctx.get("content", "") for ctx in contexts[:2])
+            )
+            contexts.append({"error": str(exc)})
+
+    # Create pending update only if we have complete info (missing_info is empty)
+    pending_score_update = None
+    if score_suggestion and user_id and not missing_info:
+        try:
+            pu = memory_manager.create_pending_update(
+                db,
+                user_id=user_id,
+                update_type="score",
+                field=f"{score_suggestion['subject']} {score_suggestion.get('grade_level', '')} {score_suggestion.get('semester', '')}".strip(),
+                old_value=str(score_suggestion.get("current_score")),
+                new_value=str(score_suggestion["suggested_score"]),
+                metadata={"score_id": score_suggestion["score_id"]}
+            )
+            db.commit()
+            # Return pending update info to frontend
+            from core.study_constants import SUBJECT_DISPLAY
+            subject_display = SUBJECT_DISPLAY.get(score_suggestion['subject'], score_suggestion['subject'])
+            pending_score_update = {
+                "id": pu.id,
+                "subject": subject_display,
+                "grade_level": score_suggestion.get('grade_level'),
+                "semester": score_suggestion.get('semester'),
+                "old_score": score_suggestion.get("current_score"),
+                "new_score": score_suggestion["suggested_score"],
+                "score_id": score_suggestion["score_id"]
+            }
+        except Exception:
+            db.rollback()
+            pass
 
     # Detect profile updates
     profile_candidate = detect_profile_update_intent(message)
@@ -429,6 +609,14 @@ async def generate_chat_response(
                         try:
                             db.commit()
                             persisted_session_id = str(session.id)
+                            
+                            # Auto-learn personalization after every 5 messages
+                            if user_id:
+                                try:
+                                    from services.personalization_learner import update_user_personalization
+                                    update_user_personalization(db, user_id, min_messages=5)
+                                except Exception:
+                                    pass  # Don't fail if personalization learning fails
                         except Exception:
                             db.rollback()
     except Exception:
@@ -438,7 +626,7 @@ async def generate_chat_response(
     return {
         "answer": answer,
         "contexts": contexts,
-        "pending_score_update": score_suggestion,
+        "pending_score_update": pending_score_update,
         "pending_profile_update": {"id": pending_profile.id, "field": pending_profile.field, "value": pending_profile.new_value} if pending_profile else None,
         "memory_saved": bool(memory_doc is None and wants_memory and user_id),
         "session_id": persisted_session_id,

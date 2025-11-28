@@ -13,5 +13,8 @@ python-multipart
 faiss-cpu
 sentence-transformers
 scikit-learn
+scipy
 numpy
 httpx
+prometheus-client
+python-json-logger

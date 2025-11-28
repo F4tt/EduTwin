@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint, DateTime, Text, JSON, Boolean, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -20,6 +20,10 @@ class User(Base):
     preferences = Column('preferences', JSON, nullable=True)
     current_grade = Column(String, nullable=True)
     role = Column(String, nullable=False, default="user")
+    first_login_completed = Column(Boolean, nullable=False, server_default=text("false"))
+    
+    # Track ML config version that user's predictions are based on
+    ml_config_version = Column(Integer, nullable=True, default=0)
 
     study_scores = relationship(
         "StudyScore",
@@ -167,11 +171,59 @@ class PendingUpdate(Base):
     user = relationship("User")
 
 
+class MLModelConfig(Base):
+    __tablename__ = "ml_model_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    active_model = Column(String, nullable=False, default="knn")  # "knn" | "kernel_regression" | "lwlr"
+    # Version increments each time config changes
+    version = Column(Integer, nullable=False, default=1)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ModelParameters(Base):
+    __tablename__ = "model_parameters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # KNN parameter: number of neighbors
+    knn_n = Column(Integer, nullable=False, default=15)
+    # Kernel Regression parameter: bandwidth for Gaussian kernel
+    kr_bandwidth = Column(Float, nullable=False, default=1.25)
+    # LWLR parameter: tau for tricube kernel (window size control)
+    lwlr_tau = Column(Float, nullable=False, default=3.0)
+    # Version increments each time parameters change
+    version = Column(Integer, nullable=False, default=1)
+    # Who last updated these parameters
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class KNNReferenceSample(Base):
     __tablename__ = "knn_reference_samples"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     sample_label = Column(String, nullable=True)
     feature_data = Column(JSON, nullable=False)
     metadata_ = Column('metadata', JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User")
+
+
+class LearningGoal(Base):
+    __tablename__ = "learning_goals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_average = Column(Float, nullable=False)
+    target_semester = Column(String, nullable=False)
+    target_grade_level = Column(String, nullable=False)
+    predicted_scores = Column(JSON, nullable=True)
+    trajectory_data = Column(JSON, nullable=True)
+    ai_analysis = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User")

@@ -1,0 +1,8 @@
+# ML/AI dependencies (heavy, rarely change)
+pandas
+openpyxl
+faiss-cpu
+sentence-transformers
+scikit-learn
+scipy
+numpy

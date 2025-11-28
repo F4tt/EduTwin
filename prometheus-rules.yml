@@ -1,0 +1,184 @@
+groups:
+  - name: edutwin_alerts
+    interval: 30s
+    rules:
+      # ===== API Health =====
+      - alert: HighHTTPErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m]) 
+          / 
+          rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "High HTTP error rate ({{ $value | humanizePercentage }})"
+          description: "More than 5% of requests are failing on {{ $labels.endpoint }}"
+
+      - alert: SlowAPIResponse
+        expr: |
+          histogram_quantile(0.95, 
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API response time degraded ({{ $value }}s)"
+          description: "95th percentile latency is above 2 seconds"
+
+      - alert: TooManyRequestsInProgress
+        expr: sum(http_requests_in_progress) > 100
+        for: 2m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Too many concurrent requests ({{ $value }})"
+          description: "Server may be overloaded"
+
+      # ===== LLM Service =====
+      - alert: LLMHighFailureRate
+        expr: |
+          rate(llm_errors_total[5m]) 
+          / 
+          rate(llm_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: llm
+        annotations:
+          summary: "LLM service high failure rate ({{ $value | humanizePercentage }})"
+          description: "{{ $labels.provider }}/{{ $labels.model }} is experiencing failures"
+
+      - alert: LLMSlowResponse
+        expr: |
+          histogram_quantile(0.95, 
+            rate(llm_request_duration_seconds_bucket[5m])
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "LLM responses are slow ({{ $value }}s)"
+          description: "95th percentile LLM latency is above 30 seconds"
+
+      - alert: LLMHighTokenUsage
+        expr: rate(llm_tokens_total{type="total"}[1h]) > 100000
+        for: 10m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "High LLM token consumption rate"
+          description: "Burning tokens at {{ $value }} tokens/sec, may hit quota limits"
+
+      # ===== Database =====
+      - alert: DatabaseConnectionPoolHigh
+        expr: db_connections_active > 20
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database connection pool usage high ({{ $value }})"
+          description: "May need to increase pool size or investigate connection leaks"
+
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95, 
+            rate(db_query_duration_seconds_bucket[5m])
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Slow database queries detected ({{ $value }}s)"
+          description: "95th percentile query time is above 1 second"
+
+      - alert: DatabaseErrors
+        expr: rate(db_queries_total{status="error"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database query errors detected"
+          description: "{{ $value }} queries/sec are failing"
+
+      # ===== ML Pipeline =====
+      - alert: MLPipelineNotRunning
+        expr: |
+          (time() - ml_pipeline_last_run_timestamp > 7200) 
+          and 
+          (ml_pipeline_last_run_timestamp > 0)
+        for: 5m
+        labels:
+          severity: warning
+          component: ml
+        annotations:
+          summary: "ML pipeline hasn't run in over 2 hours"
+          description: "Check if pipeline trigger is working"
+
+      - alert: MLPredictionErrors
+        expr: rate(predictions_total{status="error"}[10m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: ml
+        annotations:
+          summary: "ML prediction failures detected"
+          description: "{{ $value }} prediction errors/sec"
+
+      # ===== Vector Store =====
+      - alert: VectorSearchSlow
+        expr: |
+          histogram_quantile(0.95, 
+            rate(vector_search_duration_seconds_bucket[5m])
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: vector_store
+        annotations:
+          summary: "Vector search is slow ({{ $value }}s)"
+          description: "May need to optimize indexes or check FAISS performance"
+
+      # ===== System Resources =====
+      - alert: HighMemoryUsage
+        expr: process_memory_bytes > 2000000000  # 2GB
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage ({{ $value | humanize }}B)"
+          description: "Process memory usage is above 2GB"
+
+      # ===== Business Metrics =====
+      - alert: NoUserActivity
+        expr: rate(user_actions_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: info
+          component: business
+        annotations:
+          summary: "No user activity detected"
+          description: "No user actions in the last 30 minutes (off-hours?)"
+
+      - alert: HighAuthFailureRate
+        expr: |
+          rate(auth_attempts_total{status="failed"}[10m]) 
+          / 
+          rate(auth_attempts_total[10m]) > 0.3
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "More than 30% of login attempts are failing"

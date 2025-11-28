@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert
 
 from core.study_constants import GRADE_DISPLAY, SEMESTER_DISPLAY
 from db import models
@@ -104,14 +105,54 @@ def sync_score_embeddings(
     vector_store: VectorStore,
     scores: Iterable[models.StudyScore],
 ) -> None:
+    # Deduplicate incoming scores to avoid inserting the same vector twice
+    unique_scores: Dict[object, models.StudyScore] = {}
+    for score in scores:
+        if score is None:
+            continue
+        key: object
+        if score.id is not None:
+            key = score.id
+        else:
+            key = (score.user_id, score.subject, score.grade_level, score.semester)
+        unique_scores[key] = score
+
+    deduped_scores = list(unique_scores.values())
+    if not deduped_scores:
+        return
+
     documents: List[models.LearningDocument] = []
     items: List[VectorItem] = []
+    embedding_rows: List[Dict[str, Any]] = []
 
-    for score in scores:
+    for score in deduped_scores:
         document = upsert_score_document(db, score)
         documents.append(document)
 
     db.flush()
+
+    # Delete old embeddings for these documents to avoid unique constraint violations
+    vector_ids_to_clean = []
+    for document in documents:
+        old_embeddings = (
+            db.query(models.KnowledgeEmbedding)
+            .filter(models.KnowledgeEmbedding.document_id == document.id)
+            .all()
+        )
+        for old_emb in old_embeddings:
+            db.delete(old_emb)
+        vector_ids_to_clean.append(f"score-{document.reference_id}")
+
+    db.flush()
+
+    if vector_ids_to_clean:
+        unique_vector_ids = list(set(vector_ids_to_clean))
+        (
+            db.query(models.KnowledgeEmbedding)
+            .filter(models.KnowledgeEmbedding.vector_id.in_(unique_vector_ids))
+            .delete(synchronize_session=False)
+        )
+        db.flush()
 
     contents = [doc.content for doc in documents]
     if not contents:
@@ -132,27 +173,21 @@ def sync_score_embeddings(
         )
         items.append(VectorItem(vector_id=vector_id, content=content, metadata=metadata))
 
-        embedding_record = (
-            db.query(models.KnowledgeEmbedding)
-            .filter(models.KnowledgeEmbedding.document_id == document.id)
-            .first()
+        embedding_rows.append(
+            {
+                "document_id": document.id,
+                "vector_id": vector_id,
+                "model": vector_store.model_name,
+                "dimension": int(vector.shape[0]),
+                "metadata_": {"source": document.source},
+            }
         )
-        if not embedding_record:
-            embedding_record = models.KnowledgeEmbedding(
-                document_id=document.id,
-                vector_id=vector_id,
-                model=vector_store.model_name,
-                dimension=int(vector.shape[0]),
-                metadata_={"source": document.source},
-            )
-            db.add(embedding_record)
-        else:
-            embedding_record.vector_id = vector_id
-            embedding_record.model = vector_store.model_name
-            embedding_record.dimension = int(vector.shape[0])
-            existing_meta = embedding_record.metadata_ or {}
-            existing_meta.update({"source": document.source})
-            embedding_record.metadata_ = existing_meta
+
+    if embedding_rows:
+        # duplicates are cleared above, so plain bulk insert is enough
+        stmt = insert(models.KnowledgeEmbedding).values(embedding_rows)
+        db.execute(stmt)
+        db.flush()
 
     vector_store.upsert(items, embeddings=embeddings)
 

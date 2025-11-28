@@ -1,19 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
-from pydantic import BaseModel, field_validator, constr
+from pydantic import BaseModel, field_validator, StringConstraints
+from typing import Annotated
+import logging
+
 from db import models, database
 from utils.session_utils import SessionManager, require_auth, get_current_user
+from services.ml_version_manager import ensure_user_predictions_updated
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger("uvicorn.error")
 
-# Pydantic models cho request/response
 class UserRegister(BaseModel):
     first_name: str
     last_name: str
-    username: constr(min_length=3, max_length=32)
-    password: constr(min_length=6, max_length=128)
+    username: Annotated[str, StringConstraints(min_length=3, max_length=32)]
+    password: Annotated[str, StringConstraints(min_length=6, max_length=128)]
 
     @field_validator("first_name", "last_name")
     @classmethod
@@ -80,6 +84,24 @@ class UserProfileUpdate(BaseModel):
         trimmed = v.strip()
         return trimmed or None
 
+class ChangePassword(BaseModel):
+    current_password: Annotated[str, StringConstraints(min_length=1)]
+    new_password: Annotated[str, StringConstraints(min_length=6)]
+
+    @field_validator("current_password")
+    @classmethod
+    def ascii_current(cls, v: str) -> str:
+        if not v.isascii():
+            raise ValueError("Mật khẩu chỉ được chứa ký tự ASCII")
+        return v
+
+    @field_validator("new_password")
+    @classmethod
+    def ascii_new(cls, v: str) -> str:
+        if not v.isascii():
+            raise ValueError("Mật khẩu chỉ được chứa ký tự ASCII")
+        return v
+
 def get_db():
     db = database.SessionLocal()
     try:
@@ -101,6 +123,7 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
         hashed_password=hashed_pw,
         first_name=user_data.first_name.strip(),
         last_name=user_data.last_name.strip(),
+        first_login_completed=False,
     )
     db.add(new_user)
     db.commit()
@@ -130,16 +153,25 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
         "name": full_name or None,
         "role": getattr(user, 'role', 'user')
     }
-    # Flag whether this is the user's first login (no contact info provided)
-    # Also respect a persisted "first_time_completed" flag so skipping/completing onboarding
-    # is remembered across sessions.
-    try:
-        completed = SessionManager.get_first_time_completed(user.id)
-    except Exception:
-        completed = False
-    user_info["is_first_login"] = (not (user_info.get("email") or user_info.get("phone"))) and not bool(completed)
+    user_info["is_first_login"] = not bool(getattr(user, "first_login_completed", False))
     
     session_id = SessionManager.create_session(user_info)
+    
+    # Ensure user has latest ML predictions (lazy evaluation on login)
+    # This runs in background thread to not slow down login
+    import threading
+    def background_update():
+        from db.database import SessionLocal
+        update_db = SessionLocal()
+        try:
+            ensure_user_predictions_updated(update_db, user.id)
+        except Exception as e:
+            logger.error(f"Error updating predictions on login for user {user.id}: {e}")
+        finally:
+            update_db.close()
+    
+    thread = threading.Thread(target=background_update, daemon=True)
+    thread.start()
     
     # Set session cookie
     response.set_cookie(
@@ -159,18 +191,22 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
 @router.post("/complete-first-time")
 @require_auth
 def complete_first_time(request: Request, db: Session = Depends(get_db)):
-    """Mark current user's first-time flow as completed/skipped so subsequent logins won't show it."""
+    """Mark current user's first-time flow as completed by updating session state."""
     current = get_current_user(request)
     if not current or not current.get("user_id"):
         raise HTTPException(status_code=401, detail="Chưa đăng nhập")
 
     user_id = current.get("user_id")
-    try:
-        SessionManager.set_first_time_completed(user_id)
-    except Exception:
-        pass
 
-    # Update session value as well so current session immediately reflects change
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+
+    if not user.first_login_completed:
+        user.first_login_completed = True
+        db.commit()
+
+    # Update session value to reflect change (mainly for current session state)
     session_id = request.cookies.get("session_id")
     if session_id:
         try:
@@ -231,6 +267,28 @@ def logout(request: Request, response: Response):
     response.delete_cookie("session_id")
     
     return {"message": "Đăng xuất thành công"}
+
+
+@router.post('/change-password')
+@require_auth
+def change_password(request: Request, payload: ChangePassword, db: Session = Depends(get_db)):
+    current = get_current_user(request)
+    if not current or not current.get('user_id'):
+        raise HTTPException(status_code=401, detail='Chưa đăng nhập')
+
+    user = db.query(models.User).filter(models.User.id == current.get('user_id')).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='Không tìm thấy người dùng')
+
+    # verify current password
+    if not pwd_context.verify(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail='Mật khẩu hiện tại không đúng')
+
+    # set new password
+    user.hashed_password = pwd_context.hash(payload.new_password)
+    db.commit()
+
+    return {"message": "Đổi mật khẩu thành công"}
 
 @router.get("/me")
 @require_auth

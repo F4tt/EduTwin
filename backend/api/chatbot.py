@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+import json
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,7 @@ from services.chatbot_service import generate_chat_response
 from services.vector_store_provider import get_vector_store
 from utils.session_utils import get_current_user, require_auth
 from services import memory_manager
+from services.personalization_learner import PersonalizationLearner
 
 router = APIRouter(tags=["Chatbot"])
 
@@ -193,7 +197,131 @@ async def chatbot_endpoint(
         message=msg_text,
         session_id=sess_id,
     )
-    return response_payload
+    
+    # Auto-learn personalization AFTER response (non-blocking)
+    # Run in background to not slow down response
+    if current_user and sess_id:
+        import threading
+        def background_learning():
+            learning_db = database.SessionLocal()
+            try:
+                session_id_int = int(sess_id)
+                session = learning_db.query(models.ChatSession).filter_by(id=session_id_int).first()
+                if session:
+                    learning_db.refresh(session)
+                    msg_count = len(session.messages)
+                    
+                    if msg_count % 5 == 0 and msg_count >= 5:
+                        import logging
+                        logger = logging.getLogger("uvicorn.error")
+                        logger.info(f"[Background] Auto-learning personalization for user {current_user.get('user_id')} after {msg_count} messages")
+                        
+                        learner = PersonalizationLearner()
+                        learned = learner.analyze_session_preferences(session)
+                        
+                        user = learning_db.query(models.User).filter_by(id=current_user.get("user_id")).first()
+                        if user:
+                            if not user.preferences:
+                                user.preferences = {}
+                            user.preferences["learned"] = learned
+                            
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(user, "preferences")
+                            
+                            learning_db.commit()
+                            logger.info(f"[Background] Saved learned preferences: {learned}")
+            except Exception as e:
+                import logging
+                logging.getLogger("uvicorn.error").exception(f"Error in background auto-learning: {e}")
+                learning_db.rollback()
+            finally:
+                learning_db.close()
+        
+        # Start background thread (non-blocking)
+        thread = threading.Thread(target=background_learning, daemon=True)
+        thread.start()
+    
+    return JSONResponse(content=response_payload)
+
+
+@router.post("/chatbot/stream")
+async def chatbot_stream_endpoint(
+    request: Request,
+    payload: Optional[dict] = Body(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Streaming version of chatbot endpoint.
+    Returns Server-Sent Events (SSE) for real-time token streaming.
+    """
+    current_user = get_current_user(request)
+    
+    # Extract message from payload
+    msg_text: Optional[str] = None
+    sess_id: Optional[str] = None
+    
+    if payload:
+        try:
+            parsed = ChatRequest.model_validate(payload)
+            msg_text = (parsed.message or "").strip()
+            sess_id = parsed.session_id
+        except Exception:
+            msg_text = str(payload.get("message") or "").strip()
+            sess_id = payload.get("session_id")
+    
+    if not msg_text:
+        raise HTTPException(status_code=400, detail="Tin nhắn không được để trống.")
+    
+    # Create session if needed
+    if current_user and not sess_id:
+        try:
+            user_id = current_user.get("user_id")
+            new_session = models.ChatSession(user_id=user_id, title=None)
+            db.add(new_session)
+            db.commit()
+            db.refresh(new_session)
+            sess_id = str(new_session.id)
+        except Exception:
+            db.rollback()
+    
+    async def event_generator():
+        """Generate SSE events with streaming tokens"""
+        try:
+            # Send initial event
+            yield f"data: {json.dumps({'type': 'start', 'message': 'Đang xử lý...'})}\n\n"
+            
+            # Get full response (in production, integrate with streaming LLM)
+            response_payload = await generate_chat_response(
+                db=db,
+                user=current_user,
+                message=msg_text,
+                session_id=sess_id,
+            )
+            
+            # Stream response word by word
+            answer = response_payload.get("answer", "")
+            words = answer.split()
+            
+            for i, word in enumerate(words):
+                # Send word chunk
+                yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
+                await asyncio.sleep(0.03)  # 30ms delay for smooth streaming
+            
+            # Send completion event with full response
+            yield f"data: {json.dumps({'type': 'done', 'response': response_payload})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 @router.post("/chatbot/confirm-score-update")
@@ -431,6 +559,6 @@ async def comment_on_slide(request: Request, payload: CommentRequest, db: Sessio
         document.metadata_ = meta
         db.commit()
 
-    return {"comment": comment}
+    return JSONResponse(content={"comment": comment})
 
 

@@ -141,29 +141,47 @@ class SessionManager:
 
 def require_auth(f):
     """Decorator yêu cầu xác thực session"""
-    @wraps(f)
-    async def decorated_function(request: Request, *args, **kwargs):
-        session_id = request.cookies.get('session_id')
-        
-        if not session_id:
-            raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-        
-        session_data = SessionManager.get_session(session_id)
-        if not session_data:
-            raise HTTPException(status_code=401, detail="Session không hợp lệ")
-        
-        # Cập nhật thời gian hoạt động
-        SessionManager.update_session_activity(session_id)
-        
-        # Lưu thông tin user vào request state
-        request.state.current_user = session_data
-        
-        # Gọi hàm gốc, truyền lại request. Hỗ trợ cả async/sync
-        if inspect.iscoroutinefunction(f):
+    # Check if function is async
+    if inspect.iscoroutinefunction(f):
+        @wraps(f)
+        async def async_decorated_function(request: Request, *args, **kwargs):
+            session_id = request.cookies.get('session_id')
+            
+            if not session_id:
+                raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+            
+            session_data = SessionManager.get_session(session_id)
+            if not session_data:
+                raise HTTPException(status_code=401, detail="Session không hợp lệ")
+            
+            # Cập nhật thời gian hoạt động
+            SessionManager.update_session_activity(session_id)
+            
+            # Lưu thông tin user vào request state
+            request.state.current_user = session_data
+            
             return await f(request, *args, **kwargs)
-        else:
+        return async_decorated_function
+    else:
+        @wraps(f)
+        def sync_decorated_function(request: Request, *args, **kwargs):
+            session_id = request.cookies.get('session_id')
+            
+            if not session_id:
+                raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+            
+            session_data = SessionManager.get_session(session_id)
+            if not session_data:
+                raise HTTPException(status_code=401, detail="Session không hợp lệ")
+            
+            # Cập nhật thời gian hoạt động
+            SessionManager.update_session_activity(session_id)
+            
+            # Lưu thông tin user vào request state
+            request.state.current_user = session_data
+            
             return f(request, *args, **kwargs)
-    return decorated_function
+        return sync_decorated_function
 
 # Role-based authentication removed - not needed for current functionality
 

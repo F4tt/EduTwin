@@ -89,7 +89,10 @@ def import_knn_reference_dataset(
 
     existing = db.query(models.KNNReferenceSample).count()
     if existing:
+        print(f"[IMPORT] Deleting {existing} existing reference samples...")
         db.query(models.KNNReferenceSample).delete()
+        db.commit()  # Commit deletion immediately to prevent race conditions
+        print(f"[IMPORT] Deleted successfully, verified count: {db.query(models.KNNReferenceSample).count()}")
         summary.cleared_existing = True
 
     for idx, row in df.iterrows():

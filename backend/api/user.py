@@ -86,3 +86,19 @@ def delete_preference(request: Request, key: str, db: Session = Depends(get_db))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"preferences": prefs}
+
+
+@router.get("/learned-personalization")
+@require_auth
+def get_learned_personalization(request: Request, db: Session = Depends(get_db)):
+    """Get automatically learned personalization preferences for display in Settings."""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
+    
+    try:
+        from services.personalization_learner import get_learned_preferences_display
+        learned = get_learned_preferences_display(db, current_user.get("user_id"))
+        return {"learned_preferences": learned}
+    except Exception as exc:
+        return {"learned_preferences": [], "error": str(exc)}
