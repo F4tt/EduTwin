@@ -19,7 +19,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "generic").lower()
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 
 
 class LLMProvider:

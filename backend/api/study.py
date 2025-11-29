@@ -304,12 +304,13 @@ def delete_scores(request: Request, payload: ScoreDeletePayload, db: Session = D
             deleted_rows.append(score_entry)
 
     if deleted_rows:
-        vector_store = get_vector_store()
+        # REMOVED: Vector store sync (not needed for score analytics)
+        # vector_store = get_vector_store()
         try:
             db.flush()
-            # recompute predictions and sync embeddings for cleared rows
+            # recompute predictions after clearing scores
             predicted_scores = prediction_service.update_predictions_for_user(db, user_id)
-            learning_documents.sync_score_embeddings(db, vector_store, deleted_rows + predicted_scores)
+            # REMOVED: learning_documents.sync_score_embeddings(db, vector_store, deleted_rows + predicted_scores)
             db.commit()
         except Exception:
             db.rollback()
@@ -375,12 +376,14 @@ def upsert_scores(request: Request, payload: ScoreBulkPayload, db: Session = Dep
         prediction_updates = prediction_service.update_predictions_for_user(db, user_id) or []
         logger.info(f"[BULK] ML pipeline returned {len(prediction_updates)} prediction updates")
         
-        # Flush again to assign IDs to prediction_updates before sync embeddings
+        # Flush again to assign IDs to prediction_updates
         db.flush()
         
-        if updated_rows or prediction_updates:
-            vector_store = get_vector_store()
-            learning_documents.sync_score_embeddings(db, vector_store, updated_rows + prediction_updates)
+        # REMOVED: Vector store sync (not needed for score analytics)
+        # if updated_rows or prediction_updates:
+        #     vector_store = get_vector_store()
+        #     learning_documents.sync_score_embeddings(db, vector_store, updated_rows + prediction_updates)
+        
         db.commit()
         logger.info(f"[BULK] Successfully committed changes for user {user_id}")
     except HTTPException:
@@ -1020,14 +1023,14 @@ async def generate_slide_comments(request: Request, db: Session = Depends(get_db
             f"== {title} ==",
             "",
             "# KIẾN THỨC NỀN:",
-            edu_context[:2500],  # Increased limit for more educational context
+            edu_context[:1200],  # Reduced to improve response time
             ""
         ]
         
         if dataset_insights:
             context_header.extend([
                 "# DỮ LIỆU THAM KHẢO:",
-                dataset_insights[:1500],  # Increased limit for more benchmark data
+                dataset_insights[:800],  # Reduced to improve response time
                 ""
             ])
         
@@ -1073,48 +1076,34 @@ async def generate_slide_comments(request: Request, db: Session = Depends(get_db
         "",
         "## TAB 'CHUNG' (Tổng quan tất cả môn):",
         "",
-        "### 1. SUMMARY (Phần mở đầu - 3-4 câu):",
-        "- Dữ liệu: RadarChart (điểm từng môn học kỳ hiện tại) + Benchmark (so sánh mặt bằng chung)",
+        "### 1. SUMMARY (Phần mở đầu - 2-3 câu NGẮN GỌN):",
+        "- Dữ liệu: Điểm TB học kỳ hiện tại từ LineChart (điểm cuối cùng past segment) + Benchmark",
         "- Phân tích:",
-        "  + Tính điểm TB học kỳ hiện tại từ các môn trên Radar",
-        "  + SO SÁNH với benchmark: Bạn xếp top bao nhiêu %? Cao hơn/thấp hơn TB chung bao nhiêu?",
-        "  + Nhận định: Xuất sắc (top 10%)/Giỏi (top 25%)/Khá (top 50%)/Trung bình/Cần cải thiện",
-        "  + Phân tích điểm ĐẶC BIỆT: Có môn nào nổi bật? Có môn nào kéo điểm TB xuống?",
-        "- VÍ DỤ TỐT: 'Ở học kỳ hiện tại, bạn đạt TB 8.5 trên 9 môn, cao hơn 15% so với mặt bằng chung (7.4) và nằm trong top 20% học sinh. Đặc biệt nổi bật là Toán (9.2) và Lý (8.9), trong khi GDCD (6.8) đang kéo điểm xuống.'",
-        "- VÍ DỤ TỆ: 'Bạn có điểm trung bình 8.28.' (Không so sánh, không phân tích)",
+        "  + LẤY điểm TB học kỳ hiện tại TỪ LINECHART (không tính từ Radar)",
+        "  + SO SÁNH benchmark: Top bao nhiêu %? Cao hơn/thấp hơn TB chung bao nhiêu?",
+        "  + Môn NỔI BẬT từ Radar: Môn nào kéo điểm lên/xuống?",
+        "- VÍ DỤ TỐT: 'Ở Học kỳ 1 Lớp 12, điểm TB 7.22 (LineChart) thấp hơn 8% so với TB chung (7.8). Toán (8.9) nổi bật nhưng GDCD (6.2) kéo điểm xuống.'",
+        "- VÍ DỤ TỆ: 'Điểm TB 8.28' (SAI - phải lấy chính xác từ LineChart)",
         "",
-        "### 2. TREND (LineChart - 4-5 câu):",
-        "- Dữ liệu: CHỈ điểm TB THEO HỌC KỲ trên LineChart (VD: HK1 lớp 10: 7.8, HK2 lớp 10: 8.1, ...)",
-        "- Phân tích SÂU - Không chỉ mô tả:",
-        "  + XU HƯỚNG: Tăng đều/giảm dần/dao động/ổn định? Tốc độ thay đổi?",
-        "  + KHÁM PHÁ: Tìm điểm BẤT THƯỜNG - học kỳ nào tăng/giảm ĐỘT NGỘT? (VD: tăng 0.8 điểm từ HK1→HK2 lớp 10)",
-        "  + PHÂN TÍCH NGUYÊN NHÂN: Tại sao có biến động? (VD: Có thể do thích nghi môi trường mới, thay đổi phương pháp học)",
-        "  + HẬU QUẢ: Xu hướng này ảnh hưởng gì đến mục tiêu thi đại học?",
-        "  + DỰ ĐOÁN: Với xu hướng hiện tại, học kỳ tới có thể đạt bao nhiêu? (nếu có dữ liệu future)",
-        "- VÍ DỤ TỐT: 'Xu hướng tăng điểm rất tích cực: từ 7.8 (HK1/10) lên 8.5 (HK1/11), tăng 0.7 điểm. Đặc biệt nổi bật là bước nhảy +0.5 điểm từ HK2/10 sang HK1/11 - có thể do bạn đã thích nghi tốt với chương trình lớp 11. Nếu duy trì, bạn có thể đạt 8.7-9.0 vào HK2/11.'",
-        "- TRÁNH: Chỉ liệt kê 'điểm tăng từ 7.8 lên 8.5' mà không phân tích tại sao/ảnh hưởng gì",
+        "### 2. TREND (LineChart - 2-3 câu):",
+        "- Dữ liệu: Điểm TB theo học kỳ từ LineChart (VD: HK1/10: 7.8, HK2/10: 8.1, HK1/11: 8.5)",
+        "- Phân tích: Xu hướng tăng/giảm/dao động? Học kỳ nào bất thường? Dự đoán future nếu có",
+        "- VÍ DỤ: 'Tăng từ 7.8 (HK1/10) lên 8.5 (HK1/11), bứt phá +0.5 từ HK2/10. Với xu hướng này có thể đạt 8.7+ HK2/11.'",
         "",
-        "### 3. SUBJECTS (BarChart - 4-5 câu):",
-        "- Dữ liệu: CHỈ điểm TB của TỪNG MÔN (cho đến hiện tại) trên BarChart",
-        "- LƯU Ý QUAN TRỌNG: BarChart hiển thị điểm TB của từng môn CHO ĐẾN HỌC KỲ HIỆN TẠI, KHÔNG phải điểm tổng thể tất cả học kỳ",
-        "- Phân tích SÂU:",
-        "  + PHÂN BỐ: Khoảng cách giữa môn cao nhất - thấp nhất? Cân đối hay chênh lệch lớn?",
-        "  + KHÁM PHÁ: Nhóm môn nào ĐỒNG ĐỀU cao/thấp? (VD: 3 môn Tự nhiên đều >8.5 → thế mạnh khối A)",
-        "  + PHÂN TÍCH THEO TỔ HỢP: So sánh TB các môn trong A00, B00, C00, D01 → tổ hợp nào phù hợp?",
-        "  + NHẬN ĐỊNH GIÁ TRỊ: Môn nào là 'chìa khóa' cho mục tiêu thi đại học? Môn nào CẦN ưu tiên cải thiện?",
-        "- VÍ DỤ TỐT: 'Phân bố điểm cho thấy thế mạnh rõ rệt ở khối Tự nhiên: Toán (8.9), Lý (8.7), Hóa (8.5) đều >8.5, trong khi môn Xã hội dao động 7.0-7.5. Với tổ hợp A00 (TB 8.7), bạn có lợi thế lớn cho các ngành Kỹ thuật. GDCD (7.0) đang là điểm yếu cần cải thiện để nâng GPA chung.'",
-        "- TRÁNH: 'Toán cao nhất 8.9, GDCD thấp nhất 7.0' (chỉ liệt kê, không phân tích ý nghĩa)",
+        "### 3. SUBJECTS (BarChart - 2 câu):",
+        "- Dữ liệu: Điểm TB từng môn (cho đến hiện tại) từ BarChart",
+        "- Phân tích: Nhóm môn nào cao/thấp? Tổ hợp nào phù hợp? Môn nào cần cải thiện?",
+        "- VÍ DỤ: 'Thế mạnh TN: Toán (8.9), Lý (8.7), Hóa (8.5) → A00 phù hợp. GDCD (7.0) cần cải thiện.'",
         "",
-        "### 4. RADAR (Biểu đồ năng lực học kỳ hiện tại - 4-5 câu):",
-        "- Dữ liệu: CHỈ điểm của TỪNG MÔN trong HỌC KỲ HIỆN TẠI (từ RadarChart)",
-        "- Phân tích TRỰC QUAN:",
-        "  + HÌNH DẠNG: Radar cân đối (hình tròn đều) → phát triển toàn diện, HAY lệch (góc nhọn) → mất cân bằng?",
-        "  + ĐIỂM MẠNH: 2-3 môn có đỉnh CAO NHẤT (>8.5) → Thế mạnh cần phát huy",
-        "  + ĐIỂM YẾU: 2-3 môn có đỉnh THẤP NHẤT (<7.0) → Rủi ro cần khắc phục",
-        "  + SO SÁNH NHÓM: Các môn TN cao hơn XH? Hay ngược lại? → Định hướng nghề nghiệp",
-        "  + PHÂN TÍCH SÂU: Độ chênh lệch giữa môn cao - thấp lớn (>2.0 điểm) → CẦN cân bằng phát triển",
-        "- VÍ DỤ TỐT: 'Radar chart học kỳ này cho thấy sự PHÁT TRIỂN MẤT CÂN BẰNG: 3 môn TN (Toán 9.2, Lý 8.9, Hóa 8.7) tạo thành cụm đỉnh cao bên phải, trong khi 3 môn XH (Sử 7.2, Địa 7.0, GDCD 6.8) thấp hơn 2+ điểm. Điều này khẳng định rõ năng khiếu Tự nhiên của bạn - hãy tập trung vào tổ hợp A00/B00 thay vì cố gắng cân bằng tất cả môn.'",
-        "- TRÁNH: 'Toán cao nhất, GDCD thấp nhất' (không phân tích hình dạng, ý nghĩa)",
+        "### 4. RADAR (Học kỳ hiện tại - 3-5 câu):",
+        "- Dữ liệu: Điểm từng môn học kỳ hiện tại từ RadarChart",
+        "- Phân tích:",
+        "  + HÌNH DẠNG: Cân đối (tròn đều) hay mất cân bằng (góc nhọn)?",
+        "  + ĐIỂM MẠNH: 2-3 môn cao nhất (>8.5) - thế mạnh cần phát huy",
+        "  + ĐIỂM YẾU: 2-3 môn thấp nhất (<7.0) - cần khắc phục",
+        "  + SO SÁNH NHÓM: Môn TN cao hơn XH? Chênh lệch bao nhiêu?",
+        "  + Độ chênh cao-thấp >2.0 điểm → cần cân bằng phát triển",
+        "- VÍ DỤ: 'Radar mất cân bằng: 3 môn TN (Toán 9.2, Lý 8.9, Hóa 8.7) tạo cụm đỉnh cao, trong khi 3 môn XH (Sử 7.2, Địa 7.0, GDCD 6.8) thấp hơn 2+ điểm. Điều này khẳng định năng khiếu Tự nhiên rõ ràng - hãy tập trung A00/B00 thay vì cố cân bằng tất cả môn.'",
         "",
         "## TAB 'KHỐI TN' / 'KHỐI XH':",
         "- Cấu trúc: Giống tab Chung nhưng CHỈ tập trung vào 6 môn thuộc khối",

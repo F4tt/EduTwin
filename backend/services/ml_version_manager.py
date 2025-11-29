@@ -80,10 +80,10 @@ def update_user_predictions(db: Session, user_id: int, force: bool = False):
         # Update predictions
         updates = prediction_service.update_predictions_for_user(db, user_id)
         
-        # Sync embeddings
-        if updates:
-            vector_store = get_vector_store()
-            learning_documents.sync_score_embeddings(db, vector_store, updates)
+        # REMOVED: Vector store sync (not needed for score analytics)
+        # if updates:
+        #     vector_store = get_vector_store()
+        #     learning_documents.sync_score_embeddings(db, vector_store, updates)
         
         # Update user's version
         user = db.query(models.User).filter(models.User.id == user_id).first()

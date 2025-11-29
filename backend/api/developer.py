@@ -50,9 +50,8 @@ def _ensure_developer(user: dict | None) -> None:
 
 
 def _run_prediction_pipeline(db: Session) -> dict:
-    """Recompute predictions and sync embeddings for every user."""
+    """Recompute predictions for every user (vector sync removed)."""
     start = time.perf_counter()
-    vector_store = get_vector_store()
     user_ids = [row[0] for row in db.query(models.User.id).all()]
     scores_to_sync = []
 
@@ -62,9 +61,10 @@ def _run_prediction_pipeline(db: Session) -> dict:
             if updates:
                 scores_to_sync.extend(updates)
 
-        if scores_to_sync:
-            db.flush()
-            learning_documents.sync_score_embeddings(db, vector_store, scores_to_sync)
+        # REMOVED: Vector store sync (not needed for score analytics)
+        # if scores_to_sync:
+        #     db.flush()
+        #     learning_documents.sync_score_embeddings(db, vector_store, scores_to_sync)
 
         db.commit()
     except Exception as exc:
@@ -85,7 +85,6 @@ def _run_prediction_pipeline_background():
     try:
         print("[PIPELINE] Starting background prediction pipeline for all users...")
         start = time.perf_counter()
-        vector_store = get_vector_store()
         user_ids = [row[0] for row in db.query(models.User.id).all()]
         scores_to_sync = []
 
@@ -98,9 +97,10 @@ def _run_prediction_pipeline_background():
                 print(f"[PIPELINE] Error processing user {user_id}: {e}")
                 continue
 
-        if scores_to_sync:
-            db.flush()
-            learning_documents.sync_score_embeddings(db, vector_store, scores_to_sync)
+        # REMOVED: Vector store sync (not needed for score analytics)
+        # if scores_to_sync:
+        #     db.flush()
+        #     learning_documents.sync_score_embeddings(db, vector_store, scores_to_sync)
 
         db.commit()
         duration = round(time.perf_counter() - start, 2)

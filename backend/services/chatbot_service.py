@@ -12,13 +12,13 @@ from services.intent_detection import ScoreUpdateIntent, detect_score_update_int
 from services.intent_detection import detect_profile_update_intent, detect_personalization_intent
 from services.intent_detection import detect_confirmation_intent, detect_cancellation_intent
 from services import memory_manager
-from services.vector_store_provider import get_vector_store
+# REMOVED: from services.vector_store_provider import get_vector_store
 from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification
 
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 
 
 async def _call_remote_llm(messages: List[Dict[str, str]], temperature: float = 0.2) -> Optional[str]:
@@ -100,23 +100,57 @@ async def _call_remote_llm(messages: List[Dict[str, str]], temperature: float = 
     return _extract_text(resp)
 
 
-def _build_context_blocks(user_id: Optional[int], message: str) -> List[Dict[str, object]]:
-    vector_store = get_vector_store()
-    filters: Dict[str, object] = {}
-    if user_id is not None:
-        filters["user_id"] = user_id
-
-    results = vector_store.search(message, top_k=5, filters=filters)
+def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Session] = None) -> List[Dict[str, object]]:
+    """
+    Build context blocks using simple SQL queries instead of vector search.
+    This is more efficient for structured score data.
+    """
     contexts: List[Dict[str, object]] = []
-    for item in results:
-        contexts.append(
-            {
-                "title": item.metadata.get("title"),
-                "content": item.content,
-                "score": item.score,
-                "metadata": item.metadata,
+    
+    if user_id is None or db is None:
+        return contexts
+    
+    # Get recent chat messages for context (last 5)
+    recent_messages = db.query(models.ChatMessage)\
+        .filter(models.ChatMessage.user_id == user_id)\
+        .order_by(models.ChatMessage.created_at.desc())\
+        .limit(5)\
+        .all()
+    
+    for msg in reversed(recent_messages):  # Show oldest first
+        contexts.append({
+            "title": "Hội thoại gần đây",
+            "content": f"User: {msg.message}\nBot: {msg.response}",
+            "score": 1.0,
+            "metadata": {
+                "type": "chat_history",
+                "created_at": msg.created_at.isoformat() if msg.created_at else None
             }
-        )
+        })
+    
+    # Get recent score updates if message mentions subjects/grades
+    score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp']
+    if any(kw in message.lower() for kw in score_keywords):
+        recent_scores = db.query(models.StudyScore)\
+            .filter(models.StudyScore.user_id == user_id)\
+            .filter(models.StudyScore.actual_score.isnot(None))\
+            .order_by(models.StudyScore.actual_updated_at.desc())\
+            .limit(3)\
+            .all()
+        
+        for score in recent_scores:
+            contexts.append({
+                "title": "Điểm gần đây",
+                "content": f"{score.subject} - {score.semester}/{score.grade_level}: {score.actual_score}",
+                "score": 0.8,
+                "metadata": {
+                    "type": "score_update",
+                    "subject": score.subject,
+                    "grade": score.grade_level,
+                    "semester": score.semester
+                }
+            })
+    
     return contexts
 
 
@@ -325,7 +359,7 @@ async def generate_chat_response(
             "session_id": session_id
         }
     
-    contexts = _build_context_blocks(user_id, message)
+    contexts = _build_context_blocks(user_id, message, db)
     
     # Prepare conversation history for optimization
     conversation_messages: List[Dict[str, str]] = []
