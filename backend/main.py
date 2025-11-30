@@ -12,9 +12,10 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from db import models, database
 from api import auth, study, developer, chatbot, learning_goals
 from api import user
-from services.vector_store_provider import get_vector_store
+# REMOVED: vector_store_provider import (no longer used)
 from core.logging_config import setup_logging, get_logger
 from core.metrics import PrometheusMiddleware, http_requests_total
+from core.websocket_manager import socket_app, sio
 
 # Setup structured logging
 log_level = os.getenv("LOG_LEVEL", "INFO")
@@ -148,20 +149,7 @@ async def startup_event():
                 """))
             logger.info("Database tables created successfully")
             
-            # Preload vector store (loads embedding model) to avoid long delays on first request
-            try:
-                get_vector_store()
-                logger.info("Vector store initialized on startup")
-            except Exception as e:
-                logger.error(f"Failed to initialize vector store at startup", extra={"error": str(e)})
-            
-            # Start background pruning/summarizer job if enabled
-            try:
-                from services.prune_service import start_background_prune_scheduler
-                start_background_prune_scheduler()
-                logger.info("Background prune scheduler started")
-            except Exception as e:
-                logger.debug(f"Prune service not started", extra={"error": str(e)})
+            # REMOVED: Vector store initialization and prune scheduler (no longer used)
             break
             
         except OperationalError as exc:
@@ -187,6 +175,9 @@ app.include_router(developer.router)
 app.include_router(chatbot.router)
 app.include_router(user.router)
 app.include_router(learning_goals.router)
+
+# Mount Socket.IO app
+app.mount('/ws', socket_app)
 
 @app.get("/")
 def root():

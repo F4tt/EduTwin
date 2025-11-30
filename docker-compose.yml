@@ -93,6 +93,8 @@ services:
       logging: "promtail"
       service: "frontend"
       app: "edutwin"
+    env_file:
+      - .env
     volumes:
       # DEV MODE: Mount code for HMR (comment out for production)
       - ./frontend_react:/app
@@ -100,7 +102,8 @@ services:
     ports:
       - "3000:5173"  # Dev: Vite server (Production: change to "3000:80" with nginx)
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+      - VITE_WS_URL=${VITE_WS_URL:-http://localhost:8000/ws}
     depends_on:
       - backend
     networks:

@@ -4,6 +4,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, field_validator, StringConstraints
 from typing import Annotated
 import logging
+from datetime import datetime
 
 from db import models, database
 from utils.session_utils import SessionManager, require_auth, get_current_user
@@ -139,7 +140,10 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
         raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không đúng")
 
     # Tạo session thay vì JWT token
-    full_name = " ".join([p for p in [getattr(user, 'first_name', ''), getattr(user, 'last_name', '')] if p]).strip()
+    # Format: lastname firstname
+    last_name = getattr(user, 'last_name', '')
+    first_name = getattr(user, 'first_name', '')
+    full_name = " ".join([p for p in [last_name, first_name] if p]).strip()
     user_info = {
         "user_id": user.id,
         "username": user.username,
@@ -156,6 +160,43 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
     user_info["is_first_login"] = not bool(getattr(user, "first_login_completed", False))
     
     session_id = SessionManager.create_session(user_info)
+    
+    # Create a new chat session for this login session
+    try:
+        new_chat_session = models.ChatSession(
+            user_id=user.id,
+            title=f"Phiên chat - {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        )
+        db.add(new_chat_session)
+        db.commit()
+        db.refresh(new_chat_session)
+        logger.info(f"Created new chat session {new_chat_session.id} for user {user.id} on login")
+        
+        # Generate and add proactive greeting message
+        try:
+            from services.proactive_engagement import ProactiveEngagement
+            engagement = ProactiveEngagement(db)
+            greeting = engagement.generate_greeting(user.id)
+            
+            # Add greeting as assistant message
+            greeting_msg = models.ChatMessage(
+                session_id=new_chat_session.id,
+                role="assistant",
+                content=greeting,
+                metadata_={"type": "greeting", "auto_generated": True}
+            )
+            db.add(greeting_msg)
+            db.commit()
+            logger.info(f"Added greeting message to session {new_chat_session.id}")
+        except Exception as e:
+            logger.error(f"Error adding greeting message: {e}")
+            db.rollback()
+        
+        # Store the chat session ID in the session for easy access
+        SessionManager.update_session_fields(session_id, {"current_chat_session_id": new_chat_session.id})
+    except Exception as e:
+        logger.error(f"Error creating chat session on login: {e}")
+        db.rollback()
     
     # Ensure user has latest ML predictions (lazy evaluation on login)
     # This runs in background thread to not slow down login

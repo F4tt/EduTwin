@@ -90,11 +90,6 @@ EDUCATIONAL_KNOWLEDGE = """
 
 ## 6. SO SÁNH VỚI MẶT BẰNG CHUNG
 
-### Phân vị điểm (percentile):
-- Top 10%: GPA ≥ 8.5
-- Top 25%: GPA ≥ 7.5
-- Top 50%: GPA ≥ 6.5
-- Top 75%: GPA ≥ 5.5
 
 ### Đánh giá vị trí:
 - Trên trung bình: GPA > 6.5
@@ -190,28 +185,28 @@ def get_gpa_classification(gpa: float) -> dict:
         return {
             "level": "Trung bình",
             "description": "Đạt chuẩn",
-            "percentile": "Trung bình (50-75%)",
+            "percentile": "Trung bình",
             "target": "Mục tiêu: đạt 7.0-7.5"
         }
     elif gpa < 8.0:
         return {
             "level": "Khá",
             "description": "Tốt",
-            "percentile": "Khá (25-50%)",
+            "percentile": "Khá ",
             "target": "Mục tiêu: đạt 8.0-8.5"
         }
     elif gpa < 9.0:
         return {
             "level": "Giỏi",
             "description": "Rất tốt",
-            "percentile": "Top 10-25%",
+            "percentile": "Giỏi",
             "target": "Mục tiêu: duy trì hoặc đạt 9.0+"
         }
     else:
         return {
             "level": "Xuất sắc",
             "description": "Ưu tú",
-            "percentile": "Top 10%",
+            "percentile": "Xuất sắc",
             "target": "Mục tiêu: duy trì 9.0+ và phát triển chuyên sâu"
         }
 

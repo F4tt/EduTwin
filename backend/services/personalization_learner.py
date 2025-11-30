@@ -11,12 +11,20 @@ from db import models
 class PersonalizationLearner:
     """Analyzes chat sessions to extract personalization preferences."""
     
-    def analyze_session_preferences(self, session: models.ChatSession) -> List[str]:
+    def analyze_session_preferences(self, session: models.ChatSession) -> Dict[str, any]:
         """
-        Analyze a chat session and extract personalization insights.
-        Returns a list of learned preference descriptions.
+        Analyze a chat session and extract comprehensive personalization insights.
+        Returns a dictionary with categorized preferences.
         """
-        preferences = []
+        preferences = {
+            "communication_style": [],
+            "personality": [],
+            "emotions": [],
+            "habits": [],
+            "schedule": [],
+            "interests": [],
+            "goals": []
+        }
         
         if not session or not session.messages:
             return preferences
@@ -27,14 +35,14 @@ class PersonalizationLearner:
         if not user_messages:
             return preferences
         
-        # Detect communication style
+        # 1. COMMUNICATION STYLE
         total_length = sum(len(msg.content) for msg in user_messages)
         avg_length = total_length / len(user_messages) if user_messages else 0
         
         if avg_length < 20:
-            preferences.append("Người dùng ưa thích câu trả lời ngắn gọn")
+            preferences["communication_style"].append("Ưa thích câu trả lời ngắn gọn")
         elif avg_length > 100:
-            preferences.append("Người dùng ưa thích giải thích chi tiết")
+            preferences["communication_style"].append("Ưa thích giải thích chi tiết")
         
         # Detect formality
         formal_words = ["xin", "ạ", "dạ", "thưa", "kính"]
@@ -50,59 +58,149 @@ class PersonalizationLearner:
         )
         
         if formal_count > informal_count and formal_count > len(user_messages) * 0.3:
-            preferences.append("Người dùng sử dụng ngôn ngữ trang trọng")
+            preferences["communication_style"].append("Sử dụng ngôn ngữ trang trọng")
         elif informal_count > formal_count and informal_count > len(user_messages) * 0.3:
-            preferences.append("Người dùng sử dụng ngôn ngữ thân mật")
+            preferences["communication_style"].append("Sử dụng ngôn ngữ thân mật")
         
-        # Detect topic interests
-        study_keywords = ["học", "điểm", "thi", "ôn", "môn"]
-        goal_keywords = ["mục tiêu", "kế hoạch", "cần", "muốn"]
+        # 2. PERSONALITY TRAITS
+        action_words = ["làm", "thực hiện", "bắt đầu", "làm luôn"]
+        thinking_words = ["suy nghĩ", "cân nhắc", "xem xét", "phân tích"]
         
-        study_interest = sum(
-            1 for msg in user_messages 
-            if any(word in msg.content.lower() for word in study_keywords)
-        )
-        goal_interest = sum(
-            1 for msg in user_messages 
-            if any(word in msg.content.lower() for word in goal_keywords)
-        )
+        action_count = sum(1 for msg in user_messages if any(w in msg.content.lower() for w in action_words))
+        thinking_count = sum(1 for msg in user_messages if any(w in msg.content.lower() for w in thinking_words))
         
-        if study_interest > len(user_messages) * 0.5:
-            preferences.append("Quan tâm nhiều đến kết quả học tập")
-        if goal_interest > len(user_messages) * 0.3:
-            preferences.append("Có xu hướng lập kế hoạch và đặt mục tiêu")
+        if action_count > thinking_count and action_count > 2:
+            preferences["personality"].append("Hướng hành động, thích làm ngay")
+        elif thinking_count > action_count and thinking_count > 2:
+            preferences["personality"].append("Thích suy nghĩ kỹ trước khi hành động")
         
-        return preferences[:5]  # Limit to top 5 preferences
+        # Independence vs collaboration
+        solo_words = ["tự", "mình", "một mình", "riêng"]
+        team_words = ["nhóm", "cùng", "chúng mình", "bạn bè"]
+        
+        solo_count = sum(1 for msg in user_messages if any(w in msg.content.lower() for w in solo_words))
+        team_count = sum(1 for msg in user_messages if any(w in msg.content.lower() for w in team_words))
+        
+        if solo_count > team_count and solo_count > 1:
+            preferences["personality"].append("Thích làm việc độc lập")
+        elif team_count > solo_count and team_count > 1:
+            preferences["personality"].append("Thích làm việc nhóm")
+        
+        # 3. EMOTIONS
+        emotion_keywords = {
+            "vui": ["vui", "hạnh phúc", "tuyệt", "hay", "thích"],
+            "stress": ["stress", "áp lực", "lo", "căng thẳng"],
+            "mệt": ["mệt", "chán", "buồn tẻ"],
+            "hứng_thú": ["thích", "hay", "tuyệt", "tốt", "ok"],
+        }
+        
+        for emotion, keywords in emotion_keywords.items():
+            count = sum(1 for msg in user_messages if any(kw in msg.content.lower() for kw in keywords))
+            if count > len(user_messages) * 0.2:
+                if emotion == "vui":
+                    preferences["emotions"].append("Thường trong trạng thái tích cực")
+                elif emotion == "stress":
+                    preferences["emotions"].append("Đang có áp lực học tập")
+                elif emotion == "mệt":
+                    preferences["emotions"].append("Cần thư giãn và nghỉ ngơi")
+        
+        # 4. HABITS & SCHEDULE
+        time_keywords = {
+            "sáng": ["sáng", "buổi sáng", "sáng sớm"],
+            "tối": ["tối", "buổi tối", "đêm"],
+            "cuối_tuần": ["cuối tuần", "thứ 7", "chủ nhật"],
+        }
+        
+        for time_period, keywords in time_keywords.items():
+            count = sum(1 for msg in user_messages if any(kw in msg.content.lower() for kw in keywords))
+            if count > 1:
+                if time_period == "sáng":
+                    preferences["schedule"].append("Thường hoạt động vào buổi sáng")
+                elif time_period == "tối":
+                    preferences["schedule"].append("Thường hoạt động vào buổi tối")
+                elif time_period == "cuối_tuần":
+                    preferences["schedule"].append("Quan tâm đến kế hoạch cuối tuần")
+        
+        # Study habits
+        study_habit_keywords = {
+            "ôn_trước": ["ôn trước", "chuẩn bị trước", "học trước"],
+            "làm_bài": ["làm bài", "luyện tập", "thực hành"],
+            "nghỉ_giải_lao": ["nghỉ", "giải lao", "thư giãn"],
+        }
+        
+        for habit, keywords in study_habit_keywords.items():
+            count = sum(1 for msg in user_messages if any(kw in msg.content.lower() for kw in keywords))
+            if count > 0:
+                if habit == "ôn_trước":
+                    preferences["habits"].append("Có thói quen ôn bài trước")
+                elif habit == "làm_bài":
+                    preferences["habits"].append("Thường xuyên làm bài tập")
+                elif habit == "nghỉ_giải_lao":
+                    preferences["habits"].append("Biết cân bằng học tập và nghỉ ngơi")
+        
+        # 5. INTERESTS
+        interest_keywords = {
+            "học_tập": ["học", "điểm", "thi", "ôn", "môn học"],
+            "mục_tiêu": ["mục tiêu", "kế hoạch", "định hướng"],
+            "thể_thao": ["thể thao", "bóng", "chạy", "gym"],
+            "âm_nhạc": ["nhạc", "hát", "nghe nhạc"],
+            "đọc_sách": ["sách", "đọc", "truyện"],
+        }
+        
+        for interest, keywords in interest_keywords.items():
+            count = sum(1 for msg in user_messages if any(kw in msg.content.lower() for kw in keywords))
+            if count > len(user_messages) * 0.3:
+                if interest == "học_tập":
+                    preferences["interests"].append("Quan tâm nhiều đến kết quả học tập")
+                elif interest == "mục_tiêu":
+                    preferences["interests"].append("Thích lập kế hoạch và mục tiêu")
+                elif interest == "thể_thao":
+                    preferences["interests"].append("Yêu thích thể thao")
+                elif interest == "âm_nhạc":
+                    preferences["interests"].append("Thích âm nhạc")
+                elif interest == "đọc_sách":
+                    preferences["interests"].append("Thích đọc sách")
+        
+        # 6. GOALS
+        goal_keywords = ["muốn", "cần", "đạt", "cải thiện", "nâng cao"]
+        goal_count = sum(1 for msg in user_messages if any(kw in msg.content.lower() for kw in goal_keywords))
+        
+        if goal_count > len(user_messages) * 0.3:
+            preferences["goals"].append("Có xu hướng đặt mục tiêu rõ ràng")
+        
+        # Filter empty categories
+        return {k: v for k, v in preferences.items() if v}
+    
+    def preferences_to_summary(self, preferences: Dict[str, List[str]]) -> List[str]:
+        """Convert structured preferences to flat list for backward compatibility."""
+        summary = []
+        for category, items in preferences.items():
+            summary.extend(items)
+        return summary[:10]  # Top 10 insights
 
 
-def get_learned_preferences_display(db: Session, user_id: int) -> List[str]:
+def get_learned_preferences_display(db: Session, user_id: int) -> Dict[str, List[str]]:
     """
-    Get learned preferences for a user in display format.
-    Returns a list of preference descriptions for UI.
+    Get learned preferences for a user in structured format.
+    Returns a dict with categorized preference descriptions for UI.
     """
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user or not user.preferences:
-        return []
+        return {}
     
     learned = user.preferences.get("learned")
     if not learned:
-        return []
+        return {}
     
-    # Handle both list and dict formats (backward compatibility)
-    if isinstance(learned, list):
+    # Handle dict format (new structure)
+    if isinstance(learned, dict):
         return learned
     
-    # Handle dict format with _description keys
-    if isinstance(learned, dict):
-        descriptions = []
-        for key, value in learned.items():
-            if key.endswith("_description"):
-                descriptions.append(value)
-            elif isinstance(value, str) and not key.startswith("_"):
-                descriptions.append(f"{key}: {value}")
-        return descriptions
+    # Handle list format (backward compatibility) - convert to dict
+    if isinstance(learned, list):
+        return {"general": learned}
     
-    return []
+    return {}
 
 
 def get_personalization_prompt_addition(db: Session, user_id: int) -> str:
@@ -118,13 +216,43 @@ def get_personalization_prompt_addition(db: Session, user_id: int) -> str:
         return ""
     
     learned = user.preferences.get("learned")
-    if not learned or not isinstance(learned, list) or len(learned) == 0:
+    if not learned:
         return ""
     
-    # Build personalization prompt
-    prefs_text = "\n".join(f"- {pref}" for pref in learned)
+    # Build personalization prompt from structured preferences
+    sections = []
     
-    return f"\n\n# CÁ NHÂN HÓA:\nNgười dùng có đặc điểm:\n{prefs_text}\nHãy điều chỉnh phong cách trả lời cho phù hợp."
+    if isinstance(learned, dict):
+        category_names = {
+            "communication_style": "Phong cách giao tiếp",
+            "personality": "Tính cách",
+            "emotions": "Cảm xúc",
+            "habits": "Thói quen",
+            "schedule": "Lịch trình",
+            "interests": "Sở thích",
+            "goals": "Mục tiêu"
+        }
+        
+        for category, items in learned.items():
+            if items and isinstance(items, list):
+                category_display = category_names.get(category, category)
+                items_text = ", ".join(items)
+                sections.append(f"**{category_display}**: {items_text}")
+    elif isinstance(learned, list):
+        # Backward compatibility
+        prefs_text = "\n".join(f"- {pref}" for pref in learned)
+        return f"\n\n# CÁ NHÂN HÓA:\nNgười dùng có đặc điểm:\n{prefs_text}\nHãy điều chỉnh phong cách trả lời cho phù hợp."
+    
+    if not sections:
+        return ""
+    
+    profile_text = "\n".join(sections)
+    return (
+        f"\n\n# CÁ NHÂN HÓA:\n"
+        f"Đây là profile của người dùng:\n{profile_text}\n\n"
+        f"Hãy điều chỉnh phong cách trả lời, ngôn từ và nội dung cho phù hợp với đặc điểm này. "
+        f"Thể hiện sự quan tâm và cá nhân hóa trải nghiệm."
+    )
 
 
 def update_user_personalization(db: Session, user_id: int, min_messages: int = 5):
@@ -149,21 +277,37 @@ def update_user_personalization(db: Session, user_id: int, min_messages: int = 5
     if not sessions:
         return
     
-    # Analyze sessions with enough messages
-    all_preferences = []
+    # Analyze sessions with enough messages and merge preferences
+    merged_preferences = {
+        "communication_style": set(),
+        "personality": set(),
+        "emotions": set(),
+        "habits": set(),
+        "schedule": set(),
+        "interests": set(),
+        "goals": set()
+    }
+    
     learner = PersonalizationLearner()
     
     for session in sessions:
         db.refresh(session)
         if len(session.messages) >= min_messages:
             prefs = learner.analyze_session_preferences(session)
-            all_preferences.extend(prefs)
+            # Merge all categories
+            for category, items in prefs.items():
+                if category in merged_preferences:
+                    merged_preferences[category].update(items)
     
-    if not all_preferences:
+    # Convert sets to lists and filter empty
+    final_preferences = {
+        k: list(v)[:5]  # Max 5 items per category
+        for k, v in merged_preferences.items() 
+        if v
+    }
+    
+    if not final_preferences:
         return
-    
-    # Deduplicate and keep most recent preferences
-    unique_prefs = list(dict.fromkeys(all_preferences))[:5]
     
     # Update user preferences
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -171,7 +315,7 @@ def update_user_personalization(db: Session, user_id: int, min_messages: int = 5
         if not user.preferences:
             user.preferences = {}
         
-        user.preferences["learned"] = unique_prefs
+        user.preferences["learned"] = final_preferences
         
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(user, "preferences")

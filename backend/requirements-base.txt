@@ -1,6 +1,7 @@
 # Core dependencies (lightweight, rarely change)
 fastapi
 uvicorn
+gunicorn
 sqlalchemy
 psycopg2-binary
 python-dotenv
@@ -12,3 +13,5 @@ httpx
 prometheus-client
 python-json-logger
 psutil
+python-socketio
+aiofiles

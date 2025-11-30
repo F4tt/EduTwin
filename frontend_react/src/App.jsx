@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { WebSocketProvider } from './context/WebSocketContext';
 import Layout from './components/Layout';
 
 // Lazy load pages for code splitting (reduce initial bundle size)
@@ -15,14 +16,8 @@ const LearningGoals = lazy(() => import('./pages/LearningGoals'));
 
 // Loading fallback component
 const PageLoader = () => (
-  <div style={{ 
-    display: 'flex', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    height: '100vh',
-    fontSize: '1.2rem',
-    color: '#666'
-  }}>
+  <div className="page-loader">
+    <div className="spinner" style={{ marginRight: '0.75rem' }}></div>
     Đang tải...
   </div>
 );
@@ -31,7 +26,7 @@ const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
   const location = useLocation();
 
-  if (loading) return <div>Loading...</div>;
+  if (loading) return <PageLoader />;
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
 
   // Check for first login flag (logic adapted from app.py)
@@ -111,9 +106,11 @@ function AppRoutes() {
 function App() {
   return (
     <AuthProvider>
-      <Router>
-        <AppRoutes />
-      </Router>
+      <WebSocketProvider>
+        <Router>
+          <AppRoutes />
+        </Router>
+      </WebSocketProvider>
     </AuthProvider>
   );
 }

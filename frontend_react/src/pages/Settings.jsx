@@ -95,26 +95,48 @@ const Settings = () => {
     };
 
     return (
-        <div style={{ maxWidth: '700px', margin: '0 auto' }}>
+        <div style={{ maxWidth: '700px', margin: '0 auto', paddingBottom: '3rem' }}>
 
             <div className="card" style={{ marginBottom: '2rem' }}>
-                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.2rem', fontWeight: '600' }}>Thông tin cá nhân</h3>
+                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>Thông tin cá nhân</h3>
 
                 {message && (
-                    <div style={{ padding: '0.75rem', background: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', marginBottom: '1rem' }}>
+                    <div style={{
+                        padding: '1rem',
+                        background: '#f0fdf4',
+                        color: '#166534',
+                        borderRadius: 'var(--radius-md)',
+                        marginBottom: '1.5rem',
+                        border: '1px solid #bbf7d0',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem'
+                    }}>
+                        <Sparkles size={18} />
                         {message}
                     </div>
                 )}
                 {error && (
-                    <div style={{ padding: '0.75rem', background: '#ffebee', color: '#c62828', borderRadius: '6px', marginBottom: '1rem' }}>
+                    <div style={{
+                        padding: '1rem',
+                        background: '#fef2f2',
+                        color: 'var(--danger-color)',
+                        borderRadius: 'var(--radius-md)',
+                        marginBottom: '1.5rem',
+                        border: '1px solid #fecaca'
+                    }}>
                         {error}
                     </div>
                 )}
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="grid" style={{ gap: '1.5rem' }}>
                     <div>
                         <label className="label">Họ tên</label>
-                        <input className="input-field" value={user?.name || user?.full_name || ''} disabled style={{ background: '#f5f5f5' }} />
+                        <input className="input-field" value={
+                            user?.last_name && user?.first_name
+                                ? `${user.last_name} ${user.first_name}`
+                                : user?.name || user?.full_name || ''
+                        } disabled style={{ background: 'var(--bg-body)', color: 'var(--text-secondary)', cursor: 'not-allowed' }} />
                     </div>
                     <div>
                         <label className="label">Email</label>
@@ -133,75 +155,115 @@ const Settings = () => {
                         <input className="input-field" name="age" value={formData.age} onChange={handleChange} />
                     </div>
 
-                    <button className="btn btn-primary" onClick={handleSave} style={{ marginTop: '1rem', alignSelf: 'flex-start' }}>
-                        <Save size={18} /> Lưu thay đổi
-                    </button>
+                    <div style={{ paddingTop: '0.5rem' }}>
+                        <button className="btn btn-primary" onClick={handleSave}>
+                            <Save size={18} /> Lưu thay đổi
+                        </button>
+                    </div>
                 </div>
             </div>
 
             <div className="card" style={{ marginBottom: '2rem' }}>
-                <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', fontWeight: '600' }}>Đổi mật khẩu</h3>
+                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>Đổi mật khẩu</h3>
                 {pwdMsg && (
-                    <div style={{ padding: '0.6rem', marginBottom: '0.8rem', borderRadius: '6px', background: pwdMsg.startsWith('Lỗi') ? '#ffebee' : '#e8f5e9', color: pwdMsg.startsWith('Lỗi') ? '#c62828' : '#2e7d32' }}>{pwdMsg}</div>
+                    <div style={{
+                        padding: '1rem',
+                        marginBottom: '1.5rem',
+                        borderRadius: 'var(--radius-md)',
+                        background: pwdMsg.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
+                        color: pwdMsg.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
+                        border: `1px solid ${pwdMsg.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
+                    }}>
+                        {pwdMsg}
+                    </div>
                 )}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    <input className="input-field" name="current_password" type="password" placeholder="Mật khẩu hiện tại" value={pwdForm.current_password} onChange={handlePwdChange} />
-                    <input className="input-field" name="new_password" type="password" placeholder="Mật khẩu mới" value={pwdForm.new_password} onChange={handlePwdChange} />
-                    <input className="input-field" name="confirm_password" type="password" placeholder="Nhập lại mật khẩu mới" value={pwdForm.confirm_password} onChange={handlePwdChange} />
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div className="grid" style={{ gap: '1.25rem' }}>
+                    <div>
+                        <label className="label">Mật khẩu hiện tại</label>
+                        <input className="input-field" name="current_password" type="password" placeholder="••••••••" value={pwdForm.current_password} onChange={handlePwdChange} />
+                    </div>
+                    <div>
+                        <label className="label">Mật khẩu mới</label>
+                        <input className="input-field" name="new_password" type="password" placeholder="••••••••" value={pwdForm.new_password} onChange={handlePwdChange} />
+                    </div>
+                    <div>
+                        <label className="label">Nhập lại mật khẩu mới</label>
+                        <input className="input-field" name="confirm_password" type="password" placeholder="••••••••" value={pwdForm.confirm_password} onChange={handlePwdChange} />
+                    </div>
+                    <div style={{ paddingTop: '0.5rem' }}>
                         <button className="btn btn-primary" onClick={handleChangePassword}>Đổi mật khẩu</button>
                     </div>
                 </div>
             </div>
 
             {/* Learned Personalization Section */}
-            <div className="card" style={{ marginBottom: '2rem' }}>
-                <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Sparkles size={20} color="#d32f2f" />
+            <div className="card">
+                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
+                    <Sparkles size={24} className="text-primary" style={{ color: 'var(--primary-color)' }} />
                     Cá nhân hóa tự động
                 </h3>
-                
+
                 {learnedPrefs.length > 0 ? (
                     <>
-                        <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '1rem' }}>
+                        <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
                             Chatbot đã tự động học phong cách sử dụng của bạn từ các cuộc trò chuyện:
                         </p>
-                        <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                             {learnedPrefs.map((pref, idx) => (
-                                <li 
-                                    key={idx} 
-                                    style={{ 
-                                        padding: '0.75rem', 
-                                        background: '#f5f5f5', 
-                                        borderRadius: '6px',
-                                        borderLeft: '3px solid #d32f2f',
-                                        fontSize: '0.95rem'
+                                <li
+                                    key={idx}
+                                    style={{
+                                        padding: '1rem',
+                                        background: 'var(--bg-body)',
+                                        borderRadius: 'var(--radius-md)',
+                                        borderLeft: '4px solid var(--primary-color)',
+                                        fontSize: '0.95rem',
+                                        color: 'var(--text-primary)',
+                                        boxShadow: 'var(--shadow-sm)'
                                     }}
                                 >
                                     {pref}
                                 </li>
                             ))}
                         </ul>
-                        <p style={{ fontSize: '0.85rem', color: '#888', marginTop: '1rem', fontStyle: 'italic' }}>
-                            💡 Các cá nhân hóa này được cập nhật tự động sau mỗi 5 tin nhắn để chatbot phục vụ bạn tốt hơn.
+                        <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)', marginTop: '1.5rem', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <Sparkles size={14} />
+                            Các cá nhân hóa này được cập nhật tự động sau mỗi 5 tin nhắn để chatbot phục vụ bạn tốt hơn.
                         </p>
                     </>
                 ) : (
-                    <div style={{ 
-                        padding: '2rem', 
-                        background: '#f9f9f9', 
-                        borderRadius: '8px',
+                    <div style={{
+                        padding: '3rem',
+                        background: 'var(--bg-body)',
+                        borderRadius: 'var(--radius-lg)',
                         textAlign: 'center',
-                        border: '2px dashed #e0e0e0'
+                        border: '2px dashed var(--border-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '1rem'
                     }}>
-                        
-                        <p style={{ fontSize: '0.95rem', color: '#666', marginBottom: '0.5rem' }}>
-                            Chưa có dữ liệu cá nhân hóa
-                        </p>
-                        <p style={{ fontSize: '0.85rem', color: '#999' }}>
-                            Chatbot sẽ tự động học phong cách của bạn sau mỗi 5 tin nhắn trò chuyện. 
-                            Hãy bắt đầu chat để hệ thống hiểu bạn hơn! 💬
-                        </p>
+                        <div style={{
+                            width: '60px',
+                            height: '60px',
+                            borderRadius: '50%',
+                            background: 'var(--bg-surface)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            boxShadow: 'var(--shadow-md)'
+                        }}>
+                            <Sparkles size={30} style={{ color: 'var(--text-tertiary)' }} />
+                        </div>
+                        <div>
+                            <p style={{ fontSize: '1.1rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: '600' }}>
+                                Chưa có dữ liệu cá nhân hóa
+                            </p>
+                            <p style={{ fontSize: '0.95rem', color: 'var(--text-tertiary)', maxWidth: '400px', margin: '0 auto' }}>
+                                Chatbot sẽ tự động học phong cách của bạn sau mỗi 5 tin nhắn trò chuyện.
+                                Hãy bắt đầu chat để hệ thống hiểu bạn hơn!
+                            </p>
+                        </div>
                     </div>
                 )}
             </div>

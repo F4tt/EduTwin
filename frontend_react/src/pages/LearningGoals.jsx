@@ -1,7 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, Cell, LabelList } from 'recharts';
 import axiosClient from '../api/axiosClient';
-import { Target, TrendingUp, Award } from 'lucide-react';
+import { Target, TrendingUp, Award, Lightbulb } from 'lucide-react';
+import { REFRESH_DATA_EVENTS } from '../utils/eventBus';
+import { useAuth } from '../context/AuthContext';
+
+const AI_STRATEGY_VERSION = 1;
+
+// Helper to get user-specific storage key for AI strategy
+const getAiStrategyStorageKey = (username) => {
+    return username ? `learning_goals_strategy_${username}` : 'learning_goals_strategy_guest';
+};
 
 const SUBJECT_LABELS = {
     'Toan': 'Toán',
@@ -47,29 +56,77 @@ const renderLineLabel = ({ x, y, value }) => {
     );
 };
 
-const renderBarLabel = ({ x, y, width, value }) => {
+const renderBarLabel = ({ x, y, width, height, value }) => {
     if (value === null || value === undefined) return null;
-    const textX = x + width + 6;
-    const textY = y + 4;
+    // Position label to the right of bar with some padding
+    const textX = x + width + 8;
+    const textY = y + height / 2 + 4; // Center vertically
     return (
-        <text x={textX} y={textY} textAnchor="start" fill="#444" fontSize={11}>
+        <text x={textX} y={textY} textAnchor="start" fill="#444" fontSize={10} fontWeight="500">
             {formatScoreValue(value)}
         </text>
     );
 };
 
 const LearningGoals = () => {
+    const { user } = useAuth();
     const [targetScore, setTargetScore] = useState('');
     const [currentGoal, setCurrentGoal] = useState(null);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
+    const [generatingStrategy, setGeneratingStrategy] = useState(false);
     const [error, setError] = useState(null);
     const [currentScores, setCurrentScores] = useState({});
+    const [aiStrategy, setAiStrategy] = useState(null);
 
     useEffect(() => {
         fetchCurrentGoal();
         fetchCurrentScores();
+
+        // Listen for data refresh events from StudyUpdate
+        const handleDataRefresh = () => {
+            console.log('Refreshing learning goals data after study update');
+            fetchCurrentScores();
+        };
+
+        REFRESH_DATA_EVENTS.forEach(eventName => {
+            window.addEventListener(eventName, handleDataRefresh);
+        });
+
+        return () => {
+            REFRESH_DATA_EVENTS.forEach(eventName => {
+                window.removeEventListener(eventName, handleDataRefresh);
+            });
+        };
     }, []);
+
+    // Restore AI strategy from localStorage on mount
+    useEffect(() => {
+        if (typeof window === 'undefined' || !window.localStorage) return;
+        if (!user?.username || !currentGoal) {
+            return;
+        }
+
+        try {
+            const storageKey = getAiStrategyStorageKey(user.username);
+            const raw = window.localStorage.getItem(storageKey);
+            if (!raw) return;
+
+            const parsed = JSON.parse(raw);
+            // Only restore if version matches and goal_id matches
+            if (parsed &&
+                parsed.version === AI_STRATEGY_VERSION &&
+                parsed.goal_id === currentGoal.id &&
+                parsed.strategy) {
+                setAiStrategy(parsed.strategy);
+            } else {
+                // Clear outdated strategy
+                window.localStorage.removeItem(storageKey);
+            }
+        } catch (storageErr) {
+            console.error('Failed to restore AI strategy', storageErr);
+        }
+    }, [user?.username, currentGoal?.id]);
 
     const fetchCurrentGoal = async () => {
         try {
@@ -78,6 +135,10 @@ const LearningGoals = () => {
             if (res.data.has_goal) {
                 setCurrentGoal(res.data);
                 setTargetScore(res.data.target_average.toString());
+                // Load AI strategy if exists
+                if (res.data.ai_analysis && res.data.ai_analysis !== 'Đang tạo phân tích AI cho bạn... Vui lòng chờ trong giây lát và làm mới trang.') {
+                    setAiStrategy(res.data.ai_analysis);
+                }
             }
         } catch (e) {
             console.error('Error fetching goal:', e);
@@ -90,14 +151,14 @@ const LearningGoals = () => {
         try {
             const res = await axiosClient.get('/study/scores');
             const scores = res.data.scores || [];
-            
+
             // Build current scores map by subject
             const scoresMap = {};
             scores.forEach(score => {
                 const value = score.actual !== null && score.actual !== undefined
                     ? Number(score.actual)
                     : (score.predicted !== null && score.predicted !== undefined ? Number(score.predicted) : null);
-                
+
                 if (value !== null) {
                     if (!scoresMap[score.subject]) {
                         scoresMap[score.subject] = [];
@@ -134,10 +195,51 @@ const LearningGoals = () => {
                 target_average: score
             });
             setCurrentGoal(res.data);
+            // Clear old AI strategy when setting new goal
+            setAiStrategy(null);
+            // Clear from localStorage
+            if (typeof window !== 'undefined' && window.localStorage && user?.username) {
+                const storageKey = getAiStrategyStorageKey(user.username);
+                window.localStorage.removeItem(storageKey);
+            }
         } catch (e) {
             setError(e.response?.data?.detail || 'Đã xảy ra lỗi khi lưu mục tiêu');
         } finally {
             setSubmitting(false);
+        }
+    };
+
+    const handleGenerateStrategy = async () => {
+        if (!currentGoal) return;
+
+        try {
+            setGeneratingStrategy(true);
+            const res = await axiosClient.post('/learning-goals/generate-strategy', {
+                goal_id: currentGoal.id
+            }, {
+                timeout: 60000 // 60 seconds timeout for LLM
+            });
+            const newStrategy = res.data.ai_analysis;
+            setAiStrategy(newStrategy);
+
+            // Persist to localStorage
+            if (typeof window !== 'undefined' && window.localStorage && user?.username) {
+                try {
+                    const storageKey = getAiStrategyStorageKey(user.username);
+                    window.localStorage.setItem(storageKey, JSON.stringify({
+                        version: AI_STRATEGY_VERSION,
+                        goal_id: currentGoal.id,
+                        strategy: newStrategy,
+                        timestamp: new Date().toISOString()
+                    }));
+                } catch (storageErr) {
+                    console.error('Failed to persist AI strategy', storageErr);
+                }
+            }
+        } catch (e) {
+            alert('Lỗi khi tạo chiến lược: ' + (e.response?.data?.detail || e.message));
+        } finally {
+            setGeneratingStrategy(false);
         }
     };
 
@@ -181,7 +283,7 @@ const LearningGoals = () => {
     }
 
     return (
-        <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <div className="container" style={{ maxWidth: '1400px', paddingBottom: '3rem' }}>
             {/* Header */}
             <div style={{
                 display: 'flex',
@@ -193,18 +295,19 @@ const LearningGoals = () => {
 
             {/* Goal Input Section */}
             <div className="card" style={{ padding: '2rem', marginBottom: '2rem' }}>
-                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.2rem', fontWeight: '600', color: '#5a67d8' }}>
-                    <Award size={20} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'middle' }} />
+                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <Award size={24} />
                     Đặt mục tiêu và xem lộ trình đạt được điểm mong muốn
                 </h3>
-                
+
                 <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                     <div>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#555' }}>
+                        <label className="label" style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>
                             Mục tiêu cho học kỳ sau của bạn là:
                         </label>
-                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                             <input
+                                className="input-field"
                                 type="number"
                                 step="0.1"
                                 min="0"
@@ -214,41 +317,55 @@ const LearningGoals = () => {
                                 placeholder="Nhập điểm từ 0.0 đến 10.0"
                                 style={{
                                     flex: '0 0 200px',
-                                    padding: '0.75rem',
                                     fontSize: '1rem',
-                                    border: '2px solid #e0e0e0',
-                                    borderRadius: '8px',
-                                    outline: 'none',
-                                    transition: 'border-color 0.2s'
                                 }}
-                                onFocus={(e) => e.target.style.borderColor = '#5a67d8'}
-                                onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
                             />
                             <button
                                 type="submit"
                                 disabled={submitting}
                                 className="btn btn-primary"
-                                style={{ padding: '0.75rem 1.5rem' }}
                             >
                                 {submitting ? 'Đang xử lý...' : 'Xác nhận mục tiêu'}
                             </button>
+                            {currentGoal && (
+                                <button
+                                    type="button"
+                                    disabled={generatingStrategy}
+                                    onClick={handleGenerateStrategy}
+                                    className="btn btn-outline"
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                        borderColor: 'var(--primary-color)',
+                                        color: 'var(--primary-color)'
+                                    }}
+                                >
+                                    <Lightbulb size={18} />
+                                    {generatingStrategy ? 'Đang tạo chiến lược...' : 'Đề xuất chiến lược'}
+                                </button>
+                            )}
                         </div>
                         {error && (
-                            <div style={{ marginTop: '0.5rem', color: '#e74c3c', fontSize: '0.9rem' }}>
-                                {error}
+                            <div style={{ marginTop: '0.75rem', color: 'var(--danger-color)', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <Target size={16} /> {error}
                             </div>
                         )}
                     </div>
 
                     {currentGoal && (
                         <div style={{
-                            padding: '1rem',
-                            background: '#f0f4ff',
-                            borderRadius: '8px',
-                            borderLeft: '4px solid #5a67d8'
+                            padding: '1.25rem',
+                            background: 'var(--bg-body)',
+                            borderRadius: 'var(--radius-md)',
+                            borderLeft: '4px solid var(--primary-color)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '1rem'
                         }}>
-                            <div style={{ fontSize: '0.9rem', color: '#555' }}>
-                                <strong>Mục tiêu hiện tại:</strong> {currentGoal.target_average} điểm cho 
+                            <Target size={24} style={{ color: 'var(--primary-color)' }} />
+                            <div style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>
+                                <strong>Mục tiêu hiện tại:</strong> <span style={{ color: 'var(--primary-color)', fontWeight: '700', fontSize: '1.1rem' }}>{currentGoal.target_average}</span> điểm cho
                                 học kỳ {currentGoal.target_semester} lớp {currentGoal.target_grade_level}
                             </div>
                         </div>
@@ -261,46 +378,46 @@ const LearningGoals = () => {
                 <>
                     {/* Line Chart - Trajectory */}
                     <div className="card" style={{ padding: '2rem', marginBottom: '2rem' }}>
-                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.2rem', fontWeight: '600', color: '#2c3e50' }}>
-
+                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <TrendingUp size={24} style={{ color: 'var(--primary-color)' }} />
                             Xu hướng học tập
                         </h3>
-                        
+
                         <div style={{ height: '400px' }}>
                             <ResponsiveContainer width="100%" height="100%">
                                 <LineChart data={lineChartData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-                                    <XAxis dataKey="label" stroke="#888" tick={{ fontSize: 12 }} />
-                                    <YAxis domain={[0, 10]} stroke="#888" tick={{ fontSize: 12 }} />
-                                    <Tooltip 
+                                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" />
+                                    <XAxis dataKey="label" stroke="var(--text-tertiary)" tick={{ fontSize: 12, fill: 'var(--text-secondary)' }} />
+                                    <YAxis domain={[0, 10]} stroke="var(--text-tertiary)" tick={{ fontSize: 12, fill: 'var(--text-secondary)' }} />
+                                    <Tooltip
                                         formatter={(value) => value !== null ? Number(value).toFixed(2) : '-'}
-                                        contentStyle={{ borderRadius: '8px' }}
+                                        contentStyle={{ borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-sm)' }}
                                     />
-                                    <Legend wrapperStyle={{ paddingTop: '1rem' }} />
-                                    
+                                    {/* Legend removed - using custom legend below */}
+
                                     {/* Goal trend line (dashed) - render FIRST so it's below */}
                                     <Line
                                         type="monotone"
                                         dataKey="goal"
                                         name="Xu hướng để đạt mục tiêu"
-                                        stroke="#2ecc71"
+                                        stroke="var(--success-color, #2ecc71)"
                                         strokeWidth={3}
                                         strokeDasharray="6 4"
-                                        dot={{ r: 5 }}
+                                        dot={{ r: 5, fill: 'var(--success-color, #2ecc71)' }}
                                         activeDot={{ r: 7 }}
                                         connectNulls
                                     >
                                         <LabelList dataKey="goal" content={renderLineLabel} />
                                     </Line>
-                                    
+
                                     {/* Current trend line (solid) - render SECOND so it's on top */}
                                     <Line
                                         type="monotone"
                                         dataKey="current"
                                         name="Xu hướng hiện tại"
-                                        stroke="#d32f2f"
+                                        stroke="var(--danger-color)"
                                         strokeWidth={3}
-                                        dot={{ r: 5 }}
+                                        dot={{ r: 5, fill: 'var(--danger-color)' }}
                                         activeDot={{ r: 7 }}
                                         connectNulls
                                     >
@@ -310,13 +427,13 @@ const LearningGoals = () => {
                             </ResponsiveContainer>
                         </div>
 
-                        <div style={{ marginTop: '1rem', display: 'flex', gap: '2rem', fontSize: '0.85rem', color: '#555' }}>
+                        <div style={{ marginTop: '1.5rem', display: 'flex', gap: '2rem', justifyContent: 'center', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ width: '30px', borderTop: '3px solid #d32f2f' }} />
+                                <span style={{ width: '30px', height: '3px', background: 'var(--danger-color)', borderRadius: '2px' }} />
                                 <span>Xu hướng hiện tại</span>
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ width: '30px', borderTop: '3px dashed #2ecc71' }} />
+                                <span style={{ width: '30px', height: '3px', borderTop: '3px dashed var(--success-color, #2ecc71)' }} />
                                 <span>Xu hướng để đạt mục tiêu</span>
                             </div>
                         </div>
@@ -324,26 +441,28 @@ const LearningGoals = () => {
 
                     {/* Bar Chart - Subject Comparison */}
                     <div className="card" style={{ padding: '2rem', marginBottom: '2rem' }}>
-                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.2rem', fontWeight: '600', color: '#2c3e50' }}>
+                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <Award size={24} style={{ color: 'var(--primary-color)' }} />
                             So sánh điểm hiện tại và dự đoán
                         </h3>
-                        
-                        <div style={{ height: '400px' }}>
+
+                        <div style={{ height: '500px' }}>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={barChartData} layout="vertical">
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-                                    <XAxis type="number" domain={[0, 10]} tick={{ fontSize: 11 }} />
-                                    <YAxis type="category" dataKey="subject" width={100} tick={{ fontSize: 11 }} />
-                                    <Tooltip 
+                                <BarChart data={barChartData} layout="vertical" margin={{ left: 20, right: 40 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" horizontal={false} />
+                                    <XAxis type="number" domain={[0, 10]} tick={{ fontSize: 11, fill: 'var(--text-secondary)' }} stroke="var(--text-tertiary)" />
+                                    <YAxis type="category" dataKey="subject" width={120} tick={{ fontSize: 12, fill: 'var(--text-primary)', fontWeight: 500 }} stroke="var(--text-tertiary)" />
+                                    <Tooltip
                                         formatter={(value) => value !== null ? Number(value).toFixed(2) : '-'}
-                                        contentStyle={{ borderRadius: '6px', fontSize: '0.85rem' }}
+                                        contentStyle={{ borderRadius: 'var(--radius-md)', fontSize: '0.9rem', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-sm)' }}
+                                        cursor={{ fill: 'var(--bg-body)' }}
                                     />
-                                    <Legend wrapperStyle={{ paddingTop: '1rem' }} />
-                                    
-                                    <Bar dataKey="current" name="Điểm hiện tại" fill="#d32f2f" radius={[0, 4, 4, 0]} barSize={20}>
+                                    <Legend wrapperStyle={{ paddingTop: '1.5rem' }} align="center" verticalAlign="bottom" iconType="circle" />
+
+                                    <Bar dataKey="current" name="Điểm tương lai của bạn" fill="var(--danger-color)" radius={[0, 4, 4, 0]} barSize={18}>
                                         <LabelList dataKey="current" content={renderBarLabel} />
                                     </Bar>
-                                    <Bar dataKey="predicted" name="Điểm để đạt mục tiêu" fill="#2ecc71" radius={[0, 4, 4, 0]} barSize={20}>
+                                    <Bar dataKey="predicted" name="Điểm để đạt mục tiêu" fill="var(--success-color, #2ecc71)" radius={[0, 4, 4, 0]} barSize={18}>
                                         <LabelList dataKey="predicted" content={renderBarLabel} />
                                     </Bar>
                                 </BarChart>
@@ -351,33 +470,53 @@ const LearningGoals = () => {
                         </div>
                     </div>
 
-                    {/* AI Analysis */}
-                    {currentGoal.ai_analysis && (
+                    {/* AI Strategy Analysis - Only show when explicitly generated */}
+                    {aiStrategy && (
                         <div className="card" style={{
                             padding: '2rem',
-                            background: 'linear-gradient(135deg, #667eea15 0%, #764ba215 100%)',
-                            border: '2px solid #e8eaf6',
-                            borderRadius: '16px'
+                            background: 'linear-gradient(135deg, rgba(var(--primary-rgb), 0.05) 0%, rgba(var(--accent-rgb), 0.05) 100%)',
+                            border: '1px solid var(--primary-light)',
+                            position: 'relative',
+                            overflow: 'hidden'
                         }}>
+                            <div style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: '4px',
+                                height: '100%',
+                                background: 'var(--primary-color)'
+                            }} />
                             <div style={{
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '0.75rem',
+                                gap: '1rem',
                                 marginBottom: '1.5rem'
                             }}>
-                                
-                                <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: '700', color: '#5a67d8' }}>
-                                    Phân tích & Chiến lược
+                                <div style={{
+                                    width: '40px',
+                                    height: '40px',
+                                    borderRadius: '50%',
+                                    background: 'var(--bg-surface)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    boxShadow: 'var(--shadow-sm)'
+                                }}>
+                                    <Lightbulb size={24} style={{ color: 'var(--primary-color)' }} />
+                                </div>
+                                <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '700', color: 'var(--primary-color)' }}>
+                                    Chiến lược học tập được đề xuất
                                 </h3>
                             </div>
-                            
+
                             <div style={{
-                                color: '#34495e',
+                                color: 'var(--text-primary)',
                                 fontSize: '1rem',
                                 lineHeight: 1.8,
                                 whiteSpace: 'pre-wrap'
                             }}>
-                                {currentGoal.ai_analysis}
+                                {aiStrategy}
                             </div>
                         </div>
                     )}

@@ -4,8 +4,7 @@ ML Version Manager - Efficient prediction updates using lazy evaluation
 from sqlalchemy.orm import Session
 from db import models
 from ml import prediction_service
-from services import learning_documents
-from services.vector_store_provider import get_vector_store
+# REMOVED: learning_documents and vector_store_provider imports (no longer used)
 import logging
 
 logger = logging.getLogger("uvicorn.error")

@@ -23,11 +23,11 @@ from core.study_constants import (
     SEMESTER_DISPLAY,
 )
 from ml import prediction_service
-from services import learning_documents
-from services.vector_store_provider import get_vector_store
+# REMOVED: learning_documents and vector_store_provider imports (no longer used)
 from services.chatbot_service import generate_chat_response
 from services.ml_version_manager import ensure_user_predictions_updated
 from utils.session_utils import require_auth, get_current_user
+from core.websocket_manager import emit_study_update, emit_prediction_update
 
 router = APIRouter(prefix="/study", tags=["Study"])
 
@@ -150,6 +150,10 @@ class ScoreDeletePayload(BaseModel):
     scores: List[ScoreDeleteRecord]
 
 
+class GenerateCommentsRequest(BaseModel):
+    active_tab: str | None = None  # Tab đang xem: "Chung", "Khối TN", "Khối XH", "Tổ Hợp", "Từng Môn"
+
+
 def get_db():
     db = database.SessionLocal()
     try:
@@ -158,25 +162,7 @@ def get_db():
         db.close()
 
 
-@router.post("/embeddings/rebuild")
-@require_auth
-def rebuild_all_embeddings(request: Request, db: Session = Depends(get_db)):
-    """Rebuild all score embeddings into the vector store. Protected endpoint (auth required)."""
-    current_user = get_current_user(request)
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-
-    vector_store = get_vector_store()
-    try:
-        # reset vector store then rebuild from DB
-        vector_store.reset()
-    except Exception as exc:
-        # continue to attempt rebuild
-        print(f"Error resetting vector store: {exc}")
-
-    learning_documents.rebuild_all_score_embeddings(db, vector_store)
-    db.commit()
-    return {"message": "Đã xây dựng lại embeddings cho tất cả điểm."}
+# REMOVED: /embeddings/rebuild endpoint (vector store no longer used)
 
 
 def build_scores_payload(db: Session, user_id: int) -> Dict[str, object]:
@@ -386,6 +372,30 @@ def upsert_scores(request: Request, payload: ScoreBulkPayload, db: Session = Dep
         
         db.commit()
         logger.info(f"[BULK] Successfully committed changes for user {user_id}")
+        
+        # Emit realtime update via WebSocket
+        try:
+            import asyncio
+            asyncio.create_task(emit_study_update(user_id, {
+                'type': 'score_update',
+                'updated_count': len(updated_rows),
+                'prediction_count': len(prediction_updates),
+                'timestamp': datetime.utcnow().isoformat()
+            }))
+            asyncio.create_task(emit_prediction_update(user_id, {
+                'predictions': [
+                    {
+                        'subject': p.subject,
+                        'grade_level': p.grade_level,
+                        'semester': p.semester,
+                        'score': p.predicted_score
+                    } for p in prediction_updates
+                ],
+                'timestamp': datetime.utcnow().isoformat()
+            }))
+        except Exception as ws_err:
+            logger.warning(f"Failed to emit WebSocket updates: {ws_err}")
+            
     except HTTPException:
         db.rollback()
         raise
@@ -630,9 +640,12 @@ def summarize_examples(
 
 
 def extract_json_dict(text: str) -> Dict[str, object]:
+    """Extract JSON from LLM response, handling various formats."""
     if not text:
         return {}
     text = text.strip()
+    
+    # Try direct JSON parse first
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
@@ -640,6 +653,20 @@ def extract_json_dict(text: str) -> Dict[str, object]:
     except Exception:
         pass
 
+    # Remove markdown code blocks (```json ... ``` or ``` ... ```)
+    if "```" in text:
+        # Extract content between ```json and ``` or ``` and ```
+        import re
+        match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+        if match:
+            try:
+                parsed = json.loads(match.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+
+    # Find JSON object in text
     match = re.search(r"\{[\s\S]*\}", text)
     if match:
         try:
@@ -648,6 +675,7 @@ def extract_json_dict(text: str) -> Dict[str, object]:
                 return parsed
         except Exception:
             pass
+    
     return {}
 
 
@@ -900,12 +928,22 @@ def build_subject_comments(
 
 @router.post("/generate-slide-comments")
 @require_auth
-async def generate_slide_comments(request: Request, db: Session = Depends(get_db)):
-    """Build deterministic study insights for each DataViz section."""
+async def generate_slide_comments(
+    request: Request,
+    payload: GenerateCommentsRequest,
+    db: Session = Depends(get_db)
+):
+    """Build deterministic study insights for each DataViz section.
+    
+    Now supports targeted analysis for specific tabs to reduce processing time and token usage.
+    """
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập")
 
+    # Get active tab from request
+    active_tab = payload.active_tab or "Chung"
+    
     user_id = current_user.get("user_id")
     user = db.query(models.User).filter(models.User.id == user_id).first()
     current_grade_token = getattr(user, "current_grade", None) if user else None
@@ -1022,24 +1060,32 @@ async def generate_slide_comments(request: Request, db: Session = Depends(get_db
         context_header = [
             f"== {title} ==",
             "",
-            "# KIẾN THỨC NỀN:",
-            edu_context[:1200],  # Reduced to improve response time
+            "# 📚 KIẾN THỨC NỀN VỀ HỆ THỐNG GIÁO DỤC:",
+            edu_context[:2500],  # Increased - more context for deeper analysis
             ""
         ]
         
         if dataset_insights:
             context_header.extend([
-                "# DỮ LIỆU THAM KHẢO:",
-                dataset_insights[:800],  # Reduced to improve response time
+                "",
+                "# 📊 DỮ LIỆU THAM KHẢO & MẶT BẰNG CHUNG:",
+                "BẮT BUỘC: SỬ DỤNG số liệu này để so sánh vị trí học sinh",
+                dataset_insights[:2000],  # Increased - critical for benchmarking
                 ""
             ])
         
         prompt = "\n".join(
             context_header
             + instructions
-            + ["", "# DỮ LIỆU CẦN PHÂN TÍCH:", payload_json, "", "# YÊU CẦU ĐỊNH DẠNG:", "Trả về JSON đúng cấu trúc sau:", schema_json]
+            + ["", "# DỮ LIỆU CẦN PHÂN TÍCH:", payload_json, "", 
+               "# YÊU CẦU ĐỊNH DẠNG:", 
+               "BẮT BUỘC: Trả về ĐÚNG JSON format như sau (KHÔNG thêm text nào khác):", 
+               schema_json,
+               "",
+               "CHÚ Ý: Chỉ trả về JSON object, KHÔNG markdown, KHÔNG giải thích thêm."]
         )
         try:
+            logger.info(f"[AI_ANALYSIS] Calling LLM for: {title}")
             outcome = await generate_chat_response(
                 db=db,
                 user=current_user,
@@ -1047,255 +1093,434 @@ async def generate_slide_comments(request: Request, db: Session = Depends(get_db
                 session_id="__silent__",
             )
             answer = (outcome.get("answer") or "").strip()
-        except Exception:
+            logger.info(f"[AI_ANALYSIS] Got response for {title}, length: {len(answer)}")
+            if not answer:
+                logger.warning(f"[AI_ANALYSIS] Empty response for {title}")
+            else:
+                # Log first 500 chars of response for debugging
+                logger.info(f"[AI_ANALYSIS] Response preview: {answer[:500]}")
+        except Exception as e:
+            logger.error(f"[AI_ANALYSIS] Error calling LLM for {title}: {e}")
             answer = ""
-        return extract_json_dict(answer)
+        result = extract_json_dict(answer)
+        logger.info(f"[AI_ANALYSIS] Extracted JSON for {title}: {list(result.keys()) if result else 'empty'}")
+        return result
 
-    overview_instructions = [
-        "Em là trợ lý học tập AI của EduTwin với kiến thức chuyên sâu về hệ thống giáo dục Việt Nam.",
-        "Xưng hô: Luôn dùng 'em-bạn' (em là AI, bạn là học sinh).",
-        "",
-        "# QUY TẮC VÀNG - BẮT BUỘC TUÂN THỦ:",
-        "1. CHỈ phân tích dữ liệu ĐƯỢC HIỂN THỊ trên chart tương ứng:",
-        "   - LineChart: Chỉ nói về điểm TB theo HỌC KỲ (không nói điểm từng môn)",
-        "   - BarChart: Chỉ nói về điểm TB của TỪNG MÔN cho đến hiện tại (không nói điểm tổng thể)",
-        "   - RadarChart: Chỉ nói về điểm từng môn trong HỌC KỲ HIỆN TẠI",
-        "2. BẮT BUỘC sử dụng KIẾN THỨC GIÁO DỤC và DỮ LIỆU THAM KHẢO (benchmark) để:",
-        "   - So sánh vị trí học sinh với mặt bằng chung",
-        "   - Đưa ra nhận định về mức độ (xuất sắc/giỏi/khá/trung bình/yếu)",
-        "   - Gợi ý cải thiện dựa trên thống kê thực tế",
-        "3. PHÂN TÍCH SÂU - Không chỉ liệt kê số liệu:",
-        "   - Tìm KHÁM PHÁ: Điểm bất thường, xu hướng đặc biệt, mối tương quan",
-        "   - Phân tích NGUYÊN NHÂN - HẬU QUẢ: Tại sao tăng/giảm? Ảnh hưởng gì?",
-        "   - Đưa ra NHẬN ĐỊNH có GIÁ TRỊ: Quan trọng, mới mẻ, hữu ích cho học sinh",
-        "",
-        "# NHIỆM VỤ:",
-        "Viết nhận xét chi tiết cho TỪNG TAB (Chung/Khối XH/Khối TN), mỗi tab có 4 phần: summary, trend, subjects, radar.",
-        "",
-        "# YÊU CẦU CHI TIẾT THEO TAB:",
-        "",
-        "## TAB 'CHUNG' (Tổng quan tất cả môn):",
-        "",
-        "### 1. SUMMARY (Phần mở đầu - 2-3 câu NGẮN GỌN):",
-        "- Dữ liệu: Điểm TB học kỳ hiện tại từ LineChart (điểm cuối cùng past segment) + Benchmark",
-        "- Phân tích:",
-        "  + LẤY điểm TB học kỳ hiện tại TỪ LINECHART (không tính từ Radar)",
-        "  + SO SÁNH benchmark: Top bao nhiêu %? Cao hơn/thấp hơn TB chung bao nhiêu?",
-        "  + Môn NỔI BẬT từ Radar: Môn nào kéo điểm lên/xuống?",
-        "- VÍ DỤ TỐT: 'Ở Học kỳ 1 Lớp 12, điểm TB 7.22 (LineChart) thấp hơn 8% so với TB chung (7.8). Toán (8.9) nổi bật nhưng GDCD (6.2) kéo điểm xuống.'",
-        "- VÍ DỤ TỆ: 'Điểm TB 8.28' (SAI - phải lấy chính xác từ LineChart)",
-        "",
-        "### 2. TREND (LineChart - 2-3 câu):",
-        "- Dữ liệu: Điểm TB theo học kỳ từ LineChart (VD: HK1/10: 7.8, HK2/10: 8.1, HK1/11: 8.5)",
-        "- Phân tích: Xu hướng tăng/giảm/dao động? Học kỳ nào bất thường? Dự đoán future nếu có",
-        "- VÍ DỤ: 'Tăng từ 7.8 (HK1/10) lên 8.5 (HK1/11), bứt phá +0.5 từ HK2/10. Với xu hướng này có thể đạt 8.7+ HK2/11.'",
-        "",
-        "### 3. SUBJECTS (BarChart - 2 câu):",
-        "- Dữ liệu: Điểm TB từng môn (cho đến hiện tại) từ BarChart",
-        "- Phân tích: Nhóm môn nào cao/thấp? Tổ hợp nào phù hợp? Môn nào cần cải thiện?",
-        "- VÍ DỤ: 'Thế mạnh TN: Toán (8.9), Lý (8.7), Hóa (8.5) → A00 phù hợp. GDCD (7.0) cần cải thiện.'",
-        "",
-        "### 4. RADAR (Học kỳ hiện tại - 3-5 câu):",
-        "- Dữ liệu: Điểm từng môn học kỳ hiện tại từ RadarChart",
-        "- Phân tích:",
-        "  + HÌNH DẠNG: Cân đối (tròn đều) hay mất cân bằng (góc nhọn)?",
-        "  + ĐIỂM MẠNH: 2-3 môn cao nhất (>8.5) - thế mạnh cần phát huy",
-        "  + ĐIỂM YẾU: 2-3 môn thấp nhất (<7.0) - cần khắc phục",
-        "  + SO SÁNH NHÓM: Môn TN cao hơn XH? Chênh lệch bao nhiêu?",
-        "  + Độ chênh cao-thấp >2.0 điểm → cần cân bằng phát triển",
-        "- VÍ DỤ: 'Radar mất cân bằng: 3 môn TN (Toán 9.2, Lý 8.9, Hóa 8.7) tạo cụm đỉnh cao, trong khi 3 môn XH (Sử 7.2, Địa 7.0, GDCD 6.8) thấp hơn 2+ điểm. Điều này khẳng định năng khiếu Tự nhiên rõ ràng - hãy tập trung A00/B00 thay vì cố cân bằng tất cả môn.'",
-        "",
-        "## TAB 'KHỐI TN' / 'KHỐI XH':",
-        "- Cấu trúc: Giống tab Chung nhưng CHỈ tập trung vào 6 môn thuộc khối",
-        "- Khác biệt:",
-        "  + SUMMARY: Đánh giá riêng về năng lực khối TN/XH, so sánh với benchmark riêng của khối",
-        "  + TREND: Xu hướng của khối này qua các học kỳ, nhận định về sự phù hợp",
-        "  + SUBJECTS: Phân tích sâu hơn về 6 môn, gợi ý tổ hợp cụ thể (A00/A01 cho TN, C00/D01 cho XH)",
-        "  + Bổ sung: Hướng nghiệp (Kỹ thuật/Y Dược cho TN, Kinh tế/Luật cho XH)",
-        "",
-        "# LƯU Ý QUAN TRỌNG:",
-        "- Xưng hô: em-bạn (em là AI, bạn là học sinh) - KHÔNG thay đổi",
-        "- LUÔN phân biệt điểm thực tế (actual) và dự đoán (predicted)",
-        "- BẮT BUỘC sử dụng BENCHMARK và KIẾN THỨC GIÁO DỤC từ context đã cung cấp",
-        "- Không chỉ LIỆT KÊ số liệu - phải PHÂN TÍCH NGUYÊN NHÂN, HẬU QUẢ, GIÁ TRỊ",
-        "- Tìm KHÁM PHÁ mới, NHẬN ĐỊNH quan trọng - giúp học sinh hiểu rõ bản thân",
-        "- Thang điểm tham khảo: 9.0+ (Xuất sắc), 8.0-8.9 (Giỏi), 6.5-7.9 (Khá), 5.0-6.4 (Trung bình), <5.0 (Yếu)",
-        "- Học trình: HK1 lớp 10 → HK2 lớp 12 (6 học kỳ)",
-        "",
-        "Trả về JSON có mảng 'tabs', mỗi phần tử gồm: id, summary, trend, subjects, radar.",
-    ]
-
-    exam_instructions = [
-        "Em là trợ lý học tập AI của EduTwin với kiến thức về các khối thi đại học và tuyển sinh.",
-        "Xưng hô: em-bạn (em là AI, bạn là học sinh).",
-        "",
-        "# QUY TẮC VÀNG:",
-        "1. CHỈ sử dụng dữ liệu ĐƯỢC HIỂN THỊ trên LineChart và BarChart của từng tổ hợp",
-        "2. BẮT BUỘC kết hợp KIẾN THỨC GIÁO DỤC + DỮ LIỆU BENCHMARK để:",
-        "   - So sánh điểm với điểm chuẩn các trường/ngành",
-        "   - Đánh giá cơ hội đỗ đại học thực tế",
-        "   - Gợi ý ngành học/trường phù hợp cụ thể",
-        "3. PHÂN TÍCH SÂU - không chỉ liệt kê số liệu:",
-        "   - Tìm KHÁM PHÁ: Tổ hợp nào TIỀM NĂNG nhất? Tại sao?",
-        "   - Phân tích NGUYÊN NHÂN - HẬU QUẢ của xu hướng điểm",
-        "   - Đưa ra NHẬN ĐỊNH GIÁ TRỊ cho quyết định chọn tổ hợp",
-        "",
-        "# NHIỆM VỤ:",
-        "1. Viết HEADLINE tổng quát (3-4 câu) - gợi ý khối thi phù hợp NHẤT",
-        "2. Viết nhận xét CHI TIẾT cho TỪNG KHỐI THI (A00, B00, C00, D01)",
-        "",
-        "# YÊU CẦU CHO HEADLINE (3-4 câu):",
-        "- Dữ liệu: So sánh điểm TB của 4 khối từ BarChart + Benchmark điểm chuẩn",
-        "- Phân tích:",
-        "  + XẾP HẠNG: Khối nào TIỀM NĂNG nhất (điểm cao + xu hướng tốt)?",
-        "  + SO SÁNH BENCHMARK: Khối nào có cơ hội ĐỖ ĐẠI HỌC cao (>= điểm chuẩn)?",
-        "  + GỢI Ý CHÍNH: 1-2 khối NÊN ưu tiên + lý do CỤ THỂ",
-        "  + CẢNH BÁO (nếu có): Khối nào KHÔNG nên chọn do điểm yếu",
-        "- VÍ DỤ TỐT: 'Khối A00 là lựa chọn TỐI ƯU với điểm TB 26.1 (Toán 8.9, Lý 8.7, Hóa 8.5) - cao hơn điểm chuẩn trung bình ngành Kỹ thuật 1.5 điểm. Khối B00 cũng tiềm năng (25.8) cho Y Dược. Tránh D01 do Văn chỉ 7.2, thấp hơn yêu cầu Kinh tế 0.8 điểm.'",
-        "",
-        "# YÊU CẦU CHO MỖI KHỐI THI (4-5 câu):",
-        "",
-        "## Câu 1-2: ĐÁNH GIÁ HIỆN TRẠNG + SO SÁNH BENCHMARK:",
-        "- Dữ liệu: Điểm TB 3 môn trong khối (từ BarChart) + Benchmark điểm chuẩn",
-        "- Phân tích:",
-        "  + Tính TỔNG ĐIỂM khối = Tổng điểm 3 môn (VD: Toán 8.9 + Lý 8.7 + Hóa 8.5 = 26.1)",
-        "  + Đánh giá mức độ: Xuất sắc (27+), Tốt (24-27), Khá (20-24), Trung bình (18-20), Yếu (<18)",
-        "  + SO SÁNH điểm chuẩn: Cao hơn/thấp hơn bao nhiêu so với điểm chuẩn TB ngành?",
-        "  + CƠ HỘI ĐỖ: Có thể đỗ trường/ngành nào? (Dựa vào benchmark)",
-        "  + Liên hệ ngành học: Khối này phù hợp với ngành gì? (VD: A00→Kỹ thuật, B00→Y)",
-        "",
-        "## Câu 3: PHÂN TÍCH XU HƯỚNG + DỰ ĐOÁN:",
-        "- Dữ liệu: LineChart hiển thị TỔNG ĐIỂM khối qua các học kỳ (VD: HK1/10: 24.2, HK2/10: 25.1, HK1/11: 26.1)",
-        "- LƯU Ý: LineChart của khối thi hiển thị TỔNG ĐIỂM (không phải trung bình) để dễ so sánh với điểm chuẩn",
-        "- Phân tích:",
-        "  + Xu hướng tăng/giảm? Tốc độ thay đổi? (VD: tăng 1.9 điểm từ HK1/10 đến HK1/11)",
-        "  + NGUYÊN NHÂN: Môn nào đóng góp chính vào sự tăng/giảm?",
-        "  + DỰ ĐOÁN: Với xu hướng này, tổng điểm thi thực tế có thể đạt bao nhiêu?",
-        "  + HẬU QUẢ: Ảnh hưởng đến cơ hội đỗ như thế nào? (VD: Từ 26.1 → dự đoán 27+ → Đủ sức thi ĐHBK)",
-        "",
-        "## Câu 4-5: ĐIỂM MẠNH - ĐIỂM YẾU + KẾT LUẬN:",
-        "- Dữ liệu: Điểm của TỪNG MÔN trong khối (từ BarChart)",
-        "- Phân tích:",
-        "  + MÔN MẠNH: Môn nào GÓP PHẦN lớn vào điểm khối? Nên phát huy như thế nào?",
-        "  + MÔN YẾU: Môn nào KÉO ĐIỂM xuống? Cần cải thiện bao nhiêu để an toàn?",
-        "  + ĐỘ CHÊNH LỆCH: Lớn (>1.5 điểm) → Cần cân bằng; Nhỏ (<0.5) → Đồng đều tốt",
-        "  + KẾT LUẬN: NÊN/KHÔNG NÊN chọn tổ hợp? Lý do CỤ THỂ + Hành động cần làm",
-        "",
-        "# VÍ DỤ TỐT (Khối A00):",
-        "\"Khối A00 là ĐIỂM SÁNG với tổng 26.1 điểm (Toán 8.9, Lý 8.7, Hóa 8.5) - vượt điểm chuẩn Bách Khoa 1.8 điểm, mở ra cơ hội đỗ các ngành Kỹ thuật hàng đầu như ĐHBK Hà Nội (24.5), ĐHQG (25.0). \"",
-        "\"Xu hướng tăng mạnh từ 24.2 (HK1/10) lên 26.1 (HK1/11, +1.9 điểm) cho thấy bạn đang phát triển xuất sắc - nếu duy trì, có thể đạt 27+ vào HK2/12, đủ sức thi các trường TOP. \"",
-        "\"Toán (8.9) và Lý (8.7) là 2 trụ cột vững chắc, nhưng Hóa (8.5) vẫn có thể nâng lên 9.0 để tối ưu điểm khối. \"",
-        "\"KẾT LUẬN: Khối A00 là LỰA CHỌN TỐI ƯU - hãy tập trung ôn luyện Hóa học thêm 0.5 điểm để đảm bảo 27+ điểm tổng, tăng cơ hội đỗ các trường top 5 quốc gia.\"",
-        "",
-        "# VÍ DỤ TỆ (TRÁNH):",
-        "\"Khối A00 có điểm trung bình 8.7. Toán cao nhất, Hóa thấp nhất.\" (Chỉ liệt kê, không so sánh benchmark, không phân tích giá trị)",
-        "",
-        "# KIẾN THỨC VỀ CÁC KHỐI:",
-        "- A00 (Toán-Lý-Hóa): Kỹ thuật, Công nghệ, Kiến trúc, Xây dựng (Điểm chuẩn TB: 22-26)",
-        "- A01 (Toán-Lý-Anh): Kỹ thuật quốc tế, CNTT (Điểm chuẩn TB: 23-27)",
-        "- B00 (Toán-Hóa-Sinh): Y Dược, Sinh học, Nông nghiệp (Điểm chuẩn TB: 24-28)",
-        "- C00 (Văn-Sử-Địa): Khoa học xã hội, Giáo dục, Báo chí (Điểm chuẩn TB: 20-24)",
-        "- D01 (Toán-Văn-Anh): Kinh tế, Ngoại ngữ, Quản trị (Điểm chuẩn TB: 22-26)",
-        "",
-        "# LƯU Ý:",
-        "- Xưng hô: em-bạn (không thay đổi)",
-        "- BẮT BUỘC sử dụng BENCHMARK và KIẾN THỨC GIÁO DỤC từ context",
-        "- Không chỉ LIỆT KÊ - phải PHÂN TÍCH NGUYÊN NHÂN, HẬU QUẢ, GIÁ TRỊ",
-        "- Đưa ra GỢI Ý CỤ THỂ: Trường nào? Ngành gì? Cần cải thiện bao nhiêu?",
-        "",
-        "Trả về JSON có 'headline' (string) và mảng 'blocks' với mỗi phần tử gồm: id, comment.",
-    ]
-
-    subject_instructions = [
-        "Em là trợ lý học tập AI của EduTwin.",
-        "Xưng hô: em-bạn (em là AI, bạn là học sinh).",
-        "",
-        "# NHIỆM VỤ:",
-        "Viết nhận xét NGẮN GỌN (1-2 câu) cho TỪNG MÔN HỌC dựa trên LineChart (xu hướng qua các học kỳ)",
-        "",
-        "# DỮ LIỆU:",
-        "- LineChart: Điểm TB của môn qua các học kỳ (VD: HK1/10: 7.5, HK2/10: 7.8, HK1/11: 8.2, ...)",
-        "- Actual_examples: Điểm thực tế đã có",
-        "- Future_examples: Điểm dự đoán (nếu có)",
-        "",
-        "# CẤU TRÚC NHẬN XÉT (1-2 câu NGẮN GỌN):",
-        "",
-        "## Câu 1: XU HƯỚNG + PHÂN TÍCH:",
-        "- Mô tả xu hướng từ LineChart (tăng đều/giảm/dao động/ổn định)",
-        "- Phân tích điểm NỔI BẬT: Học kỳ nào tăng/giảm nhiều nhất? Nguyên nhân có thể?",
-        "- So sánh: Điểm hiện tại vs điểm đầu - thay đổi bao nhiêu?",
-        "",
-        "## Câu 2 (TÙY CHỌN): NHẬN ĐỊNH + GỢI Ý:",
-        "- Nếu xu hướng TỐT (tăng đều): Khích lệ duy trì",
-        "- Nếu xu hướng XẤU (giảm hoặc dao động): Gợi ý cải thiện NGẮN GỌN",
-        "- Nếu có dự đoán future: Nhận xét về điểm dự đoán",
-        "",
-        "# VÍ DỤ TỐT:",
-        "- \"Toán tăng ổn định từ 7.5 (HK1/10) lên 8.7 (HK1/11), đặc biệt bứt phá +0.6 điểm ở HK1/11 - có thể do thích nghi tốt chương trình lớp 11. Duy trì phương pháp này, bạn có thể đạt 9.0+ vào cuối năm.\"",
-        "- \"Hóa học dao động 7.2-7.8 qua 4 học kỳ, chưa có xu hướng rõ ràng. Hãy xem lại phương pháp học để tạo bước tiến đột phá.\"",
-        "- \"GDCD ổn định quanh 7.0 (±0.2) - đủ qua môn nhưng chưa nổi bật. Tăng thêm 0.5-1.0 điểm sẽ cải thiện đáng kể GPA chung.\"",
-        "",
-        "# VÍ DỤ TỆ (TRÁNH):",
-        "- \"Toán giữ trung bình 8.5 và đang cải thiện tới HK1 lớp 11.\" (Quá chung chung, không phân tích)",
-        "- \"Bạn đang học tốt môn Toán.\" (Không có số liệu, không có giá trị)",
-        "",
-        "# LƯU Ý:",
-        "- NGẮN GỌN: Chỉ 1-2 câu, tập trung vào PHÂN TÍCH xu hướng từ LineChart",
-        "- PHẢI nêu rõ điểm là thực tế (actual) hay dự đoán (predicted)",
-        "- SỬ DỤNG số liệu cụ thể từ chart_data.linechart",
-        "- PHÂN TÍCH NGUYÊN NHÂN khi có biến động bất thường",
-        "- KHÔNG chỉ mô tả - phải có NHẬN ĐỊNH có giá trị",
-        "",
-        "Trả về JSON có mảng 'subjects' với mỗi phần tử gồm: id, comment.",
-    ]
-
-    overview_schema = {
-        "tabs": [
-            {
-                "id": "Chung",
-                "summary": "",
-                "trend": "",
-                "subjects": "",
-                "radar": "",
-            }
+    # Alias for single chart analysis
+    ask_llm_for_chart = ask_llm_for_group
+    
+    def build_summary_instructions() -> List[str]:
+        """Instructions for SUMMARY analysis - focuses on current position vs benchmark."""
+        return [
+            "Bạn là trợ lý học tập AI của EduTwin.",
+            "Xưng hô: mình-bạn (mình là AI, bạn là học sinh).",
+            "",
+            "# NHIỆM VỤ: Viết SUMMARY (Tổng quan 4-5 câu)",
+            "",
+            "# DỮ LIỆU NHẬN ĐƯỢC:",
+            "- linechart: Điểm TB qua các học kỳ",
+            "- current_term: Học kỳ hiện tại",
+            "- Benchmark từ 'DỮ LIỆU THAM KHẢO': median, p75, p90",
+            "",
+            "# CẤU TRÚC (4-5 câu):",
+            "",
+            "CÂU 1: VỊ TRÍ HIỆN TẠI + SO SÁNH BENCHMARK",
+            "  - Lấy điểm TB học kỳ hiện tại: linechart → phần tử CUỐI có type='past' → field 'average'",
+            "  - So sánh với benchmark: median, p75, p90",
+            "  - Đánh giá: Top bao nhiêu %? Mức độ nào (Xuất sắc/Giỏi/Khá/TB)?",
+            "  VD: 'Ở HK1/12, Phát Thành đạt 7.89 điểm (Khá), nằm giữa median (7.44) và p75 (8.5),",
+            "       cao hơn 50% học sinh nhưng cần +0.61 điểm để vào Top 25%.'",
+            "",
+            "CÂU 2-3: PHÂN TÍCH NGUYÊN NHÂN",
+            "  - Khoảng cách giữa cao nhất - thấp nhất?",
+            "  - Ý nghĩa: Năng khiếu? Mất cân bằng?",
+            "",
+            "CÂU 4-5: HẬU QUẢ & HÀNH ĐỘNG",
+            "  - Cơ hội đỗ đại học với vị trí này?",
+            "  - Cần cải thiện bao nhiêu để đạt mục tiêu?",
+            "  - Gợi ý chiến lược cụ thể",
+            "",
+            "QUAN TRỌNG:",
+            "- PHẢI lấy điểm từ linechart, KHÔNG tự tính",
+            "- PHẢI so sánh với benchmark từ DỮ LIỆU THAM KHẢO",
+            "- Nêu rõ nguồn: 'LineChart cho thấy...', 'Theo benchmark...'",
+            "",
+            "Trả về JSON: {\"summary\": \"...\"}"
         ]
-    }
-    exam_schema = {
-        "headline": "",
-        "blocks": [
-            {
-                "id": "A00",
-                "comment": "",
-            }
-        ],
-    }
-    subject_schema = {
-        "subjects": [
-            {
-                "id": "Toan",
-                "comment": "",
-            }
+    
+    def build_trend_instructions() -> List[str]:
+        """Instructions for TREND analysis - focuses on changes over time."""
+        return [
+            "Bạn là trợ lý học tập AI của EduTwin.",
+            "Xưng hô: mình-bạn (mình là AI, bạn là học sinh).",
+            "",
+            "# NHIỆM VỤ: Viết TREND (Xu hướng 4-5 câu)",
+            "",
+            "# DỮ LIỆU NHẬN ĐƯỢC:",
+            "- linechart: Điểm TB qua các học kỳ (HK1/10 → HK2/10 → HK1/11 → ...)",
+            "- Mỗi phần tử có: term, average, type (past/future)",
+            "",
+            "# CẤU TRÚC (4-5 câu):",
+            "",
+            "CÂU 1: MÔ TẢ XU HƯỚNG TỔNG THỂ",
+            "  - Tăng/Giảm/Dao động/Ổn định? Tốc độ?",
+            "  - Số liệu cụ thể: HK1/10 (X) → HK2/10 (Y) → HK1/11 (Z)",
+            "  VD: 'LineChart cho thấy xu hướng TĂNG ổn định từ 7.2 (HK1/10) lên 7.89 (HK1/12),",
+            "       tốc độ trung bình +0.15 điểm/kỳ.'",
+            "",
+            "CÂU 2-3: PHÂN TÍCH BẤT THƯỜNG & NGUYÊN NHÂN",
+            "  - Học kỳ nào có biến động LỚN (tăng/giảm >0.3)?",
+            "  - TẠI SAO? Nguyên nhân có thể?",
+            "  - So với xu hướng chung - Bình thường hay bất thường?",
+            "  VD: 'Đặc biệt, HK1/11 giảm 0.5 điểm - BẤT THƯỜNG vì đây là giai đoạn cơ bản.",
+            "       Có thể do thay đổi phương pháp học hoặc tâm lý.'",
+            "",
+            "CÂU 4-5: DỰ ĐOÁN & HÀNH ĐỘNG",
+            "  - Nếu có type='future': Đánh giá tính khả thi",
+            "  - Nếu duy trì xu hướng, kết quả ra sao?",
+            "  - Cần làm gì để cải thiện/duy trì?",
+            "",
+            "QUAN TRỌNG:",
+            "- CHỈ phân tích dữ liệu trong linechart",
+            "- Phân biệt rõ past (thực tế) và future (dự đoán)",
+            "- Tìm QUY LUẬT, không chỉ mô tả",
+            "",
+            "Trả về JSON: {\"trend\": \"...\"}"
         ]
-    }
+    
+    def build_bars_instructions() -> List[str]:
+        """Instructions for SUBJECTS analysis - focuses on comparing subjects."""
+        return [
+            "Bạn là trợ lý học tập AI của EduTwin.",
+            "Xưng hô: mình-bạn (mình là AI, bạn là học sinh).",
+            "",
+            "# NHIỆM VỤ: Viết SUBJECTS (So sánh môn 4-5 câu)",
+            "",
+            "# DỮ LIỆU NHẬN ĐƯỢC:",
+            "- barchart: Điểm TB từng môn (cho đến hiện tại)",
+            "- Mỗi phần tử có: subject (tên môn), average (điểm TB)",
+            "",
+            "# CẤU TRÚC (4-5 câu):",
+            "",
+            "CÂU 1-2: PHÂN LOẠI NHÓM MÔN",
+            "  - Nhóm MẠNH: Các môn cao nhất?",
+            "  - Nhóm YẾU: Các môn thấp nhất?",
+            "  - Độ chênh lệch giữa các nhóm?",
+            "  VD: 'BarChart cho thấy SỰ PHÂN TÁCH: Khối TN tạo \"tầng cao\" (Toán 8.9, Lý 8.7, Hóa 8.5),",
+            "       trong khi khối XH ở \"tầng thấp\" (Sử 7.1, Địa 6.9, GDCD 6.5). Chênh lệch 1.8-2.4 điểm.'",
+            "",
+            "CÂU 3-4: Ý NGHĨA & GỢI Ý",
+            "  - Tổ hợp nào PHÙ HỢP nhất?",
+            "  - Môn nào cần cải thiện? Cần tăng bao nhiêu?",
+            "  - Chiến lược tối ưu?",
+            "  VD: 'Đây là TÍN HIỆU rõ về năng khiếu TN - không phải điểm yếu XH!",
+            "       Thay vì cân bằng (sai lầm), hãy tập trung A00/B00. Đẩy 3 môn TN lên 9.0+",
+            "       → 27+ điểm tổng → đủ thi ĐHBK, ĐHQG.'",
+            "",
+            "QUAN TRỌNG:",
+            "- CHỈ phân tích dữ liệu trong barchart",
+            "- Tìm NHÓM, QUY LUẬT, không chỉ liệt kê",
+            "- Liên hệ với TỔ HỢP thi đại học",
+            "",
+            "Trả về JSON: {\"subjects\": \"...\"}"
+        ]
+    
+    def build_radar_instructions() -> List[str]:
+        """Instructions for RADAR analysis - focuses on current term distribution."""
+        return [
+            "Bạn là trợ lý học tập AI của EduTwin.",
+            "Xưng hô: mình-bạn (mình là AI, bạn là học sinh).",
+            "",
+            "# NHIỆM VỤ: Viết RADAR (Phân bổ điểm 4-5 câu)",
+            "",
+            "# DỮ LIỆU NHẬN ĐƯỢC:",
+            "- radar: Điểm từng môn trong HỌC KỲ HIỆN TẠI",
+            "- current_term: Học kỳ đang phân tích",
+            "- Mỗi phần tử có: subject (tên môn), score (điểm)",
+            "",
+            "# CẤU TRÚC (4-5 câu):",
+            "",
+            "CÂU 1: MÔ TẢ HÌNH DẠNG RADAR",
+            "  - Cân đối (tròn đều) hay mất cân bằng (góc nhọn)?",
+            "  - Độ chênh cao-thấp?",
+            "  VD: 'Radar HK1/12 cho thấy HÌNH DẠNG MẤT CÂN BẰNG với độ chênh 2.4 điểm.'",
+            "",
+            "CÂU 2: PHÂN TÍCH CỤM/NHÓM",
+            "  - Môn nào tạo cụm ĐỈNH cao?",
+            "  - Môn nào tạo cụm ĐÁY thấp?",
+            "  - Có quy luật? (TN cao hơn XH? Tính toán cao hơn ghi nhớ?)",
+            "  VD: '3 môn TN (Toán 8.9, Lý 8.7, Hóa 8.5) tạo \"cụm đỉnh\" ở góc phải,",
+            "       trong khi 3 môn XH (Sử 7.1, Địa 6.9, GDCD 6.5) tạo \"cụm đáy\" ở góc trái.'",
+            "",
+            "CÂU 3-4: TƯƠNG QUAN & NGUYÊN NHÂN",
+            "  - Tại sao các môn này cùng cao/thấp?",
+            "  - Liên quan NĂNG KHIẾU? Phương pháp học? Sở thích?",
+            "  - Nhất quán với xu hướng từ LineChart không?",
+            "",
+            "CÂU 5: KẾT LUẬN & CHIẾN LƯỢC",
+            "  - Radar này cho thấy gì về BẢN THÂN học sinh?",
+            "  - Nên PHÁT HUY gì? KHẮC PHỤC gì?",
+            "  - Chiến lược tối ưu cho tương lai?",
+            "  VD: 'Radar khẳng định năng khiếu TN rõ ràng. Thay vì cố cân bằng tất cả,",
+            "       hãy ĐẨY MẠNH 3 môn TN lên 9.0+ trong 2 tháng tới để tối ưu A00/B00.'",
+            "",
+            "QUAN TRỌNG:",
+            "- CHỈ phân tích dữ liệu trong radar (học kỳ hiện tại)",
+            "- Tìm INSIGHT, TƯƠNG QUAN, không chỉ mô tả",
+            "- Giải thích NGUYÊN NHÂN, HẬU QUẢ, GIÁ TRỊ",
+            "",
+            "Trả về JSON: {\"radar\": \"...\"}"
+        ]
 
-    overview_response = await ask_llm_for_group(
-        "Nhận xét tổng quan",
-        overview_instructions,
-        {"meta": shared_meta, "tabs": overview_payload},
-        overview_schema,
-    )
-    exam_response = await ask_llm_for_group(
-        "Đánh giá khối thi",
-        exam_instructions,
-        {"meta": shared_meta, **exam_blocks_payload},
-        exam_schema,
-    )
-    subject_response = await ask_llm_for_group(
-        "Nhận xét từng môn",
-        subject_instructions,
-        {"meta": shared_meta, "subjects": subject_payload},
-        subject_schema,
-    )
+    def build_exam_blocks_instructions() -> List[str]:
+        """Instructions for EXAM BLOCKS tab - analyzing combined subject blocks for university entrance."""
+        return [
+            "Bạn là trợ lý học tập AI của EduTwin.",
+            "Xưng hô: mình-bạn (mình là AI, bạn là học sinh).",
+            "",
+            "# NHIỆM VỤ: Phân tích TOÀN DIỆN từng KHỐI THI ĐẠI HỌC",
+            "",
+            "# DỮ LIỆU NHẬN ĐƯỢC:",
+            "- meta: current_grade_label (học kỳ hiện tại), actual_scores_count",
+            "- blocks: Danh sách các khối (A00, B00, C00, D01)",
+            "- Mỗi block có:",
+            "  * subjects: 3 môn trong khối",
+            "  * linechart: [{term, total, type='past'/'future'}] - TỔNG ĐIỂM 3 môn qua các kỳ",
+            "  * barchart: [{subject, average}] - Điểm TB từng môn (đến hiện tại)",
+            "- DỮ LIỆU THAM KHẢO (benchmark): median, p75, p90 của khối thi",
+            "- KIẾN THỨC: Điểm chuẩn các trường, yêu cầu thi đại học",
+            "",
+            "# CẤU TRÚC PHÂN TÍCH CHO MỖI KHỐI (5-8 câu):",
+            "",
+            "## PHẦN 1: XU HƯỚNG & VỊ TRÍ HIỆN TẠI (3-4 câu)",
+            "Từ LINECHART - Phân tích tổng điểm khối qua các kỳ:",
+            "",
+            "CÂU 1: XU HƯỚNG QUÁ KHỨ",
+            "  - Tổng điểm thay đổi như thế nào từ HK1/10 đến hiện tại?",
+            "  - Ổn định/Tăng/Giảm? Biến động bất thường ở kỳ nào?",
+            "  VD: 'Khối A00 có xu hướng tăng ổn định từ 22.5 (HK1/10) lên 24.8 (HK1/11),",
+            "       nhưng giảm xuống 23.2 ở HK2/11 (bất thường - có thể do áp lực thi cuối năm).'",
+            "",
+            "CÂU 2: VỊ TRÍ HIỆN TẠI + BENCHMARK",
+            "  - Lấy điểm HIỆN TẠI: linechart → phần tử CUỐI có type='past' → field 'total'",
+            "  - So sánh với benchmark: median, p75, p90",
+            "  - Đánh giá: Top bao nhiêu %? Đủ điều kiện trường nào?",
+            "  VD: 'Hiện tại đạt 23.2 điểm (HK2/11), cao hơn median (21.5) nhưng thấp hơn p75 (24.0),",
+            "       xếp khoảng Top 35-50%. Điểm này CHỈ ĐỦ vào các trường khu vực (ĐH Đà Nẵng ~22),",
+            "       CHƯA ĐỦ cho các trường top (ĐHBK Hà Nội ~25, ĐHQG HCM ~26).'",
+            "",
+            "CÂU 3-4: NGUYÊN NHÂN & ĐÁNH GIÁ",
+            "  - Từ BARCHART: Môn nào là CHÂN KIỀNG? Môn nào KÉO LÙI?",
+            "  - Chênh lệch giữa các môn? Ý nghĩa?",
+            "  - Tiềm năng: Dễ cải thiện hay khó?",
+            "  VD: 'Toán (8.5) và Lý (8.2) rất tốt, nhưng Hóa chỉ 6.5 - đây là ĐIỂM YẾU kéo tổng xuống.",
+            "       Chênh 2.0 điểm giữa Toán-Hóa cho thấy NĂNG LỰC không đồng đều.",
+            "       TIN TỐT: Hóa dễ cải thiện hơn Toán - nếu tăng Hóa lên 7.5 → tổng tăng 1.0 điểm!'",
+            "",
+            "## PHẦN 2: DỰ ĐOÁN TƯƠNG LAI & CHIẾN LƯỢC (4-5 câu)",
+            "Từ LINECHART - Phân tích điểm dự đoán:",
+            "",
+            "CÂU 5: DỰ ĐOÁN & ĐÁNH GIÁ",
+            "  - Nếu có type='future' trong linechart: Lấy điểm dự đoán",
+            "  - So với hiện tại: Tăng/Giảm? Bao nhiêu điểm?",
+            "  - Khả thi không? Dựa vào xu hướng quá khứ",
+            "  VD: 'Dự đoán HK1/12 đạt 26.0 điểm (+2.8 so với hiện tại) - khá LẠC QUAN.",
+            "       Tuy nhiên, dựa vào xu hướng tăng +0.5 điểm/kỳ trong quá khứ,",
+            "       kịch bản THỰC TẾ hơn là 24.0-24.5 điểm nếu giữ nhịp độ.'",
+            "",
+            "CÂU 6: CƠ HỘI & KHUYẾN NGHỊ TRƯỜNG",
+            "  - Với điểm dự đoán, đủ điều kiện trường nào?",
+            "  - So với benchmark: Vượt p75? p90?",
+            "  - Gợi ý trường phù hợp (từ KIẾN THỨC)",
+            "  VD: 'Nếu đạt 26.0, vượt p90 (25.5) → Top 10%, ĐỦ ĐIỂM vào ĐHBK Hà Nội (~25),",
+            "       ĐHQG HCM (~26), thậm chí xét thử ngành Cơ khí ĐHBK (~24.5).",
+            "       Nhưng nếu chỉ đạt 24.0 → chỉ ở mức p75, CẦN DỰ PHÒNG với ĐH Bách Khoa Đà Nẵng (~23).'",
+            "",
+            "CÂU 7: LỘ TRÌNH CẢI THIỆN CỤ THỂ",
+            "  - Từ BARCHART: Môn nào cần ưu tiên?",
+            "  - Tăng bao nhiêu điểm ở môn nào để đạt mục tiêu?",
+            "  - Phương pháp cụ thể (từ KIẾN THỨC)",
+            "  VD: 'ƯU TIÊN TUYỆT ĐỐI: Hóa học (6.5 → 7.5 = +1.0 tổng).",
+            "       Hành động: Ôn lại kiến thức lớp 11 (oxi hóa khử, cân bằng), làm 200 bài tập phản ứng,",
+            "       học nhóm với bạn giỏi Hóa. KHÔNG LÀM NHIỀU Toán (đã 8.5) - tập trung vào điểm yếu!'",
+            "",
+            "CÂU 8: TÂM LÝ & ĐỘNG LỰC",
+            "  - Đánh giá TIỀM NĂNG dựa vào quá khứ",
+            "  - Khích lệ hoặc cảnh báo",
+            "  - Lời khuyên tinh thần",
+            "  VD: 'Xu hướng quá khứ (+2.3 trong 3 kỳ) chứng tỏ bạn CÓ KHẢ NĂNG và NGHỊ LỰC.",
+            "       Điểm giảm ở HK2/11 là NHẤT THỜI - đừng nản! Nếu tiếp tục phương pháp học đúng,",
+            "       26.0 điểm HOÀN TOÀN KHẢ THI. Hãy tin vào bản thân!'",
+            "",
+            "# QUY TẮC BẮT BUỘC:",
+            "- CHỈ dùng số liệu từ linechart (field 'total') và barchart (field 'average')",
+            "- PHẢI so sánh với benchmark (median, p75, p90)",
+            "- PHẢI gợi ý trường cụ thể từ KIẾN THỨC",
+            "- PHẢI phân tích CẢ quá khứ VÀ tương lai",
+            "- Ngôn ngữ: Thân thiện, động viên, CỤ THỂ",
+            "",
+            "# YÊU CẦU TỔNG QUAN (headline):",
+            "Tổng hợp 2-3 câu về:",
+            "- Khối nào PHÙ HỢP NHẤT dựa vào điểm hiện tại + xu hướng?",
+            "- Khối nào có TIỀM NĂNG cao nhất (dự đoán tốt)?",
+            "- Khuyến nghị lựa chọn",
+            "",
+            "Định dạng: {\"headline\": \"...\", \"blocks\": [{\"id\": \"A00\", \"comment\": \"...\"}]}",
+        ]
+
+    def build_individual_subjects_instructions() -> List[str]:
+        """Instructions for INDIVIDUAL SUBJECTS tab - analyzing each subject separately."""
+        return [
+            "Bạn là trợ lý học tập AI của EduTwin.",
+            "Xưng hô: mình-bạn (mình là AI, bạn là học sinh).",
+            "",
+            "# NHIỆM VỤ: Phân tích TỪNG MÔN HỌC trong BỐI CẢNH TỔNG THỂ",
+            "",
+            "# DỮ LIỆU NHẬN ĐƯỢC:",
+            "- subjects: Danh sách 9 môn (Toán, Văn, Anh, Lý, Hóa, Sinh, Sử, Địa, GDCD)",
+            "- Mỗi môn có:",
+            "  * average: Điểm TB tổng (từ HK1/10 đến hiện tại)",
+            "  * chart_data với linechart: Xu hướng điểm qua các kỳ",
+            "  * actual_examples: Ví dụ điểm thực tế",
+            "  * future_examples: Ví dụ điểm dự đoán",
+            "",
+            "# CẤU TRÚC PHÂN TÍCH CHO MỖI MÔN (4-5 câu):",
+            "",
+            "1. VỊ TRÍ SO VỚI CÁC MÔN KHÁC:",
+            "   - Dẫn đầu/Trung bình/Yếu nhất trong 9 môn?",
+            "   - Điểm TB cụ thể là bao nhiêu?",
+            "",
+            "2. XU HƯỚNG:",
+            "   - Tăng/Giảm/Ổn định qua các học kỳ?",
+            "   - Tốc độ thay đổi?",
+            "",
+            "3. TIỀM NĂNG & DỰ ĐOÁN:",
+            "   - Điểm dự đoán tương lai (nếu có)?",
+            "   - So sánh tiềm năng với các môn khác?",
+            "",
+            "4. KHUYẾN NGHỊ:",
+            "   - Nên tập trung cải thiện hay duy trì?",
+            "   - Vai trò trong tổ hợp thi (A00/B00/C00/D01)?",
+            "   - Hành động cụ thể?",
+            "",
+            "# QUY TẮC:",
+            "- So sánh với 8 môn còn lại",
+            "- Dùng SỐ LIỆU cụ thể từ dữ liệu",
+            "- Mỗi môn 4-5 câu, ngắn gọn",
+            "- Gắn với tổ hợp thi đại học",
+            "",
+            "# FORMAT RESPONSE - QUAN TRỌNG:",
+            "BẮT BUỘC trả về JSON object theo format SAU, KHÔNG có markdown code block, KHÔNG có text giải thích thêm:",
+            "",
+            "{",
+            '  "subjects": [',
+            '    {"id": "Toan", "comment": "Toán đang dẫn đầu với 8.5 điểm - cao nhất trong 9 môn. Xu hướng tăng đều +0.3 điểm/kỳ, ổn định hơn các môn khác. Dự đoán HK1/12 đạt 9.0 - tiềm năng cao. Là môn chung của 4 tổ hợp, nên duy trì ở mức 8.5-9.0 và tập trung cải thiện môn yếu hơn."},',
+            '    {"id": "Ngu van", "comment": "..."},',
+            '    {"id": "Tieng Anh", "comment": "..."}',
+            "  ]",
+            "}",
+            "",
+            "CHỈ TRẢ VỀ JSON OBJECT, KHÔNG THÊM BẤT KỲ TEXT NÀO KHÁC!",
+        ]
+   
+    
+
+    # ==========================================
+    # OPTIMIZED: Only analyze the active tab
+    # ==========================================
+    
+    overview_response = {}
+    exam_response = {}
+    subject_response = {}
+    
+    # Determine which analysis to run based on active_tab
+    if active_tab in ["Chung", "Khối TN", "Khối XH"]:
+        # IMPROVED: Separate requests for each chart type to avoid confusion
+        selected_tab_data = overview_chart_data.get(active_tab)
+        if selected_tab_data:
+            # Request 1: SUMMARY - Only linechart (current score) + benchmark
+            summary_response = await ask_llm_for_chart(
+                f"Tổng quan - {active_tab}",
+                build_summary_instructions(),
+                {
+                    "meta": shared_meta,
+                    "tab": active_tab,
+                    "linechart": selected_tab_data["linechart"],
+                    "current_term": selected_tab_data["current_term"],
+                },
+                {"summary": ""}
+            )
+            
+            # Request 2: TREND - Only linechart (full timeline)
+            trend_response = await ask_llm_for_chart(
+                f"Xu hướng - {active_tab}",
+                build_trend_instructions(),
+                {
+                    "meta": shared_meta,
+                    "tab": active_tab,
+                    "linechart": selected_tab_data["linechart"],
+                },
+                {"trend": ""}
+            )
+            
+            # Request 3: SUBJECTS - Only barchart (subject averages)
+            subjects_response = await ask_llm_for_chart(
+                f"So sánh môn - {active_tab}",
+                build_bars_instructions(),
+                {
+                    "meta": shared_meta,
+                    "tab": active_tab,
+                    "barchart": selected_tab_data["barchart"],
+                },
+                {"subjects": ""}
+            )
+            
+            # Request 4: RADAR - Only radar (current term)
+            radar_response = await ask_llm_for_chart(
+                f"Phân bổ điểm - {active_tab}",
+                build_radar_instructions(),
+                {
+                    "meta": shared_meta,
+                    "tab": active_tab,
+                    "radar": selected_tab_data["radar"],
+                    "current_term": selected_tab_data["current_term"],
+                },
+                {"radar": ""}
+            )
+            
+            # Combine results
+            overview_response = {
+                "tabs": [{
+                    "id": active_tab,
+                    "summary": summary_response.get("summary", ""),
+                    "trend": trend_response.get("trend", ""),
+                    "subjects": subjects_response.get("subjects", ""),
+                    "radar": radar_response.get("radar", ""),
+                }]
+            }
+    elif active_tab == "Tổ Hợp":
+        # Analyze exam blocks
+        exam_instructions = build_exam_blocks_instructions()
+        exam_schema = {"headline": "", "blocks": [{"id": "", "comment": ""}]}
+        exam_response = await ask_llm_for_group(
+            "Đánh giá khối thi",
+            exam_instructions,
+            {"meta": shared_meta, **exam_blocks_payload},
+            exam_schema,
+        )
+    elif active_tab == "Từng Môn":
+        # Analyze individual subjects
+        logger.info(f"[AI_ANALYSIS] Processing tab: Từng Môn, subjects count: {len(subject_payload)}")
+        subject_instructions = build_individual_subjects_instructions()
+        subject_schema = {"subjects": [{"id": "", "comment": ""}]}
+        subject_response = await ask_llm_for_group(
+            "Nhận xét từng môn",
+            subject_instructions,
+            {"meta": shared_meta, "subjects": subject_payload},
+            subject_schema,
+        )
+        logger.info(f"[AI_ANALYSIS] Got subject_response with keys: {list(subject_response.keys()) if subject_response else 'empty'}")
+    # Note: If active_tab is unknown, all responses remain empty (default behavior)
 
     ai_response = {
         "overview_tabs": overview_response.get("tabs"),

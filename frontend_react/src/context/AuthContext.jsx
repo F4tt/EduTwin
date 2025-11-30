@@ -44,9 +44,31 @@ export const AuthProvider = ({ children }) => {
                 localStorage.setItem('user', JSON.stringify(merged));
                 return { success: true, user: userData };
             }
-            return { success: false, message: 'Login failed' };
+            return { success: false, message: 'Đăng nhập thất bại. Vui lòng thử lại.' };
         } catch (error) {
-            return { success: false, message: error.response?.data?.detail || 'Login error' };
+            // Convert backend error to user-friendly Vietnamese message
+            let message = 'Đã xảy ra lỗi khi đăng nhập. Vui lòng thử lại.';
+            
+            if (error.response) {
+                const status = error.response.status;
+                const detail = error.response.data?.detail || '';
+                
+                if (status === 401 || detail.includes('Invalid') || detail.includes('incorrect')) {
+                    message = 'Tài khoản hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.';
+                } else if (status === 404) {
+                    message = 'Tài khoản không tồn tại.';
+                } else if (status >= 500) {
+                    message = 'Máy chủ đang bận. Vui lòng thử lại sau.';
+                } else if (detail.includes('network') || error.message.includes('network')) {
+                    message = 'Lỗi kết nối mạng. Vui lòng kiểm tra kết nối internet.';
+                }
+            } else if (error.message.includes('timeout')) {
+                message = 'Kết nối quá chậm. Vui lòng thử lại.';
+            } else if (error.message.includes('Network Error')) {
+                message = 'Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.';
+            }
+            
+            return { success: false, message };
         }
     };
 
@@ -55,11 +77,52 @@ export const AuthProvider = ({ children }) => {
             await axiosClient.post('/auth/register', data);
             return { success: true };
         } catch (error) {
-            return { success: false, message: error.response?.data?.detail || 'Register error' };
+            // Convert backend error to user-friendly Vietnamese message
+            let message = 'Đã xảy ra lỗi khi đăng ký. Vui lòng thử lại.';
+            
+            if (error.response) {
+                const status = error.response.status;
+                const detail = error.response.data?.detail || '';
+                
+                if (status === 409 || detail.includes('already exists') || detail.includes('đã tồn tại')) {
+                    message = 'Tên đăng nhập đã tồn tại. Vui lòng chọn tên khác.';
+                } else if (status === 400) {
+                    if (detail.includes('password')) {
+                        message = 'Mật khẩu không hợp lệ. Vui lòng nhập mật khẩu mạnh hơn.';
+                    } else if (detail.includes('username')) {
+                        message = 'Tên đăng nhập không hợp lệ. Chỉ dùng chữ cái, số và dấu gạch dưới.';
+                    } else {
+                        message = 'Thông tin đăng ký không hợp lệ. Vui lòng kiểm tra lại.';
+                    }
+                } else if (status >= 500) {
+                    message = 'Máy chủ đang bận. Vui lòng thử lại sau.';
+                }
+            } else if (error.message.includes('timeout')) {
+                message = 'Kết nối quá chậm. Vui lòng thử lại.';
+            } else if (error.message.includes('Network Error')) {
+                message = 'Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.';
+            }
+            
+            return { success: false, message };
         }
     };
 
     const logout = () => {
+        // Clear AI insights cache for this user before logout
+        const username = user?.username;
+        if (username && typeof window !== 'undefined' && window.localStorage) {
+            try {
+                // Clear DataViz AI comments
+                const aiCacheKey = `dataviz_ai_comments_${username}`;
+                window.localStorage.removeItem(aiCacheKey);
+                
+                // NOTE: Learning Goals AI strategy is NOT cleared on logout
+                // to preserve strategy even when user logs out
+            } catch (e) {
+                console.error('Failed to clear AI cache on logout:', e);
+            }
+        }
+        
         setUser(null);
         localStorage.removeItem('user');
         // inform backend

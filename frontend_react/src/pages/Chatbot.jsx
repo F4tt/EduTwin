@@ -3,9 +3,11 @@ import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight 
 import ReactMarkdown from 'react-markdown';
 import axiosClient from '../api/axiosClient';
 import { useAuth } from '../context/AuthContext';
+import { useWebSocket } from '../context/WebSocketContext';
 
 const Chatbot = () => {
     const { user } = useAuth();
+    const { connected, chatMessages, isTyping, joinChatSession, leaveChatSession, clearChatMessages } = useWebSocket();
     const [sessions, setSessions] = useState([]);
     const [currentSessionId, setCurrentSessionId] = useState(null);
     const [messages, setMessages] = useState([]);
@@ -28,8 +30,47 @@ const Chatbot = () => {
     useEffect(() => {
         if (currentSessionId) {
             fetchMessages(currentSessionId);
+            
+            // Join WebSocket room for this chat session
+            if (!String(currentSessionId).startsWith('draft')) {
+                joinChatSession(currentSessionId);
+            }
+            
+            // Clear previous messages from WebSocket
+            clearChatMessages();
         }
-    }, [currentSessionId]);
+        
+        // Cleanup: leave room when session changes
+        return () => {
+            if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
+                leaveChatSession(currentSessionId);
+            }
+        };
+    }, [currentSessionId, joinChatSession, leaveChatSession, clearChatMessages]);
+
+    // Listen for WebSocket chat messages
+    useEffect(() => {
+        if (chatMessages.length > 0) {
+            const latestMessage = chatMessages[chatMessages.length - 1];
+            // Only add if it's for current session
+            if (latestMessage.session_id === currentSessionId || latestMessage.session_id === String(currentSessionId)) {
+                const newMsg = {
+                    role: latestMessage.role || 'assistant',
+                    content: latestMessage.message
+                };
+                // Avoid duplicates by checking if message already exists
+                setMessages(prev => {
+                    const isDuplicate = prev.some(m => 
+                        m.content === newMsg.content && 
+                        m.role === newMsg.role &&
+                        prev.indexOf(m) >= prev.length - 2 // Check last 2 messages
+                    );
+                    if (isDuplicate) return prev;
+                    return [...prev, newMsg];
+                });
+            }
+        }
+    }, [chatMessages, currentSessionId]);
 
     useEffect(() => {
         scrollToBottom();
@@ -162,7 +203,7 @@ const Chatbot = () => {
             setPendingScore(null);
             // Add system message
             setMessages(prev => [...prev, { role: 'assistant', content: '✅ Đã cập nhật điểm thành công!' }]);
-            
+
             // Trigger refresh in StudyUpdate page
             const { emitStudyScoresUpdated } = await import('../utils/eventBus');
             emitStudyScoresUpdated({ source: 'chatbot' });
@@ -172,109 +213,77 @@ const Chatbot = () => {
     };
 
     return (
-        <div style={{ display: 'flex', height: 'calc(100vh - 4rem)', gap: '1.5rem', position: 'relative' }}>
+        <div className="container chat-container">
             {/* Expand Button (Visible when sidebar is collapsed) */}
             {collapsed && (
-                <button
-                    onClick={toggleCollapsed}
-                    title="Mở sidebar"
-                    style={{
-                        position: 'absolute',
-                        left: '12px',
-                        top: '50%',
-                        transform: 'translateY(-50%)',
-                        width: '36px',
-                        height: '36px',
-                        borderRadius: '50%',
-                        border: '1px solid #e0e0e0',
-                        background: '#fff',
-                        color: '#555',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                        zIndex: 100,
-                        transition: 'all 0.2s ease'
-                    }}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.background = '#f5f5f5';
-                        e.currentTarget.style.transform = 'translateY(-50%) scale(1.1)';
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.background = '#fff';
-                        e.currentTarget.style.transform = 'translateY(-50%) scale(1)';
-                    }}
-                >
-                    <ChevronRight size={20} />
-                </button>
+                <div style={{ width: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <button
+                        onClick={toggleCollapsed}
+                        title="Mở sidebar"
+                        className="btn"
+                        style={{
+                            width: '40px',
+                            height: '40px',
+                            borderRadius: '50%',
+                            border: '1px solid var(--border-color)',
+                            background: 'var(--bg-surface)',
+                            color: 'var(--text-secondary)',
+                            padding: 0,
+                            boxShadow: 'var(--shadow-md)',
+                        }}
+                    >
+                        <ChevronRight size={20} />
+                    </button>
+                </div>
             )}
-
 
             {/* Sessions Sidebar */}
             {!collapsed && (
-                <div className="card" style={{
-                    width: '300px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    padding: '1.5rem',
-                    position: 'relative',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
-                }}>
+                <div className="chat-sidebar">
                     <button
                         onClick={toggleCollapsed}
                         title="Thu nhỏ sidebar"
+                        className="btn"
                         style={{
                             position: 'absolute',
                             top: '50%',
-                            right: '-18px', // Half of 36px width
+                            right: '-20px',
                             transform: 'translateY(-50%)',
-                            width: '36px',
-                            height: '36px',
+                            width: '40px',
+                            height: '40px',
                             borderRadius: '50%',
-                            border: '1px solid #e0e0e0',
-                            background: '#fff',
-                            color: '#555',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                            border: '1px solid var(--border-color)',
+                            background: 'var(--bg-surface)',
+                            color: 'var(--text-secondary)',
+                            padding: 0,
+                            boxShadow: 'var(--shadow-md)',
                             zIndex: 40,
-                            transition: 'all 0.2s ease'
-                        }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.background = '#f5f5f5';
-                            e.currentTarget.style.transform = 'translateY(-50%) scale(1.1)';
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.background = '#fff';
-                            e.currentTarget.style.transform = 'translateY(-50%) scale(1)';
                         }}
                     >
                         <ChevronLeft size={20} />
                     </button>
 
-                    <h3 style={{
-                        margin: '0 0 1.25rem 0',
-                        fontSize: '1.1rem',
-                        fontWeight: '600',
-                        color: '#333'
-                    }}>
-                        Lịch sử trò chuyện
-                    </h3>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+                        <h3 style={{
+                            margin: 0,
+                            fontSize: '1.1rem',
+                            fontWeight: '700',
+                            color: 'var(--text-primary)'
+                        }}>
+                            Lịch sử chat
+                        </h3>
+                    </div>
 
                     <button
                         className="btn btn-primary"
                         onClick={createNewSession}
                         style={{
-                            marginBottom: '1.25rem',
-                            padding: '0.75rem 1rem',
-                            fontSize: '0.95rem',
-                            fontWeight: '500'
+                            marginBottom: '1rem',
+                            width: '100%',
+                            justifyContent: 'center'
                         }}
                     >
-                        <Plus size={18} /> <span style={{ marginLeft: '0.5rem' }}>Tạo phiên mới</span>
+                        <Plus size={18} /> <span style={{ marginLeft: '0.5rem' }}>Cuộc trò chuyện mới</span>
                     </button>
 
                     <div style={{
@@ -282,81 +291,47 @@ const Chatbot = () => {
                         overflowY: 'auto',
                         display: 'flex',
                         flexDirection: 'column',
-                        gap: '0.75rem',
-                        width: '100%',
-                        paddingRight: '0.25rem'
+                        gap: '0.5rem',
+                        paddingRight: '0.5rem'
                     }}>
                         {sessions.map(sess => (
-                            <div key={sess.id} style={{
-                                display: 'flex',
-                                gap: '0.5rem',
-                                alignItems: 'stretch',
-                                width: '100%'
-                            }}>
-                                <div
-                                    onClick={() => setCurrentSessionId(sess.id)}
-                                    title={sess.title || 'Phiên chat'}
-                                    style={{
-                                        padding: '0.875rem 1rem',
-                                        borderRadius: '10px',
-                                        cursor: 'pointer',
-                                        background: currentSessionId === sess.id ? '#fee2e2' : '#f9fafb',
-                                        color: currentSessionId === sess.id ? '#d32f2f' : '#555',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '0.75rem',
-                                        fontSize: '0.9rem',
-                                        fontWeight: currentSessionId === sess.id ? '600' : '400',
-                                        flex: 1,
-                                        border: currentSessionId === sess.id ? '2px solid #d32f2f' : '2px solid transparent',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                        if (currentSessionId !== sess.id) {
-                                            e.currentTarget.style.background = '#f3f4f6';
-                                            e.currentTarget.style.borderColor = '#e5e7eb';
-                                        }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        if (currentSessionId !== sess.id) {
-                                            e.currentTarget.style.background = '#f9fafb';
-                                            e.currentTarget.style.borderColor = 'transparent';
-                                        }
-                                    }}
-                                >
-                                    <MessageSquare size={18} style={{ flexShrink: 0 }} />
+                            <div
+                                key={sess.id}
+                                className={`session-item ${currentSessionId === sess.id ? 'active' : ''}`}
+                                onClick={() => setCurrentSessionId(sess.id)}
+                            >
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.75rem',
+                                    flex: 1,
+                                    overflow: 'hidden'
+                                }}>
+                                    <MessageSquare size={18} style={{ flexShrink: 0, opacity: currentSessionId === sess.id ? 1 : 0.7 }} />
                                     <span style={{
                                         whiteSpace: 'nowrap',
                                         overflow: 'hidden',
                                         textOverflow: 'ellipsis',
-                                        lineHeight: '1.4'
+                                        fontSize: '0.9rem',
+                                        fontWeight: currentSessionId === sess.id ? '600' : '500'
                                     }}>
-                                        {sess.title || 'Phiên chat'}
+                                        {sess.title || 'Phiên chat mới'}
                                     </span>
                                 </div>
-                                {/* delete button */}
+
                                 {!String(sess.id).startsWith('draft') && (
                                     <button
-                                        onClick={() => handleDeleteSession(sess.id)}
+                                        onClick={(e) => { e.stopPropagation(); handleDeleteSession(sess.id); }}
+                                        className="delete-btn btn-ghost"
                                         title="Xóa phiên"
                                         style={{
-                                            border: 'none',
-                                            background: '#fee2e2',
-                                            color: '#c62828',
-                                            cursor: 'pointer',
-                                            borderRadius: '10px',
-                                            padding: '0.5rem',
+                                            padding: '4px',
+                                            borderRadius: '4px',
                                             display: 'flex',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            transition: 'all 0.2s ease',
-                                            width: '40px'
-                                        }}
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.background = '#fecaca';
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.background = '#fee2e2';
+                                            opacity: currentSessionId === sess.id ? 1 : 0, // Show only on hover or active
+                                            transition: 'all 0.2s ease'
                                         }}
                                     >
                                         <Trash2 size={16} />
@@ -369,48 +344,138 @@ const Chatbot = () => {
             )}
 
             {/* Chat Area */}
-            <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '0', overflow: 'hidden', position: 'relative' }}>
-                {/* Expand button when sidebar is collapsed */}
-
-
+            <div className="chat-main">
                 {/* Header */}
-                <div style={{ padding: '1rem', borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#2ecc71' }}></div>
-                    <span style={{ fontWeight: '600' }}>Trợ lý ảo EduTwin</span>
+                <div className="chat-header">
+                    <div className="chat-header-avatar">
+                        <span>🤖</span>
+                    </div>
+                    <div>
+                        <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>Trợ lý ảo EduTwin</h3>
+                        <div className="chat-header-status">
+                            <span style={{ 
+                                width: '8px', 
+                                height: '8px', 
+                                borderRadius: '50%', 
+                                background: connected ? '#10b981' : '#ef4444' 
+                            }}></span>
+                            <span>{connected ? 'Đang kết nối' : 'Mất kết nối'}</span>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Messages */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div className="chat-messages">
+                    {messages.length === 0 && (
+                        <div style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            height: '100%',
+                            color: 'var(--text-tertiary)',
+                            textAlign: 'center',
+                            padding: '2rem'
+                        }}>
+                            <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>💬</div>
+                            <h3 style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Bắt đầu cuộc trò chuyện mới</h3>
+                            <p style={{ maxWidth: '400px' }}>Hãy hỏi tôi về điểm số, xu hướng học tập hoặc lời khuyên để cải thiện kết quả của bạn.</p>
+                        </div>
+                    )}
+
                     {messages.map((msg, idx) => (
                         <div
                             key={idx}
                             style={{
                                 display: 'flex',
-                                justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start'
+                                justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                                alignItems: 'flex-end',
+                                gap: '0.75rem'
                             }}
                         >
-                            <div style={{
-                                maxWidth: '70%',
-                                padding: '1rem',
-                                borderRadius: '12px',
-                                background: msg.role === 'user' ? '#d32f2f' : '#f1f2f6',
-                                color: msg.role === 'user' ? 'white' : '#333',
-                                boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
-                                borderTopRightRadius: msg.role === 'user' ? '2px' : '12px',
-                                borderTopLeftRadius: msg.role === 'assistant' ? '2px' : '12px'
-                            }}>
-                                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                            {msg.role === 'assistant' && (
+                                <div style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: 'var(--primary-light)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '0.9rem',
+                                    flexShrink: 0
+                                }}>🤖</div>
+                            )}
+
+                            <div className={`chat-message ${msg.role}`}>
+                                <div className="markdown-content">
+                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                </div>
                             </div>
                         </div>
                     ))}
 
-                    {loading && (
-                        <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                            <div style={{ background: '#f1f2f6', padding: '1rem', borderRadius: '12px', borderTopLeftRadius: '2px' }}>
+                    {/* Typing Indicator from WebSocket */}
+                    {isTyping && !loading && (
+                        <div className="animate-fade-in" style={{
+                            display: 'flex',
+                            justifyContent: 'flex-start',
+                            alignItems: 'flex-end',
+                            gap: '0.75rem'
+                        }}>
+                            <div style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '50%',
+                                background: 'var(--primary-light)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '0.9rem',
+                                flexShrink: 0
+                            }}>🤖</div>
+                            <div style={{
+                                background: 'white',
+                                padding: '1rem',
+                                borderRadius: '1rem',
+                                borderTopLeftRadius: '4px',
+                                border: '1px solid var(--border-color)',
+                                boxShadow: 'var(--shadow-sm)'
+                            }}>
                                 <div style={{ display: 'flex', gap: '4px' }}>
-                                    <span className="dot-animate" style={{ animationDelay: '0s' }}>•</span>
-                                    <span className="dot-animate" style={{ animationDelay: '0.2s' }}>•</span>
-                                    <span className="dot-animate" style={{ animationDelay: '0.4s' }}>•</span>
+                                    <span className="dot-animate" style={{ animationDelay: '0s', width: '8px', height: '8px', background: 'var(--text-tertiary)', borderRadius: '50%' }}></span>
+                                    <span className="dot-animate" style={{ animationDelay: '0.2s', width: '8px', height: '8px', background: 'var(--text-tertiary)', borderRadius: '50%' }}></span>
+                                    <span className="dot-animate" style={{ animationDelay: '0.4s', width: '8px', height: '8px', background: 'var(--text-tertiary)', borderRadius: '50%' }}></span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {loading && (
+                        <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-end', gap: '0.75rem' }}>
+                            <div style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '50%',
+                                background: 'var(--primary-light)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '0.9rem',
+                                flexShrink: 0
+                            }}>🤖</div>
+                            <div style={{
+                                background: 'white',
+                                padding: '1rem',
+                                borderRadius: '1rem',
+                                borderTopLeftRadius: '4px',
+                                border: '1px solid var(--border-color)',
+                                boxShadow: 'var(--shadow-sm)'
+                            }}>
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                    <span className="dot-animate" style={{ animationDelay: '0s', width: '8px', height: '8px', background: 'var(--text-tertiary)', borderRadius: '50%' }}></span>
+                                    <span className="dot-animate" style={{ animationDelay: '0.2s', width: '8px', height: '8px', background: 'var(--text-tertiary)', borderRadius: '50%' }}></span>
+                                    <span className="dot-animate" style={{ animationDelay: '0.4s', width: '8px', height: '8px', background: 'var(--text-tertiary)', borderRadius: '50%' }}></span>
                                 </div>
                             </div>
                         </div>
@@ -418,18 +483,18 @@ const Chatbot = () => {
 
                     {/* Pending Score Update Card */}
                     {pendingScore && (
-                        <div style={{ margin: '0 auto', maxWidth: '80%', background: '#fff0f3', border: '1px solid #ffcdd2', borderRadius: '8px', padding: '1rem' }}>
-                            <h4 style={{ color: '#c62828', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <div className="animate-fade-in pending-score-card">
+                            <h4 className="pending-score-title">
                                 ⚠️ Phát hiện thay đổi điểm số
                             </h4>
-                            <p style={{ marginBottom: '0.5rem' }}>
-                                Môn <b>{pendingScore.subject}</b> học kỳ <b>{pendingScore.semester}</b> lớp <b>{pendingScore.grade_level}</b>: {pendingScore.old_score || '?'} → <b>{pendingScore.new_score}</b>
+                            <p className="pending-score-text">
+                                Môn <b>{pendingScore.subject}</b> học kỳ <b>{pendingScore.semester}</b> lớp <b>{pendingScore.grade_level}</b>: <span style={{ textDecoration: 'line-through', opacity: 0.7 }}>{pendingScore.old_score || '?'}</span> → <b style={{ color: '#059669' }}>{pendingScore.new_score}</b>
                             </p>
                             <div style={{ display: 'flex', gap: '1rem' }}>
-                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }} onClick={handleConfirmScore}>
+                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: '#059669', borderColor: '#059669' }} onClick={handleConfirmScore}>
                                     <Check size={16} /> Xác nhận
                                 </button>
-                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }} onClick={() => setPendingScore(null)}>
+                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', color: '#dc2626', borderColor: '#dc2626' }} onClick={() => setPendingScore(null)}>
                                     <X size={16} /> Bỏ qua
                                 </button>
                             </div>
@@ -440,40 +505,35 @@ const Chatbot = () => {
                 </div>
 
                 {/* Input Area */}
-                <div style={{ padding: '1rem', borderTop: '1px solid #eee', background: '#fff' }}>
-                    <div style={{ display: 'flex', gap: '1rem' }}>
-                        <input
-                            className="input-field"
-                            placeholder="Nhập câu hỏi của bạn..."
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                            disabled={loading}
-                        />
-                        <button
-                            className="btn btn-primary"
-                            onClick={handleSend}
-                            disabled={loading || !input.trim()}
-                            style={{ width: '50px', padding: 0 }}
-                        >
-                            <Send size={20} />
-                        </button>
-                    </div>
+                <div className="chat-input-area">
+                    <input
+                        className="input-field"
+                        placeholder="Nhập câu hỏi của bạn..."
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                        disabled={loading}
+                        style={{ margin: 0, boxShadow: 'var(--shadow-sm)' }}
+                    />
+                    <button
+                        className="btn btn-primary"
+                        onClick={handleSend}
+                        disabled={loading || !input.trim()}
+                        style={{
+                            width: '48px',
+                            height: '48px',
+                            padding: 0,
+                            borderRadius: '12px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0
+                        }}
+                    >
+                        <Send size={20} />
+                    </button>
                 </div>
             </div>
-
-            <style>{`
-        .dot-animate {
-          animation: blink 1.4s infinite both;
-          font-size: 1.5rem;
-          line-height: 1rem;
-        }
-        @keyframes blink {
-          0% { opacity: 0.2; }
-          20% { opacity: 1; }
-          100% { opacity: 0.2; }
-        }
-      `}</style>
         </div>
     );
 };

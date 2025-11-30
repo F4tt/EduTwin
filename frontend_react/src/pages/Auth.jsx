@@ -60,11 +60,11 @@ const Auth = () => {
     };
 
     return (
-        <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', background: 'var(--bg-body)' }}>
             {/* Left Side - Image/Brand */}
             <div style={{
                 flex: 1,
-                background: 'linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%)',
+                background: 'linear-gradient(135deg, var(--primary-color) 0%, var(--primary-hover) 100%)',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
@@ -80,64 +80,77 @@ const Auth = () => {
                     transition={{ duration: 0.8 }}
                     style={{ zIndex: 1, textAlign: 'center' }}
                 >
-                    <h1 style={{ fontSize: '4rem', fontWeight: '800', marginBottom: '1rem' }}>EduTwin</h1>
-                    <p style={{ fontSize: '1.5rem', opacity: 0.9 }}>Trợ lý học tập thông minh của bạn</p>
+                    <h1 style={{ fontSize: '4rem', fontWeight: '800', marginBottom: '1rem', letterSpacing: '-1px' }}>EduTwin</h1>
+                    <p style={{ fontSize: '1.5rem', opacity: 0.9, fontWeight: '300' }}>Trợ lý học tập thông minh của bạn</p>
                 </motion.div>
             </div>
 
             {/* Right Side - Form */}
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}>
-                <div style={{ width: '100%', maxWidth: '400px', padding: '2rem' }}>
-                    <h2 style={{ fontSize: '2rem', fontWeight: '700', marginBottom: '0.5rem', color: '#333' }}>
-                        {isLogin ? 'Chào mừng trở lại!' : 'Tạo tài khoản mới'}
-                    </h2>
-                    <p style={{ color: '#666', marginBottom: '2rem' }}>
-                        {isLogin ? 'Vui lòng đăng nhập để tiếp tục.' : 'Bắt đầu hành trình học tập của bạn.'}
-                    </p>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-surface)' }}>
+                <div style={{ width: '100%', maxWidth: '450px', padding: '3rem' }}>
+                    <div style={{ marginBottom: '2.5rem' }}>
+                        <h2 style={{ fontSize: '2rem', fontWeight: '700', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                            {isLogin ? 'Chào mừng trở lại!' : 'Tạo tài khoản mới'}
+                        </h2>
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem' }}>
+                            {isLogin ? 'Vui lòng đăng nhập để tiếp tục.' : 'Bắt đầu hành trình học tập của bạn.'}
+                        </p>
+                    </div>
 
                     {error && (
-                        <div style={{ background: '#ffebee', color: '#c62828', padding: '0.75rem', borderRadius: '8px', marginBottom: '1rem', fontSize: '0.9rem' }}>
-                            {error}
+                        <div style={{
+                            background: '#fef2f2',
+                            color: 'var(--danger-color)',
+                            padding: '1rem',
+                            borderRadius: 'var(--radius-md)',
+                            marginBottom: '1.5rem',
+                            fontSize: '0.95rem',
+                            border: '1px solid #fecaca',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
+                        }}>
+                            ⚠️ {error}
                         </div>
                     )}
 
                     <form onSubmit={handleSubmit}>
                         {!isLogin && (
                             <div style={{ display: 'flex', gap: '1rem' }}>
-                                <div style={{ marginBottom: '1rem', flex: 1 }}>
+                                <div style={{ marginBottom: '1.25rem', flex: 1 }}>
                                     <label className="label">Họ</label>
                                     <input className="input-field" name="lastName" placeholder="Nguyễn" onChange={handleChange} required />
                                 </div>
-                                <div style={{ marginBottom: '1rem', flex: 1 }}>
+                                <div style={{ marginBottom: '1.25rem', flex: 1 }}>
                                     <label className="label">Tên</label>
                                     <input className="input-field" name="firstName" placeholder="Văn A" onChange={handleChange} required />
                                 </div>
                             </div>
                         )}
 
-                        <div style={{ marginBottom: '1rem' }}>
+                        <div style={{ marginBottom: '1.25rem' }}>
                             <label className="label">Tên đăng nhập</label>
                             <input className="input-field" name="username" placeholder="username" onChange={handleChange} required />
                         </div>
 
-                        <div style={{ marginBottom: '1rem' }}>
+                        <div style={{ marginBottom: '1.25rem' }}>
                             <label className="label">Mật khẩu</label>
                             <input className="input-field" type="password" name="password" placeholder="••••••••" onChange={handleChange} required />
                         </div>
 
                         {!isLogin && (
-                            <div style={{ marginBottom: '1.5rem' }}>
+                            <div style={{ marginBottom: '2rem' }}>
                                 <label className="label">Nhập lại mật khẩu</label>
                                 <input className="input-field" type="password" name="confirmPassword" placeholder="••••••••" onChange={handleChange} required />
                             </div>
                         )}
 
-                        <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '1rem' }}>
+                        <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '0.875rem', fontSize: '1rem' }}>
                             {isLogin ? 'Đăng nhập' : 'Đăng ký'}
                         </button>
                     </form>
 
-                    <div style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.9rem', color: '#666' }}>
+                    <div style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.95rem', color: 'var(--text-secondary)' }}>
                         {isLogin ? 'Chưa có tài khoản? ' : 'Đã có tài khoản? '}
                         <button
                             onClick={() => {
@@ -147,7 +160,15 @@ const Auth = () => {
                                     username: '', password: '', confirmPassword: '', firstName: '', lastName: ''
                                 });
                             }}
-                            style={{ background: 'none', border: 'none', color: '#d32f2f', fontWeight: '600', textDecoration: 'underline' }}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                color: 'var(--primary-color)',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                                padding: 0,
+                                marginLeft: '0.25rem'
+                            }}
                         >
                             {isLogin ? 'Đăng ký ngay' : 'Đăng nhập'}
                         </button>

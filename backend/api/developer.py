@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from db import database, models
 from ml import prediction_service
-from services import excel_importer, learning_documents, model_evaluator
-from services.vector_store_provider import get_vector_store
+from services import excel_importer, model_evaluator
+# REMOVED: learning_documents and vector_store_provider imports (no longer used)
 from services.llm_provider import get_llm_provider
 from services.ml_version_manager import increment_ml_version, mark_all_users_for_update, get_current_ml_version
 from utils.session_utils import SessionManager, get_current_user, require_auth
@@ -145,16 +145,7 @@ async def import_excel_data(
     })
 
 
-@router.post("/rebuild-embeddings")
-@require_auth
-def rebuild_embeddings(request: Request, db: Session = Depends(get_db)):
-    user = get_current_user(request)
-    _ensure_developer(user)
-
-    vector_store = get_vector_store()
-    learning_documents.rebuild_all_score_embeddings(db, vector_store)
-    db.commit()
-    return {"message": "Đã tái xây dựng vector database từ dữ liệu hiện có."}
+# REMOVED: /rebuild-embeddings endpoint (vector store no longer used)
 
 
 @router.post("/llm-test")

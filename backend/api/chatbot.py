@@ -12,12 +12,74 @@ from sqlalchemy.orm import Session
 
 from db import database, models
 from ml import prediction_service
-from services import learning_documents
+# REMOVED: learning_documents, vector_store_provider, memory_manager imports (no longer used)
 from services.chatbot_service import generate_chat_response
-from services.vector_store_provider import get_vector_store
 from utils.session_utils import get_current_user, require_auth
-from services import memory_manager
 from services.personalization_learner import PersonalizationLearner
+from core.websocket_manager import emit_chat_message, emit_chat_typing
+
+
+# Helper functions for pending updates (moved from deleted memory_manager service)
+def list_pending_updates_for_user(db: Session, user_id: int):
+    return db.query(models.PendingUpdate).filter(models.PendingUpdate.user_id == user_id).all()
+
+
+def apply_pending_update(db: Session, update_id: int, user_id: int):
+    """Apply a pending update and remove it from queue."""
+    pu = db.query(models.PendingUpdate).filter(
+        models.PendingUpdate.id == update_id,
+        models.PendingUpdate.user_id == user_id
+    ).first()
+    if not pu:
+        return None
+    
+    # Handle profile updates
+    if pu.update_type == "profile":
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if user and pu.field in ("first_name", "last_name", "email", "phone"):
+            setattr(user, pu.field, pu.new_value)
+            db.commit()
+    
+    # Handle score updates
+    elif pu.update_type == "score":
+        score_id = (pu.metadata_ or {}).get("score_id")
+        if score_id:
+            score = db.query(models.StudyScore).filter(models.StudyScore.id == int(score_id)).first()
+            if score:
+                score.actual_score = float(pu.new_value)
+                score.actual_source = "chat_confirmation"
+                score.actual_status = "confirmed"
+                score.actual_updated_at = datetime.utcnow()
+                db.commit()
+                # REMOVED: vector store sync (no longer used)
+                prediction_service.update_predictions_for_user(db, score.user_id)
+    
+    # Remove pending update after applying
+    try:
+        db.delete(pu)
+        db.commit()
+    except Exception:
+        db.rollback()
+    
+    return pu
+
+
+def cancel_pending_update(db: Session, update_id: int, user_id: int) -> bool:
+    """Cancel a pending update without applying it."""
+    pu = db.query(models.PendingUpdate).filter(
+        models.PendingUpdate.id == update_id,
+        models.PendingUpdate.user_id == user_id
+    ).first()
+    if not pu:
+        return False
+    try:
+        db.delete(pu)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+
 
 router = APIRouter(tags=["Chatbot"])
 
@@ -155,37 +217,52 @@ async def chatbot_endpoint(
             logging.getLogger("uvicorn.error").exception(f"Error reading session cookie: {e}")
             current_user = None
 
-    # If authenticated user and no session id provided, create a persisted ChatSession
-    # so the first message becomes a saved session the user can access later.
+    # If authenticated user and no session id provided, use the current chat session from login
+    # or create a new one if needed
     if current_user and not sess_id:
         try:
             import logging
             logger = logging.getLogger("uvicorn.error")
             user_id = current_user.get("user_id")
-            logger.info(f"chatbot_endpoint: creating session for user_id={user_id}")
-            new_session = models.ChatSession(user_id=user_id, title=None)
-            db.add(new_session)
-            db.commit()
-            db.refresh(new_session)
-            sess_id = str(new_session.id)
-            logger.info(f"chatbot_endpoint: created session id={sess_id} for user_id={user_id}")
+            
+            # Try to get current_chat_session_id from session (set during login)
+            current_chat_session_id = current_user.get("current_chat_session_id")
+            if current_chat_session_id:
+                # Verify this session still exists and belongs to user
+                existing_session = db.query(models.ChatSession).filter(
+                    models.ChatSession.id == current_chat_session_id,
+                    models.ChatSession.user_id == user_id
+                ).first()
+                if existing_session:
+                    sess_id = str(existing_session.id)
+                    logger.info(f"chatbot_endpoint: using current chat session id={sess_id} for user_id={user_id}")
+            
+            # If no current session found, create a new one
+            if not sess_id:
+                logger.info(f"chatbot_endpoint: creating new session for user_id={user_id}")
+                new_session = models.ChatSession(user_id=user_id, title=None)
+                db.add(new_session)
+                db.commit()
+                db.refresh(new_session)
+                sess_id = str(new_session.id)
+                logger.info(f"chatbot_endpoint: created session id={sess_id} for user_id={user_id}")
 
-            # Enforce maximum persisted sessions per user (keep newest 20)
-            try:
-                max_sessions = 20
-                user_sessions = (
-                    db.query(models.ChatSession)
-                    .filter(models.ChatSession.user_id == user_id)
-                    .order_by(models.ChatSession.created_at.desc())
-                    .all()
-                )
-                if len(user_sessions) > max_sessions:
-                    to_delete = user_sessions[max_sessions:]
-                    for s in to_delete:
-                        db.delete(s)
-                    db.commit()
-            except Exception:
-                db.rollback()
+                # Enforce maximum persisted sessions per user (keep newest 20)
+                try:
+                    max_sessions = 20
+                    user_sessions = (
+                        db.query(models.ChatSession)
+                        .filter(models.ChatSession.user_id == user_id)
+                        .order_by(models.ChatSession.created_at.desc())
+                        .all()
+                    )
+                    if len(user_sessions) > max_sessions:
+                        to_delete = user_sessions[max_sessions:]
+                        for s in to_delete:
+                            db.delete(s)
+                        db.commit()
+                except Exception:
+                    db.rollback()
         except Exception as e:
             import logging
             logging.getLogger("uvicorn.error").exception(f"Error creating session in chatbot_endpoint: {e}")
@@ -197,6 +274,19 @@ async def chatbot_endpoint(
         message=msg_text,
         session_id=sess_id,
     )
+    
+    # Emit message via WebSocket to chat session room
+    if sess_id:
+        try:
+            await emit_chat_message(sess_id, {
+                'session_id': sess_id,
+                'message': response_payload.get('answer'),
+                'role': 'assistant',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            import logging
+            logging.getLogger("uvicorn.error").warning(f"Failed to emit WebSocket message: {e}")
     
     # Auto-learn personalization AFTER response (non-blocking)
     # Run in background to not slow down response
@@ -223,13 +313,30 @@ async def chatbot_endpoint(
                         if user:
                             if not user.preferences:
                                 user.preferences = {}
-                            user.preferences["learned"] = learned
+                            
+                            # Merge with existing preferences (dict format)
+                            existing = user.preferences.get("learned", {})
+                            if isinstance(existing, dict):
+                                # Merge categories
+                                for category, items in learned.items():
+                                    if category not in existing:
+                                        existing[category] = []
+                                    # Add new items, avoid duplicates
+                                    for item in items:
+                                        if item not in existing[category]:
+                                            existing[category].append(item)
+                                    # Keep max 5 per category
+                                    existing[category] = existing[category][:5]
+                                user.preferences["learned"] = existing
+                            else:
+                                # First time or old format - use new dict
+                                user.preferences["learned"] = learned
                             
                             from sqlalchemy.orm.attributes import flag_modified
                             flag_modified(user, "preferences")
                             
                             learning_db.commit()
-                            logger.info(f"[Background] Saved learned preferences: {learned}")
+                            logger.info(f"[Background] Saved learned preferences: {user.preferences['learned']}")
             except Exception as e:
                 import logging
                 logging.getLogger("uvicorn.error").exception(f"Error in background auto-learning: {e}")
@@ -272,15 +379,29 @@ async def chatbot_stream_endpoint(
     if not msg_text:
         raise HTTPException(status_code=400, detail="Tin nhắn không được để trống.")
     
-    # Create session if needed
+    # Create session if needed - use current chat session from login or create new
     if current_user and not sess_id:
         try:
             user_id = current_user.get("user_id")
-            new_session = models.ChatSession(user_id=user_id, title=None)
-            db.add(new_session)
-            db.commit()
-            db.refresh(new_session)
-            sess_id = str(new_session.id)
+            
+            # Try to get current_chat_session_id from session (set during login)
+            current_chat_session_id = current_user.get("current_chat_session_id")
+            if current_chat_session_id:
+                # Verify this session still exists and belongs to user
+                existing_session = db.query(models.ChatSession).filter(
+                    models.ChatSession.id == current_chat_session_id,
+                    models.ChatSession.user_id == user_id
+                ).first()
+                if existing_session:
+                    sess_id = str(existing_session.id)
+            
+            # If no current session found, create a new one
+            if not sess_id:
+                new_session = models.ChatSession(user_id=user_id, title=None)
+                db.add(new_session)
+                db.commit()
+                db.refresh(new_session)
+                sess_id = str(new_session.id)
         except Exception:
             db.rollback()
     
@@ -289,6 +410,13 @@ async def chatbot_stream_endpoint(
         try:
             # Send initial event
             yield f"data: {json.dumps({'type': 'start', 'message': 'Đang xử lý...'})}\n\n"
+            
+            # Emit typing indicator via WebSocket
+            if sess_id:
+                try:
+                    await emit_chat_typing(sess_id, True)
+                except Exception:
+                    pass
             
             # Get full response (in production, integrate with streaming LLM)
             response_payload = await generate_chat_response(
@@ -307,10 +435,35 @@ async def chatbot_stream_endpoint(
                 yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
                 await asyncio.sleep(0.03)  # 30ms delay for smooth streaming
             
+            # Stop typing indicator
+            if sess_id:
+                try:
+                    await emit_chat_typing(sess_id, False)
+                except Exception:
+                    pass
+            
             # Send completion event with full response
             yield f"data: {json.dumps({'type': 'done', 'response': response_payload})}\n\n"
             
+            # Emit complete message via WebSocket
+            if sess_id:
+                try:
+                    await emit_chat_message(sess_id, {
+                        'session_id': sess_id,
+                        'message': answer,
+                        'role': 'assistant',
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
+                except Exception:
+                    pass
+            
         except Exception as e:
+            # Stop typing on error
+            if sess_id:
+                try:
+                    await emit_chat_typing(sess_id, False)
+                except Exception:
+                    pass
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     
     return StreamingResponse(
@@ -352,8 +505,7 @@ def confirm_score_update(
     score.actual_status = "confirmed"
     score.actual_updated_at = datetime.utcnow()
 
-    vector_store = get_vector_store()
-    learning_documents.sync_score_embeddings(db, vector_store, [score])
+    # REMOVED: vector_store embeddings sync (no longer used)
 
     prediction_service.update_predictions_for_user(db, score.user_id)
     db.commit()
@@ -368,7 +520,7 @@ def list_pending_updates(request: Request, db: Session = Depends(get_db)):
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
 
-    updates = memory_manager.list_pending_updates(db, current_user.get("user_id"))
+    updates = list_pending_updates_for_user(db, current_user.get("user_id"))
     return [
         {
             "id": u.id,
@@ -383,12 +535,20 @@ def list_pending_updates(request: Request, db: Session = Depends(get_db)):
     ]
 @router.post("/chatbot/confirm-update")
 @require_auth
-def confirm_pending_update(request: Request, payload: PendingUpdateConfirm, db: Session = Depends(get_db)):
+async def confirm_pending_update(
+    request: Request,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db)
+):
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
 
-    pu = memory_manager.apply_pending_update(db, payload.update_id, current_user.get("user_id"))
+    update_id = payload.get("update_id")
+    if not update_id:
+        raise HTTPException(status_code=400, detail="Thiếu update_id")
+    
+    pu = apply_pending_update(db, update_id, current_user.get("user_id"))
     if not pu:
         raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu cập nhật.")
     return {"message": "Đã áp dụng cập nhật.", "id": pu.id}
@@ -396,12 +556,20 @@ def confirm_pending_update(request: Request, payload: PendingUpdateConfirm, db: 
 
 @router.post("/chatbot/cancel-update")
 @require_auth
-def cancel_update(request: Request, payload: PendingUpdateCancel, db: Session = Depends(get_db)):
+async def cancel_update(
+    request: Request,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db)
+):
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
 
-    ok = memory_manager.cancel_pending_update(db, payload.update_id, current_user.get("user_id"))
+    update_id = payload.get("update_id")
+    if not update_id:
+        raise HTTPException(status_code=400, detail="Thiếu update_id")
+    
+    ok = cancel_pending_update(db, update_id, current_user.get("user_id"))
     if not ok:
         raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu.")
     return {"message": "Đã huỷ yêu cầu cập nhật."}

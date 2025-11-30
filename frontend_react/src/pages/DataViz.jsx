@@ -435,19 +435,61 @@ const DataViz = () => {
         return scores;
     };
 
-    const processBarData = (data) => {
+    const processBarData = (data, currentIdx = null) => {
+        // Filter data up to and including current grade/term if currentIdx provided and valid
+        let filteredData = data;
+        // Only filter if currentIdx is a valid positive number
+        if (currentIdx !== null && currentIdx !== undefined && currentIdx >= 0) {
+            const filtered = data.filter(item => {
+                // Construct term from semester and grade_level
+                const term = `${item.semester}_${item.grade_level}`;
+                const termIdx = TERM_ORDER.indexOf(term);
+                return termIdx !== -1 && termIdx <= currentIdx;
+            });
+            // Only use filtered data if it's not empty
+            if (filtered.length > 0) {
+                filteredData = filtered;
+            }
+        }
+
         const grouped = {};
-        data.forEach(item => {
+        filteredData.forEach(item => {
+            // Prefer actual, fallback to predicted
+            let val = null;
+            if (item.actual !== null && item.actual !== undefined) {
+                val = Number(item.actual);
+            } else if (item.predicted !== null && item.predicted !== undefined) {
+                val = Number(item.predicted);
+            }
+            
+            if (val === null || Number.isNaN(val)) return;
+            
             if (!grouped[item.subject]) grouped[item.subject] = [];
-            const val = (item.actual !== null && item.actual !== undefined) ? Number(item.actual) : ((item.predicted !== null && item.predicted !== undefined) ? Number(item.predicted) : 0);
             grouped[item.subject].push(val);
         });
 
-        return Object.entries(grouped).map(([subject, values]) => ({
-            subjectId: subject,
-            subjectLabel: SUBJECT_LABELS[subject] || subject,
-            avg: values.reduce((a, b) => a + b, 0) / values.length
-        })).sort((a, b) => b.avg - a.avg);
+        const result = Object.entries(grouped).map(([subject, values]) => {
+            const rawAvg = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+            // Round to 2 decimal places, remove trailing zeros
+            const avg = Math.round(rawAvg * 100) / 100;
+            
+            // Debug log for GDCD
+            if (subject === 'Giao duc cong dan') {
+                console.log('[GDCD Debug] values:', values);
+                console.log('[GDCD Debug] sum:', values.reduce((a, b) => a + b, 0));
+                console.log('[GDCD Debug] count:', values.length);
+                console.log('[GDCD Debug] rawAvg:', rawAvg);
+                console.log('[GDCD Debug] avg (rounded):', avg);
+            }
+            
+            return {
+                subjectId: subject,
+                subjectLabel: SUBJECT_LABELS[subject] || subject,
+                avg
+            };
+        }).sort((a, b) => b.avg - a.avg);
+
+        return result;
     };
 
     const buildCurrentTermRadarData = (data, currentTermToken) => {
@@ -496,9 +538,139 @@ const DataViz = () => {
         return dataPoints;
     };
 
-    const filteredData = getFilteredScores();
-    const barData = processBarData(filteredData);
+    // Build term series for exam blocks: calculate SUM (not average) of subjects per term
+    const buildExamBlockSumSeries = (blockScores, currentIdx) => {
+        console.log('[buildExamBlockSumSeries] Input:', { blockScoresLength: blockScores.length, currentIdx });
+        
+        // Group by term, then by subject to get one score per subject per term
+        const termSubjectMap = new Map();
+        const termHasActual = new Map(); // Track if term has any actual scores
+        
+        blockScores.forEach(item => {
+            // Construct term from semester and grade_level
+            const term = `${item.semester}_${item.grade_level}`;
+            
+            // Track if this term has actual scores
+            if (item.actual !== null && item.actual !== undefined) {
+                termHasActual.set(term, true);
+            }
+            
+            // Prefer actual, fallback to predicted
+            let termValue = null;
+            if (item.actual !== null && item.actual !== undefined) {
+                termValue = Number(item.actual);
+            } else if (item.predicted !== null && item.predicted !== undefined) {
+                termValue = Number(item.predicted);
+            }
+            
+            if (termValue === null || Number.isNaN(termValue)) return;
+            
+            if (!termSubjectMap.has(term)) {
+                termSubjectMap.set(term, new Map());
+            }
+            // Store one score per subject (latest if multiple)
+            termSubjectMap.get(term).set(item.subject, termValue);
+        });
+
+        console.log('[buildExamBlockSumSeries] termSubjectMap:', Array.from(termSubjectMap.entries()));
+
+        // Calculate sum of all subjects for each term
+        const termSums = new Map();
+        termSubjectMap.forEach((subjectMap, term) => {
+            const sum = Array.from(subjectMap.values()).reduce((a, b) => a + b, 0);
+            // Round to 2 decimal places, remove trailing zeros
+            const roundedSum = Math.round(sum * 100) / 100;
+            termSums.set(term, roundedSum);
+        });
+
+        console.log('[buildExamBlockSumSeries] termSums:', Array.from(termSums.entries()));
+        console.log('[buildExamBlockSumSeries] termHasActual:', Array.from(termHasActual.entries()));
+
+        // Build series data with past/future
+        // Logic: term with actual scores = past, term without actual = future
+        // The LAST past term should have BOTH pastValue AND futureValue to connect the line
+        const result = TERM_ORDER.map((term, idx) => {
+            const sum = termSums.get(term) || null;
+            const hasActualFlag = termHasActual.get(term);
+            const isPast = hasActualFlag === true;
+            
+            console.log(`[buildExamBlockSumSeries] ${term}: sum=${sum}, hasActual=${hasActualFlag}, isPast=${isPast}`);
+            
+            return {
+                term,
+                display: sum,
+                pastValue: isPast ? sum : null,
+                futureValue: null, // Will set below
+                isPast,
+            };
+        });
+        
+        // Find the last past index
+        let lastPastIdx = -1;
+        for (let i = result.length - 1; i >= 0; i--) {
+            if (result[i].isPast && result[i].display !== null) {
+                lastPastIdx = i;
+                break;
+            }
+        }
+        
+        // Set futureValue: from lastPastIdx onwards
+        if (lastPastIdx >= 0) {
+            for (let i = lastPastIdx; i < result.length; i++) {
+                if (result[i].display !== null) {
+                    result[i].futureValue = result[i].display;
+                }
+            }
+            console.log(`[buildExamBlockSumSeries] Connecting future line from index ${lastPastIdx} (${result[lastPastIdx].term})`);
+        }
+        
+        // Clean up temporary isPast field
+        result.forEach(r => delete r.isPast);
+        
+        console.log('[buildExamBlockSumSeries] Result:', result);
+        return result;
+    };
+
+    // Get current semester scores for exam block subjects (for BarChart)
+    const getExamBlockCurrentScores = (blockScores, currentGrade) => {
+        if (!currentGrade) return [];
+        
+        const parts = String(currentGrade).split('_');
+        if (parts.length !== 2) return [];
+        const [semester, grade] = parts;
+        
+        const subjectScores = new Map();
+        blockScores.forEach(item => {
+            if (String(item.semester) !== String(semester) || String(item.grade_level) !== String(grade)) return;
+            // Prefer actual, fallback to predicted
+            let value = null;
+            if (item.actual !== null && item.actual !== undefined) {
+                value = Number(item.actual);
+            } else if (item.predicted !== null && item.predicted !== undefined) {
+                value = Number(item.predicted);
+            }
+            
+            if (value !== null && !Number.isNaN(value)) {
+                subjectScores.set(item.subject, value);
+            }
+        });
+
+        if (subjectScores.size === 0) return [];
+
+        return Array.from(subjectScores.entries()).map(([subjectId, value]) => {
+            // Round to 2 decimal places, remove trailing zeros
+            const roundedValue = Math.round(value * 100) / 100;
+            return {
+                subjectId,
+                subjectLabel: SUBJECT_LABELS[subjectId] || subjectId,
+                avg: roundedValue
+            };
+        }).sort((a, b) => b.avg - a.avg);
+    };
+
     const currentIdx = slotIndexForTerm(currentGrade);
+    const filteredData = getFilteredScores();
+    const barData = processBarData(filteredData, currentIdx);
     const currentGradeLabel = currentGrade ? formatCurrentTerm(currentGrade) : null;
     const currentTermRadarData = useMemo(
         () => buildCurrentTermRadarData(scores, currentGrade),
@@ -579,7 +751,7 @@ const DataViz = () => {
         const blockHasData = blockSeries.some(point => point.display !== null);
         const blockHasPast = blockSeries.some(point => point.pastValue !== null);
         const blockHasFuture = blockSeries.some(point => point.futureValue !== null);
-        const blockBarData = processBarData(blockScores);
+        const blockBarData = processBarData(blockScores, currentIdx);
         const blockColor = '#3498db';
 
         return (
@@ -664,11 +836,15 @@ const DataViz = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
             {Object.entries(EXAM_BLOCKS).map(([blockName, subjects]) => {
                 const blockScores = scores.filter(s => subjects.includes(s.subject));
-                const blockSeries = buildTermSeries(computeTermAverageMap(blockScores), currentIdx);
+                // Use SUM for line chart (not average)
+                const blockSeries = buildExamBlockSumSeries(blockScores, currentIdx);
+                console.log(`[${blockName}] blockScores:`, blockScores.length, 'blockSeries:', blockSeries);
                 const blockHasData = blockSeries.some(point => point.display !== null);
                 const blockHasPast = blockSeries.some(point => point.pastValue !== null);
                 const blockHasFuture = blockSeries.some(point => point.futureValue !== null);
-                const blockBarData = processBarData(blockScores);
+                console.log(`[${blockName}] hasData:`, blockHasData, 'hasPast:', blockHasPast, 'hasFuture:', blockHasFuture);
+                // Use current semester scores for bar chart (not average of all terms)
+                const blockBarData = getExamBlockCurrentScores(blockScores, currentGrade);
                 const colors = { 'A00': '#e74c3c', 'B00': '#f39c12', 'C00': '#16a085', 'D01': '#8e44ad' };
                 const blockInsight = blockComments[blockName];
                 const insight = blockInsight?.narrative?.comment || blockInsight?.structured?.comment || blockInsight?.comment || '';
@@ -681,66 +857,82 @@ const DataViz = () => {
                         <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '1.5rem' }}>
                             {subjects.map(s => SUBJECT_LABELS[s]).join(', ')}
                         </p>
-                        {blockHasData ? (
+                        {(blockHasData || blockBarData.length > 0) ? (
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <div style={{ height: '320px', width: '100%' }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <LineChart data={blockSeries}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                            <XAxis dataKey="term" tick={{ fontSize: 12 }} tickFormatter={formatTermLabel} interval={0} />
-                                            <YAxis domain={[0, 10]} tick={{ fontSize: 12 }} />
-                                            <Tooltip content={<TermAverageTooltip />} />
-                                            {blockHasPast && (
-                                                <Line
-                                                    type="monotone"
-                                                    dataKey="pastValue"
-                                                    name="Xu hướng hiện tại"
-                                                    stroke={colors[blockName]}
-                                                    strokeWidth={3}
-                                                    dot={{ r: 5 }}
-                                                    activeDot={{ r: 7 }}
-                                                    connectNulls
-                                                >
-                                                    <LabelList dataKey="pastValue" content={renderLineLabel} />
-                                                </Line>
-                                            )}
-                                            {blockHasFuture && (
-                                                <Line
-                                                    type="monotone"
-                                                    dataKey="futureValue"
-                                                    name="Xu hướng tương lai"
-                                                    stroke={colors[blockName]}
-                                                    strokeWidth={3}
-                                                    strokeDasharray="6 4"
-                                                    dot={{ r: 5 }}
-                                                    activeDot={{ r: 7 }}
-                                                    connectNulls
-                                                >
-                                                    <LabelList dataKey="futureValue" content={renderFutureLineLabel} />
-                                                </Line>
-                                            )}
-                                        </LineChart>
-                                    </ResponsiveContainer>
-                                </div>
-                                <div style={{ marginTop: '1rem' }}>
-                                    <TrendLegend color={colors[blockName]} showPast={blockHasPast} showFuture={blockHasFuture} />
-                                </div>
+                                {/* Only render LineChart if has past or future data */}
+                                {(blockHasPast || blockHasFuture) && (
+                                    <>
+                                        <div style={{ height: '320px', width: '100%' }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <LineChart data={blockSeries}>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                                                    <XAxis dataKey="term" tick={{ fontSize: 12 }} tickFormatter={formatTermLabel} interval={0} />
+                                                    <YAxis domain={[0, 30]} tick={{ fontSize: 12 }} />
+                                                    <Tooltip content={<TermAverageTooltip />} />
+                                                    {blockHasPast && (
+                                                        <Line
+                                                            type="monotone"
+                                                            dataKey="pastValue"
+                                                            name="Xu hướng hiện tại"
+                                                            stroke={colors[blockName]}
+                                                            strokeWidth={3}
+                                                            dot={{ r: 5 }}
+                                                            activeDot={{ r: 7 }}
+                                                            connectNulls
+                                                        >
+                                                            <LabelList dataKey="pastValue" content={renderLineLabel} />
+                                                        </Line>
+                                                    )}
+                                                    {blockHasFuture && (
+                                                        <Line
+                                                            type="monotone"
+                                                            dataKey="futureValue"
+                                                            name="Xu hướng tương lai"
+                                                            stroke={colors[blockName]}
+                                                            strokeWidth={3}
+                                                            strokeDasharray="6 4"
+                                                            dot={{ r: 5 }}
+                                                            activeDot={{ r: 7 }}
+                                                            connectNulls
+                                                        >
+                                                            <LabelList dataKey="futureValue" content={renderFutureLineLabel} />
+                                                        </Line>
+                                                    )}
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                        <div style={{ marginTop: '1rem' }}>
+                                            <TrendLegend color={colors[blockName]} showPast={blockHasPast} showFuture={blockHasFuture} />
+                                        </div>
+                                    </>
+                                )}
 
-                                <div style={{ height: '220px', marginTop: '2rem' }}>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={blockBarData} layout="vertical">
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-                                            <XAxis type="number" domain={[0, 10]} tick={{ fontSize: 11 }} />
-                                            <YAxis type="category" dataKey="subjectLabel" width={90} tick={{ fontSize: 11 }} />
-                                            <Tooltip formatter={(value) => (value === null || value === undefined ? '-' : Number(value).toFixed(2))} contentStyle={{ borderRadius: '6px', fontSize: '0.85rem' }} />
-                                            <Bar dataKey="avg" radius={[0, 4, 4, 0]} barSize={24}>
-                                                {blockBarData.map(item => (
-                                                    <Cell key={item.subjectId} fill={getSubjectColor(item.subjectId)} />
-                                                ))}
-                                                <LabelList dataKey="avg" content={renderBarLabel} />
-                                            </Bar>
-                                        </BarChart>
-                                    </ResponsiveContainer>
+                                <div style={{ marginTop: '2rem' }}>
+                                    <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '0.75rem', fontStyle: 'italic' }}>
+                                         Điểm các môn trong học kỳ hiện tại ({currentGradeLabel || 'N/A'})
+                                    </p>
+                                    {blockBarData.length > 0 ? (
+                                        <div style={{ height: '220px' }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <BarChart data={blockBarData} layout="vertical">
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                                                <XAxis type="number" domain={[0, 10]} tick={{ fontSize: 11 }} />
+                                                <YAxis type="category" dataKey="subjectLabel" width={90} tick={{ fontSize: 11 }} />
+                                                <Tooltip formatter={(value) => (value === null || value === undefined ? '-' : Number(value).toFixed(2))} contentStyle={{ borderRadius: '6px', fontSize: '0.85rem' }} />
+                                                <Bar dataKey="avg" radius={[0, 4, 4, 0]} barSize={24}>
+                                                    {blockBarData.map(item => (
+                                                        <Cell key={item.subjectId} fill={getSubjectColor(item.subjectId)} />
+                                                    ))}
+                                                    <LabelList dataKey="avg" content={renderBarLabel} />
+                                                </Bar>
+                                            </BarChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                    ) : (
+                                        <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.95rem' }}>
+                                            Chưa có dữ liệu cho học kỳ hiện tại
+                                        </div>
+                                    )}
                                 </div>
 
                                 {insight && (
@@ -894,7 +1086,7 @@ const DataViz = () => {
                         style={{ fontSize: '0.9rem' }}
                         disabled={aiProcessing}
                     >
-                        {aiProcessing ? 'Đang xử lý...' : 'Phân tích AI'}
+                        {aiProcessing ? 'Đang xử lý...' : '✨ Phân tích AI'}
                     </button>
                 </div>
             </div>
@@ -917,7 +1109,19 @@ const DataViz = () => {
             {/* Content based on active tab */}
             {activeTab === 'Tổ Hợp' ? (
                 <>
-                    <InsightBox title="Gợi ý khối thi phù hợp" text={examHeadlineText} />
+                    {examHeadlineText && (
+                        <div style={{
+                            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                            color: 'white',
+                            padding: '1.5rem',
+                            borderRadius: '12px',
+                            marginBottom: '2rem',
+                            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                        }}>
+                            <strong>🎯 Gợi ý khối thi phù hợp:</strong>
+                            <p style={{ marginTop: '0.5rem', opacity: 0.9 }}>{examHeadlineText}</p>
+                        </div>
+                    )}
                     {renderExamBlocks(examBlockDetails)}
                     
                     {/* Custom Combination Selector */}
@@ -1044,7 +1248,7 @@ const DataViz = () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
                     {/* Line Chart */}
                     <div className="card" style={{ width: '100%', padding: '2rem' }}>
-                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.3rem', fontWeight: '600' }}> Diễn biến điểm trung bình</h3>
+                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.3rem', fontWeight: '600' }}> Diễn biến điểm trung bình theo từng học kỳ</h3>
                         <p style={{ marginTop: '-1rem', marginBottom: '1.5rem', fontSize: '0.9rem', color: '#666' }}>
                             Học kỳ hiện tại: {currentGradeLabel || 'Chưa thiết lập'}
                         </p>
@@ -1127,12 +1331,16 @@ const DataViz = () => {
                             <div style={{ padding: '3rem', textAlign: 'center', color: '#999', fontSize: '1rem' }}>Chưa có dữ liệu</div>
                         )}
                     </div>
-                    {/* Bar Chart */}
+                    {/* Bar Chart - Split Layout */}
                     <div className="card" style={{ width: '100%', padding: '2rem' }}>
                         <h3 style={{ marginBottom: '1.5rem', fontSize: '1.3rem', fontWeight: '600' }}>So sánh các môn</h3>
+                        <p style={{ marginTop: '-1rem', marginBottom: '1.5rem', fontSize: '0.9rem', color: '#666' }}>
+                            Trung bình theo từng môn học tính tới hiện tại
+                        </p>
                         {barData.length > 0 ? (
-                            <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <div style={{ height: '380px', width: '100%' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', alignItems: 'start' }}>
+                                {/* Chart - Left */}
+                                <div style={{ height: '400px' }}>
                                     <ResponsiveContainer width="100%" height="100%">
                                         <BarChart data={barData} layout="vertical">
                                             <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
@@ -1148,43 +1356,78 @@ const DataViz = () => {
                                         </BarChart>
                                     </ResponsiveContainer>
                                 </div>
-                                {getOverviewText('subjects') && (
-                                    <div style={{
-                                        marginTop: '1.5rem',
-                                        padding: '1rem 1.25rem',
-                                        background: '#fafafa',
-                                        borderLeft: '4px solid #667eea',
-                                        borderRadius: '6px',
-                                        color: '#555',
-                                        fontSize: '0.95rem',
-                                        lineHeight: 1.6,
-                                    }}>
-                                        <div style={{ fontWeight: '600', color: '#667eea', marginBottom: '0.5rem' }}>💡 Đánh giá theo từng môn</div>
-                                        <div>{getOverviewText('subjects')}</div>
-                                    </div>
-                                )}
+                                {/* AI Insight - Right */}
+                                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '400px' }}>
+                                    {getOverviewText('subjects') ? (
+                                        <div style={{
+                                            padding: '2rem',
+                                            background: 'linear-gradient(135deg, #667eea15 0%, #764ba215 100%)',
+                                            borderRadius: '16px',
+                                            border: '2px solid #e8eaf6',
+                                            boxShadow: '0 4px 12px rgba(102, 126, 234, 0.08)',
+                                            position: 'relative',
+                                            overflow: 'hidden',
+                                        }}>
+                                            <div style={{
+                                                position: 'absolute',
+                                                top: 0,
+                                                left: 0,
+                                                width: '5px',
+                                                height: '100%',
+                                                background: 'linear-gradient(180deg, #667eea 0%, #764ba2 100%)',
+                                            }} />
+                                            <div style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '0.75rem',
+                                                marginBottom: '1.25rem',
+                                                fontWeight: '700',
+                                                fontSize: '1.15rem',
+                                                color: '#5a67d8',
+                                            }}>
+                                                <span>💡 Đánh giá theo từng môn</span>
+                                            </div>
+                                            <div style={{
+                                                color: '#34495e',
+                                                fontSize: '1rem',
+                                                lineHeight: 1.7,
+                                                fontWeight: '400',
+                                            }}>{getOverviewText('subjects')}</div>
+                                        </div>
+                                    ) : (
+                                        <div style={{
+                                            padding: '2rem',
+                                            background: '#f8f9fa',
+                                            borderRadius: '8px',
+                                            textAlign: 'center',
+                                            color: '#999'
+                                        }}>
+                                            <p>Hãy nhấn "Phân tích AI" để nhận đánh giá chi tiết về các môn học của bạn.</p>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         ) : (
                             <div style={{ padding: '3rem', textAlign: 'center', color: '#999', fontSize: '1rem' }}>Chưa có dữ liệu</div>
                         )}
                     </div>
 
-                    {/* Radar Chart */}
+                    {/* Radar Chart - Split Layout */}
                     <div className="card" style={{ width: '100%', padding: '2rem' }}>
-                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.3rem', fontWeight: '600' }}> Biểu đồ năng lực</h3>
+                        <h3 style={{ marginBottom: '1.5rem', fontSize: '1.3rem', fontWeight: '600' }}>Biểu đồ năng lực</h3>
                         {barData.length > 0 ? (
                             <div style={{
-                                display: 'flex',
+                                display: 'grid',
+                                gridTemplateColumns: '1fr 1fr',
                                 gap: '2rem',
-                                alignItems: 'stretch',
-                                minHeight: '500px'
+                                alignItems: 'center'
                             }}>
-                                {/* Left side - AI Comments */}
+                                {/* Left side - AI Insight */}
                                 <div style={{
-                                    flex: '0 0 40%',
                                     display: 'flex',
                                     flexDirection: 'column',
-                                    justifyContent: 'center'
+                                    justifyContent: 'center',
+                                    minHeight: '500px'
                                 }}>
                                     <div style={{
                                         padding: '2rem',
@@ -1228,10 +1471,10 @@ const DataViz = () => {
 
                                 {/* Right side - Radar Chart */}
                                 <div style={{
-                                    flex: '0 0 60%',
                                     display: 'flex',
                                     alignItems: 'center',
-                                    justifyContent: 'center'
+                                    justifyContent: 'center',
+                                    minHeight: '500px'
                                 }}>
                                     {currentTermRadarData.length > 0 ? (
                                         <ResponsiveContainer width="100%" height={500}>

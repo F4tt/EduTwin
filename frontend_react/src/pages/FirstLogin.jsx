@@ -180,20 +180,20 @@ const FirstLogin = () => {
     };
 
     return (
-        <div style={{ minHeight: '100vh', background: '#f8f9fa', padding: '2rem', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        <div style={{ minHeight: '100vh', background: 'var(--bg-body)', padding: '2rem', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
             <div className="card" style={{ width: '100%', maxWidth: '900px', padding: '2.5rem', maxHeight: '90vh', overflowY: 'auto' }}>
 
                 {/* Progress Bar */}
-                <div style={{ marginBottom: '2rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', color: '#666', fontSize: '0.9rem' }}>
+                <div style={{ marginBottom: '2.5rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.95rem', fontWeight: '500' }}>
                         <span>Thông tin cá nhân</span>
                         <span>Kết quả học tập</span>
                     </div>
-                    <div style={{ height: '6px', background: '#eee', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ height: '8px', background: 'var(--border-color)', borderRadius: '4px', overflow: 'hidden' }}>
                         <motion.div
                             initial={{ width: '0%' }}
                             animate={{ width: step === 1 ? '50%' : '100%' }}
-                            style={{ height: '100%', background: '#d32f2f' }}
+                            style={{ height: '100%', background: 'var(--primary-color)' }}
                         />
                     </div>
                 </div>
@@ -201,16 +201,26 @@ const FirstLogin = () => {
                 <AnimatePresence mode='wait'>
                     {step === 1 && (
                         <motion.div key="step1" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}>
-                            <h2 style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem' }}>👋 Chào mừng đến với EduTwin</h2>
-                            <p style={{ color: '#666', marginBottom: '2rem' }}>Hãy cập nhật thông tin để chúng tôi hỗ trợ bạn tốt hơn.</p>
+                            <h2 style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>👋 Chào mừng đến với EduTwin</h2>
+                            <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>Hãy cập nhật thông tin để chúng tôi hỗ trợ bạn tốt hơn.</p>
 
                             {error && (
-                                <div ref={errorRef} style={{ color: '#c62828', marginBottom: '1rem', background: '#ffebee', padding: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <div ref={errorRef} style={{
+                                    color: 'var(--danger-color)',
+                                    marginBottom: '1.5rem',
+                                    background: '#fef2f2',
+                                    padding: '1rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem',
+                                    border: '1px solid #fecaca'
+                                }}>
                                     <AlertCircle size={18} /> {error}
                                 </div>
                             )}
 
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
                                 <div>
                                     <label className="label">Email</label>
                                     <input className="input-field" name="email" value={profileData.email} onChange={handleProfileChange} placeholder="VD: example@email.com" />
@@ -229,7 +239,7 @@ const FirstLogin = () => {
                                 </div>
                             </div>
 
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2.5rem' }}>
                                 <button className="btn btn-outline" onClick={() => handleStep1Submit(true)}>Bỏ qua</button>
                                 <button className="btn btn-primary" onClick={() => handleStep1Submit(false)}>Lưu và Tiếp tục</button>
                             </div>
@@ -238,54 +248,71 @@ const FirstLogin = () => {
 
                     {step === 2 && (
                         <motion.div key="step2" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}>
-                            <h2 style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem' }}>📚 Kết quả học tập</h2>
-                            <p style={{ color: '#666', marginBottom: '2rem' }}>Nhập điểm số các môn học (nếu có).</p>
+                            <h2 style={{ fontSize: '1.75rem', fontWeight: '700', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>📚 Kết quả học tập</h2>
+                            <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>Nhập điểm số các môn học (nếu có).</p>
 
                             {error && (
-                                <div ref={errorRef} style={{ color: '#c62828', marginBottom: '1rem', background: '#ffebee', padding: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <div ref={errorRef} style={{
+                                    color: 'var(--danger-color)',
+                                    marginBottom: '1.5rem',
+                                    background: '#fef2f2',
+                                    padding: '1rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem',
+                                    border: '1px solid #fecaca'
+                                }}>
                                     <AlertCircle size={18} /> {error}
                                 </div>
                             )}
 
-                            <div style={{ marginBottom: '2rem', background: '#e3f2fd', padding: '1rem', borderRadius: '8px' }}>
-                                <label className="label" style={{ color: '#1565c0' }}>Học kỳ hiện tại của bạn <span style={{ color: 'red' }}>*</span></label>
-                                <select className="input-field" value={currentGrade} onChange={(e) => setCurrentGrade(e.target.value)} style={{ borderColor: '#2196f3' }}>
+                            <div style={{ marginBottom: '2rem', background: 'var(--primary-light)', padding: '1.5rem', borderRadius: 'var(--radius-md)' }}>
+                                <label className="label" style={{ color: 'var(--primary-color)', fontWeight: '600' }}>Học kỳ hiện tại của bạn <span style={{ color: 'var(--danger-color)' }}>*</span></label>
+                                <select className="input-field" value={currentGrade} onChange={(e) => setCurrentGrade(e.target.value)} style={{ borderColor: 'var(--primary-color)' }}>
                                     <option value="">-- Chọn học kỳ --</option>
                                     {gradeOptions.map(opt => (<option key={opt.value} value={opt.value}>{opt.label}</option>))}
                                 </select>
-                                <p style={{ fontSize: '0.85rem', color: '#555', marginTop: '0.5rem' }}>* Các ô nhập điểm cho học kỳ tương lai sẽ bị khóa.</p>
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>* Các ô nhập điểm cho học kỳ tương lai sẽ bị khóa.</p>
                             </div>
 
                             {loadingScores ? (
-                                <div>Đang tải dữ liệu...</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--primary-color)' }}>
+                                    <span className="spinner"></span> Đang tải dữ liệu...
+                                </div>
                             ) : (
                                 <div style={{ maxHeight: '500px', overflowY: 'auto', paddingRight: '0.5rem' }}>
                                     {GRADES.map(grade => (
-                                        <div key={grade} style={{ marginBottom: '2rem', border: '1px solid #eee', borderRadius: '8px', padding: '1rem' }}>
-                                            <h3 style={{ fontSize: '1.2rem', fontWeight: '700', marginBottom: '1rem', color: '#d32f2f', borderBottom: '2px solid #fce4ec', paddingBottom: '0.5rem' }}>Lớp {grade}</h3>
-                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+                                        <div key={grade} style={{ marginBottom: '2rem', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)', padding: '1.5rem' }}>
+                                            <h3 style={{ fontSize: '1.2rem', fontWeight: '700', marginBottom: '1.5rem', color: 'var(--primary-color)', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>Lớp {grade}</h3>
+                                            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
                                                 {SEMESTERS.map(sem => {
                                                     const disabled = isInputDisabled(grade, sem);
                                                     return (
                                                         <div key={sem} style={{ opacity: disabled ? 0.5 : 1 }}>
-                                                            <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '0.75rem', color: '#555' }}>Học kỳ {sem} {disabled && '(Chưa học)'}</h4>
-                                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '0.75rem' }}>
+                                                            <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Học kỳ {sem} {disabled && '(Chưa học)'}</h4>
+                                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '1rem' }}>
                                                                 {SUBJECTS.map(subj => {
                                                                     const key = `${subj.id}_${grade}_${sem}`;
                                                                     const hasError = !!inputErrors[key];
                                                                     return (
                                                                         <div key={key}>
-                                                                            <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.2rem', color: hasError ? '#c62828' : '#444' }}>{subj.label}</label>
+                                                                            <label style={{ fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem', color: hasError ? 'var(--danger-color)' : 'var(--text-secondary)' }}>{subj.label}</label>
                                                                             <div style={{ position: 'relative' }}>
                                                                                 <input
                                                                                     className="input-field"
-                                                                                    style={{ padding: '0.4rem', fontSize: '0.9rem', borderColor: hasError ? '#c62828' : '#e0e0e0', background: hasError ? '#ffebee' : 'white' }}
-                                                                                    placeholder="VD: 8.5"
+                                                                                    style={{
+                                                                                        padding: '0.5rem',
+                                                                                        fontSize: '0.95rem',
+                                                                                        borderColor: hasError ? 'var(--danger-color)' : 'var(--border-color)',
+                                                                                        background: hasError ? '#fef2f2' : 'var(--bg-surface)'
+                                                                                    }}
+                                                                                    placeholder="-"
                                                                                     value={scoreInputs[key] || ''}
                                                                                     onChange={(e) => handleScoreChange(subj.id, grade, sem, e.target.value)}
                                                                                     disabled={disabled}
                                                                                 />
-                                                                                {hasError && (<div style={{ position: 'absolute', right: 0, top: '100%', fontSize: '0.7rem', color: '#c62828', zIndex: 10 }}>{inputErrors[key]}</div>)}
+                                                                                {hasError && (<div style={{ position: 'absolute', right: 0, top: '100%', fontSize: '0.75rem', color: 'var(--danger-color)', zIndex: 10 }}>{inputErrors[key]}</div>)}
                                                                             </div>
                                                                         </div>
                                                                     );
@@ -300,7 +327,7 @@ const FirstLogin = () => {
                                 </div>
                             )}
 
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid #eee' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-color)' }}>
                                 <button className="btn btn-outline" onClick={() => setStep(1)}>Quay lại</button>
                                 <button className="btn btn-primary" onClick={handleStep2Submit} disabled={!currentGrade}>Hoàn tất và Lưu</button>
                             </div>

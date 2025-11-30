@@ -11,9 +11,109 @@ from db import models
 from services.intent_detection import ScoreUpdateIntent, detect_score_update_intent
 from services.intent_detection import detect_profile_update_intent, detect_personalization_intent
 from services.intent_detection import detect_confirmation_intent, detect_cancellation_intent
-from services import memory_manager
-# REMOVED: from services.vector_store_provider import get_vector_store
+# REMOVED: memory_manager import (service deleted, functions moved inline)
+# REMOVED: vector_store_provider import (no longer used)
 from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification
+
+
+# Helper functions moved from deleted memory_manager service
+def create_pending_update(db: Session, user_id: int, update_type: str, field: str = None, 
+                         old_value: str = None, new_value: str = None, metadata: dict = None):
+    pu = models.PendingUpdate(
+        user_id=user_id,
+        update_type=update_type,
+        field=field,
+        old_value=str(old_value) if old_value is not None else None,
+        new_value=str(new_value) if new_value is not None else None,
+        metadata_=metadata or {},
+    )
+    db.add(pu)
+    db.flush()
+    return pu
+
+
+def list_pending_updates(db: Session, user_id: int):
+    return db.query(models.PendingUpdate).filter(models.PendingUpdate.user_id == user_id).all()
+
+
+def apply_pending_update(db: Session, update_id: int, user_id: int):
+    """Apply a pending update and remove it."""
+    pu = db.query(models.PendingUpdate).filter(
+        models.PendingUpdate.id == update_id,
+        models.PendingUpdate.user_id == user_id
+    ).first()
+    if not pu:
+        return None
+    
+    if pu.update_type == "profile":
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if user and pu.field in ("first_name", "last_name", "email", "phone"):
+            setattr(user, pu.field, pu.new_value)
+            db.commit()
+    elif pu.update_type == "score":
+        score_id = (pu.metadata_ or {}).get("score_id")
+        if score_id:
+            score = db.query(models.StudyScore).filter(models.StudyScore.id == int(score_id)).first()
+            if score:
+                from datetime import datetime
+                score.actual_score = float(pu.new_value)
+                score.actual_source = "chat_confirmation"
+                score.actual_status = "confirmed"
+                score.actual_updated_at = datetime.utcnow()
+                db.commit()
+                # REMOVED: vector store sync
+                from ml import prediction_service
+                prediction_service.update_predictions_for_user(db, score.user_id)
+    
+    try:
+        db.delete(pu)
+        db.commit()
+    except Exception:
+        db.rollback()
+    return pu
+
+
+def cancel_pending_update(db: Session, update_id: int, user_id: int) -> bool:
+    """Cancel a pending update."""
+    pu = db.query(models.PendingUpdate).filter(
+        models.PendingUpdate.id == update_id,
+        models.PendingUpdate.user_id == user_id
+    ).first()
+    if not pu:
+        return False
+    try:
+        db.delete(pu)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+
+
+def set_user_preference(db: Session, user_id: int, key: str, value) -> dict:
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        return {}
+    prefs = user.preferences or {}
+    prefs[key] = value
+    user.preferences = prefs
+    db.commit()
+    return prefs
+
+
+def build_user_summary(user) -> str:
+    if not user:
+        return ""
+    parts = []
+    if user.first_name or user.last_name:
+        parts.append(f"Tên: {user.first_name or ''} {user.last_name or ''}".strip())
+    if user.current_grade:
+        parts.append(f"Khối: {user.current_grade}")
+    prefs = user.preferences or {}
+    if prefs:
+        parts.append("Sở thích: " + ", ".join(f"{k}={v}" for k, v in prefs.items()))
+    return "; ".join(parts)
+
 
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
@@ -110,23 +210,36 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
     if user_id is None or db is None:
         return contexts
     
-    # Get recent chat messages for context (last 5)
+    # Get recent chat messages for context (last 5) via ChatSession
     recent_messages = db.query(models.ChatMessage)\
-        .filter(models.ChatMessage.user_id == user_id)\
+        .join(models.ChatSession, models.ChatMessage.session_id == models.ChatSession.id)\
+        .filter(models.ChatSession.user_id == user_id)\
         .order_by(models.ChatMessage.created_at.desc())\
         .limit(5)\
         .all()
     
     for msg in reversed(recent_messages):  # Show oldest first
-        contexts.append({
-            "title": "Hội thoại gần đây",
-            "content": f"User: {msg.message}\nBot: {msg.response}",
-            "score": 1.0,
-            "metadata": {
-                "type": "chat_history",
-                "created_at": msg.created_at.isoformat() if msg.created_at else None
-            }
-        })
+        # ChatMessage has role and content, not message/response
+        if msg.role == 'user':
+            contexts.append({
+                "title": "Hội thoại gần đây",
+                "content": f"User: {msg.content}",
+                "score": 1.0,
+                "metadata": {
+                    "type": "chat_history",
+                    "created_at": msg.created_at.isoformat() if msg.created_at else None
+                }
+            })
+        elif msg.role == 'assistant':
+            contexts.append({
+                "title": "Hội thoại gần đây",
+                "content": f"Bot: {msg.content}",
+                "score": 1.0,
+                "metadata": {
+                    "type": "chat_history",
+                    "created_at": msg.created_at.isoformat() if msg.created_at else None
+                }
+            })
     
     # Get recent score updates if message mentions subjects/grades
     score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp']
@@ -164,19 +277,10 @@ def _build_prompt(
 ) -> List[Dict[str, str]]:
     """Build optimized system prompt with dynamic context selection."""
     
-    # Use context optimizer for intelligent context selection
-    from services.context_optimizer import get_context_optimizer
+    # REMOVED: context_optimizer (service deleted, using simplified direct approach)
     
-    optimizer = get_context_optimizer()
-    
-    # Build optimized context bundle
-    context_bundle = optimizer.build_optimized_context(
-        db=db,
-        user_id=user_id,
-        message=message,
-        conversation_history=conversation_history or [],
-        target_average=None  # Will be set for goal-setting contexts
-    )
+    # Build context directly (simplified)
+    educational_ctx = get_educational_context()[:1500]  # Limit to 1500 chars
     
     # Base instructions (always included, lightweight)
     instructions = (
@@ -186,21 +290,9 @@ def _build_prompt(
         "Nếu cần cập nhật dữ liệu, hãy yêu cầu xác nhận rõ ràng."
     )
     
-    # Add educational knowledge only if needed and already optimized
-    if context_bundle["educational_knowledge"]:
-        instructions += f"\n\n# KIẾN THỨC:\n{context_bundle['educational_knowledge']}"
-    
-    # Add benchmark data only if needed
-    if context_bundle["benchmark_data"]:
-        instructions += f"\n\n# VỊ TRÍ HỌC SINH:\n{context_bundle['benchmark_data']}"
-    
-    # Add personalization (very small)
-    if context_bundle["personalization"]:
-        instructions += context_bundle["personalization"]
-    
-    # Add similar students only for goal setting
-    if context_bundle["similar_students"]:
-        instructions += f"\n\n# HỌC SINH TƯƠNG TỰ:\n{context_bundle['similar_students']}"
+    # Add educational knowledge
+    if educational_ctx:
+        instructions += f"\n\n# KIẾN THỨC:\n{educational_ctx}"
 
     # build context block
     context_texts = []
@@ -292,14 +384,14 @@ async def generate_chat_response(
     confirmation_result = None
     if user_id and (is_confirmation or is_cancellation):
         # Get most recent pending update
-        pending_updates = memory_manager.list_pending_updates(db, user_id)
+        pending_updates = list_pending_updates(db, user_id)
         if pending_updates:
             most_recent = pending_updates[0]  # Most recent first
             
             if is_confirmation:
                 # Apply the pending update
                 try:
-                    applied = memory_manager.apply_pending_update(db, most_recent.id, user_id)
+                    applied = apply_pending_update(db, most_recent.id, user_id)
                     if applied:
                         confirmation_result = {
                             "action": "confirmed",
@@ -312,19 +404,10 @@ async def generate_chat_response(
                         # If it's a score update, also update predictions
                         if most_recent.update_type == "score":
                             from ml import prediction_service
-                            from services.vector_store_provider import get_vector_store
-                            from services import learning_documents
+                            # REMOVED: vector_store sync (no longer used)
                             
                             try:
-                                # Refresh score in vector store
-                                score_id = most_recent.metadata_.get("score_id") if most_recent.metadata_ else None
-                                if score_id:
-                                    score = db.query(models.StudyScore).filter(models.StudyScore.id == score_id).first()
-                                    if score:
-                                        vector_store = get_vector_store()
-                                        learning_documents.sync_score_embeddings(db, vector_store, [score])
-                                
-                                # Update predictions
+                                # Update predictions only
                                 prediction_service.update_predictions_for_user(db, user_id)
                             except Exception:
                                 pass
@@ -337,7 +420,7 @@ async def generate_chat_response(
             elif is_cancellation:
                 # Cancel the pending update
                 try:
-                    cancelled = memory_manager.cancel_pending_update(db, most_recent.id, user_id)
+                    cancelled = cancel_pending_update(db, most_recent.id, user_id)
                     if cancelled:
                         confirmation_result = {
                             "action": "cancelled",
@@ -416,10 +499,9 @@ async def generate_chat_response(
             except Exception:
                 pass
 
-    # Use optimized conversation history instead of full history
-    from services.context_optimizer import get_context_optimizer
-    optimizer = get_context_optimizer()
-    optimized_history = optimizer.optimize_conversation_history(conversation_messages, message)
+    # REMOVED: context_optimizer (service deleted)
+    # Use last 5 messages from conversation history (simplified optimization)
+    optimized_history = (conversation_messages[-5:] if len(conversation_messages) > 5 else conversation_messages)
     
     # Append current user message at end
     optimized_history.append({"role": "user", "content": message})
@@ -472,7 +554,7 @@ async def generate_chat_response(
     pending_score_update = None
     if score_suggestion and user_id and not missing_info:
         try:
-            pu = memory_manager.create_pending_update(
+            pu = create_pending_update(
                 db,
                 user_id=user_id,
                 update_type="score",
@@ -519,7 +601,7 @@ async def generate_chat_response(
                     last = parts[0] if parts else value
                     first = " ".join(parts[1:]) if len(parts) > 1 else ""
                     # store name as separate pending updates is safer; prefer setting both
-                    pending_profile = memory_manager.create_pending_update(
+                    pending_profile = create_pending_update(
                         db,
                         user_id=user_id,
                         update_type="profile",
@@ -529,7 +611,7 @@ async def generate_chat_response(
                     )
                     # also create a pending first name if present (frontend can show both)
                     if first:
-                        memory_manager.create_pending_update(
+                        create_pending_update(
                             db,
                             user_id=user_id,
                             update_type="profile",
@@ -538,7 +620,7 @@ async def generate_chat_response(
                             new_value=first,
                         )
                 else:
-                    pending_profile = memory_manager.create_pending_update(
+                    pending_profile = create_pending_update(
                         db,
                         user_id=user_id,
                         update_type="profile",
@@ -556,7 +638,7 @@ async def generate_chat_response(
         # create a short learning document and upsert immediately (non-sensitive)
         try:
             doc_title = "Ghi nhớ từ cuộc trò chuyện"
-            memory_doc = memory_manager.create_pending_update(
+            memory_doc = create_pending_update(
                 db,
                 user_id,
                 update_type="document",
@@ -565,7 +647,7 @@ async def generate_chat_response(
                 new_value=message,
             )
             # auto-apply document-type pending updates (non-sensitive)
-            memory_manager.apply_pending_update(db, memory_doc.id, user_id)
+            apply_pending_update(db, memory_doc.id, user_id)
             memory_doc = None
         except Exception:
             memory_doc = None
@@ -581,13 +663,13 @@ async def generate_chat_response(
                 # map field to preference keys
                 pref_key = field
                 try:
-                    memory_manager.set_user_preference(db, user_id, pref_key, value)
+                    set_user_preference(db, user_id, pref_key, value)
                     # update active sessions with new summary
                     from utils.session_utils import SessionManager
                     sessions = SessionManager.get_user_sessions(user_id)
                     # re-query user to build summary
                     user_obj = db.query(models.User).filter(models.User.id == user_id).first()
-                    summary = memory_manager.build_user_summary(user_obj) if user_obj else None
+                    summary = build_user_summary(user_obj) if user_obj else None
                     for s in sessions:
                         try:
                             SessionManager.update_session_fields(s["session_id"], {"preferences_summary": summary})
@@ -640,6 +722,33 @@ async def generate_chat_response(
                         assistant_msg = models.ChatMessage(session_id=session.id, role="assistant", content=answer)
                         db.add(user_msg)
                         db.add(assistant_msg)
+                        
+                        # Generate follow-up question if appropriate
+                        follow_up_question = None
+                        try:
+                            from services.proactive_engagement import ProactiveEngagement
+                            engagement = ProactiveEngagement(db)
+                            
+                            # Count messages to determine if we should ask
+                            db.flush()  # Flush to get accurate count
+                            db.refresh(session)
+                            message_count = len(session.messages)
+                            
+                            follow_up_question = engagement.generate_follow_up_question(
+                                message=message,
+                                response=answer,
+                                user_id=user_id,
+                                conversation_count=message_count
+                            )
+                            
+                            if follow_up_question:
+                                # Append follow-up to assistant's answer
+                                answer = f"{answer}\n\n{follow_up_question}"
+                                assistant_msg.content = answer
+                        except Exception as e:
+                            import logging
+                            logging.getLogger("uvicorn.error").debug(f"Error generating follow-up: {e}")
+                        
                         try:
                             db.commit()
                             persisted_session_id = str(session.id)

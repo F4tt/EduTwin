@@ -506,18 +506,61 @@ MỤC TIÊU:
 {json.dumps({SUBJECT_DISPLAY.get(k, k): v for k, v in predicted_scores.items()}, ensure_ascii=False, indent=2)}
 {similar_info}
 
-VIẾT 6 ĐOẠN (mỗi đoạn 4-6 câu, văn bản thuần, KHÔNG markdown):
+VIẾT CHI TIẾT 6 ĐOẠN VĂN (QUAN TRỌNG: Mỗi đoạn 5-8 câu, văn bản thuần, KHÔNG markdown, KHÔNG bullet points):
 
-1. So sánh hiện tại-mục tiêu: Khoảng cách, mức độ khả thi, số điểm cần tăng
-2. Môn cần cải thiện: TOP 3 môn, số điểm cần tăng, môn đã đạt
-3. Điểm mạnh: 2-3 môn thế mạnh, vị trí so benchmark, cách duy trì
-4. Điểm yếu: 2-3 môn yếu, roadmap cụ thể, phương pháp
-5. Chiến lược: Phân bổ thời gian, phương pháp, lộ trình, milestone
-6. Động viên: Đánh giá khả năng, khích lệ, lời khuyên
+**ĐOẠN 1 - SO SÁNH HIỆN TẠI VỚI MỤC TIÊU (5-8 câu)**:
+- Nêu rõ điểm TB hiện tại và mục tiêu
+- Tính khoảng cách cần bù (số điểm chính xác)
+- Đánh giá mức độ khả thi (dễ/khả thi/thách thức)
+- So sánh với benchmark (vị trí hiện tại, vị trí mục tiêu)
+- Phân tích thời gian còn lại và tốc độ cần thiết
 
-Dùng SỐ LIỆU thực tế, ngôn ngữ thân thiện."""
+**ĐOẠN 2 - MÔN CẦN CẢI THIỆN (5-8 câu)**:
+- Liệt kê TOP 3 môn yếu nhất với điểm hiện tại
+- Số điểm cần tăng cho từng môn (cụ thể)
+- Lý do tại sao các môn này quan trọng
+- Các môn đã đạt tốt (không cần tập trung nhiều)
+- Ưu tiên thứ tự cải thiện
+
+**ĐOẠN 3 - ĐIỂM MẠNH VÀ LỢI THẾ (5-8 câu)**:
+- 2-3 môn thế mạnh hiện tại (nêu điểm số)
+- Vị trí so với benchmark (top bao nhiêu %)
+- Giải thích tại sao đây là lợi thế
+- Cách duy trì và phát huy thêm
+- Kết nối với tổ hợp thi đại học phù hợp
+
+**ĐOẠN 4 - ĐIỂM YẾU VÀ GIẢI PHÁP (5-8 câu)**:
+- 2-3 môn yếu nhất (nêu điểm số và vấn đề)
+- Phân tích nguyên nhân (kiến thức nền, phương pháp, thời gian)
+- Roadmap chi tiết cho từng môn (3 bước cụ thể)
+- Phương pháp học hiệu quả cho từng môn
+- Tài nguyên cần thiết (sách, video, thầy cô)
+
+**ĐOẠN 5 - CHIẾN LƯỢC TỔNG THỂ (6-8 câu)**:
+- Phân bổ thời gian cụ thể cho từng môn/nhóm môn
+- Lộ trình từng giai đoạn (tháng 1, tháng 2, tháng 3)
+- Milestone kiểm tra tiến độ (điểm số cần đạt mỗi tháng)
+- Cân bằng giữa duy trì điểm mạnh và cải thiện điểm yếu
+- Phương pháp học (tự học, ôn tập, làm đề)
+- Điều chỉnh linh hoạt theo tiến độ
+
+**ĐOẠN 6 - ĐỘNG VIÊN VÀ KẾT LUẬN (5-7 câu)**:
+- Đánh giá tổng thể khả năng đạt mục tiêu
+- Nhấn mạnh điểm tích cực và tiềm năng
+- Khích lệ tinh thần, tạo động lực
+- Lời khuyên về tâm lý và sức khỏe
+- Cam kết đồng hành và hỗ trợ
+
+QUY TẮC BẮT BUỘC:
+✓ Dùng SỐ LIỆU thực tế từ dữ liệu (điểm số, benchmark, thống kê)
+✓ Ngôn ngữ thân thiện, xưng hô "bạn", giọng văn động viên
+✓ Văn bản LIỀN MẠCH, KHÔNG chia bullet points
+✓ Mỗi đoạn ít nhất 5-8 câu (KHÔNG được ngắn)
+✓ Chi tiết CỤ THỂ, KHÔNG chung chung
+✓ Tổng văn bản ít nhất 1500-2000 ký tự"""
     
     try:
+        logger.info(f"[GOAL_STRATEGY] Calling LLM for goal analysis, target: {target_average}")
         result = await generate_chat_response(
             db=db,
             user=user,
@@ -525,8 +568,34 @@ Dùng SỐ LIỆU thực tế, ngôn ngữ thân thiện."""
             session_id="__silent__"
         )
         analysis = result.get("answer", "").strip()
+        logger.info(f"[GOAL_STRATEGY] Got analysis response, length: {len(analysis)}")
+        
+        if not analysis:
+            logger.warning("[GOAL_STRATEGY] Empty analysis response from LLM")
+            # Fallback với thông tin chi tiết hơn
+            gap = round(target_average - (current_avg or 0), 2) if current_avg else target_average
+            analysis = f"""BẠN CẦN ĐẠT MỤC TIÊU {target_average} ĐIỂM
+
+Hiện tại bạn đang ở mức {current_avg if current_avg else 'chưa có điểm'} điểm. Để đạt mục tiêu {target_average} điểm ở học kỳ {target_semester} lớp {target_grade}, bạn cần tăng thêm {gap} điểm. Đây là một mục tiêu {'khả thi' if gap < 1 else 'thách thức nhưng có thể đạt được' if gap < 2 else 'đòi hỏi nỗ lực rất lớn'} nếu bạn kiên trì học tập.
+
+CÁC MÔN CẦN CẢI THIỆN:
+{chr(10).join([f'- {k}: Dự đoán đạt {v:.1f} điểm' for k, v in list(predicted_scores.items())[:5]])}
+
+Bạn nên tập trung vào các môn có điểm thấp nhất để nâng cao điểm trung bình chung. Đồng thời, duy trì và phát huy các môn đang có kết quả tốt.
+
+CHIẾN LƯỢC HỌC TẬP:
+1. Ưu tiên các môn yếu: Dành 60% thời gian cho các môn cần cải thiện nhất
+2. Duy trì điểm mạnh: 30% thời gian để giữ vững các môn đã tốt
+3. Ôn tập tổng hợp: 10% thời gian cho việc ôn tập toàn diện
+
+Hãy kiên trì và tin tưởng vào khả năng của bản thân. Mỗi ngày tiến bộ một chút sẽ đưa bạn đến gần hơn với mục tiêu!"""
     except Exception as e:
         logger.error(f"Failed to generate goal analysis: {e}")
-        analysis = f"Để đạt mục tiêu {target_average} điểm ở học kỳ {target_semester} lớp {target_grade}, bạn cần nỗ lực cải thiện ở các môn học theo dự đoán trên."
+        gap = round(target_average - (current_avg or 0), 2) if current_avg else target_average
+        analysis = f"""BẠN CẦN ĐẠT MỤC TIÊU {target_average} ĐIỂM
+
+Hiện tại bạn đang ở mức {current_avg if current_avg else 'chưa có điểm'} điểm. Để đạt mục tiêu {target_average} điểm ở học kỳ {target_semester} lớp {target_grade}, bạn cần tăng thêm {gap} điểm.
+
+Hãy xem lại các môn học và tập trung cải thiện những môn còn yếu. EduTwin sẽ đồng hành cùng bạn trên con đường chinh phục mục tiêu!"""
     
     return analysis

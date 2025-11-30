@@ -1,20 +1,32 @@
+# Core FastAPI dependencies
 fastapi
 uvicorn
+gunicorn
+
+# Database
 sqlalchemy
 psycopg2-binary
+redis
+
+# Security
 python-dotenv
-# Pin versions to avoid bcrypt/passlib incompatibility
 passlib==1.7.4
 bcrypt==3.2.0
-redis
+
+# ML/Data Science
 pandas
 openpyxl
-python-multipart
-faiss-cpu
-sentence-transformers
 scikit-learn
 scipy
 numpy
+
+# Utilities
+python-multipart
 httpx
+python-socketio
+aiofiles
+
+# Monitoring & Logging
 prometheus-client
 python-json-logger
+psutil

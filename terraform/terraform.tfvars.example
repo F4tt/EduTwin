@@ -1,0 +1,8 @@
+# Example terraform.tfvars file
+# Copy this to terraform.tfvars and fill in your values
+
+aws_region     = "ap-southeast-1"  # Singapore region
+project_name   = "edutwin"
+db_password    = "CHANGE_ME_STRONG_PASSWORD_HERE"  # Use a strong password!
+openai_api_key = "sk-your-openai-api-key-here"    # Your OpenAI API key
+environment    = "production"
