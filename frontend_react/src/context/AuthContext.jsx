@@ -18,14 +18,22 @@ export const AuthProvider = ({ children }) => {
                     setUser(userFromRes);
                     localStorage.setItem('user', JSON.stringify(userFromRes));
                 } else {
-                    // fallback to stored user
+                    // No valid user from backend, clear localStorage
+                    setUser(null);
+                    localStorage.removeItem('user');
+                }
+            } catch (e) {
+                // No active session or endpoint unavailable - clear invalid localStorage
+                console.log('Auth check failed:', e.response?.status);
+                if (e.response?.status === 401 || e.response?.status === 403) {
+                    // Session expired or invalid - clear everything
+                    setUser(null);
+                    localStorage.removeItem('user');
+                } else {
+                    // Network error - keep localStorage as fallback
                     const storedUser = localStorage.getItem('user');
                     if (storedUser) setUser(JSON.parse(storedUser));
                 }
-            } catch (e) {
-                // no active session or endpoint unavailable
-                const storedUser = localStorage.getItem('user');
-                if (storedUser) setUser(JSON.parse(storedUser));
             } finally {
                 setLoading(false);
             }
@@ -133,6 +141,76 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    const loginInstitution = async (username, password) => {
+        try {
+            const res = await axiosClient.post('/auth/institution/login', { username, password });
+            if (res.data && res.data.institution) {
+                const institutionData = res.data.institution;
+                setUser(institutionData);
+                localStorage.setItem('user', JSON.stringify(institutionData));
+                return { success: true, institution: institutionData };
+            }
+            return { success: false, message: 'Đăng nhập thất bại. Vui lòng thử lại.' };
+        } catch (error) {
+            let message = 'Đã xảy ra lỗi khi đăng nhập. Vui lòng thử lại.';
+            
+            if (error.response) {
+                const status = error.response.status;
+                const detail = error.response.data?.detail || '';
+                
+                if (status === 401 || detail.includes('Invalid') || detail.includes('incorrect')) {
+                    message = 'Tài khoản hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.';
+                } else if (status === 403) {
+                    message = 'Tài khoản đã bị vô hiệu hóa. Vui lòng liên hệ quản trị viên.';
+                } else if (status === 404) {
+                    message = 'Tài khoản không tồn tại.';
+                } else if (status >= 500) {
+                    message = 'Máy chủ đang bận. Vui lòng thử lại sau.';
+                }
+            } else if (error.message.includes('timeout')) {
+                message = 'Kết nối quá chậm. Vui lòng thử lại.';
+            } else if (error.message.includes('Network Error')) {
+                message = 'Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.';
+            }
+            
+            return { success: false, message };
+        }
+    };
+
+    const registerInstitution = async (data) => {
+        try {
+            await axiosClient.post('/auth/institution/register', data);
+            return { success: true };
+        } catch (error) {
+            let message = 'Đã xảy ra lỗi khi đăng ký. Vui lòng thử lại.';
+            
+            if (error.response) {
+                const status = error.response.status;
+                const detail = error.response.data?.detail || '';
+                
+                if (status === 409 || status === 400 && (detail.includes('already exists') || detail.includes('đã tồn tại'))) {
+                    message = 'Tên đăng nhập đã tồn tại. Vui lòng chọn tên khác.';
+                } else if (status === 400) {
+                    if (detail.includes('password')) {
+                        message = 'Mật khẩu không hợp lệ. Vui lòng nhập mật khẩu mạnh hơn.';
+                    } else if (detail.includes('username')) {
+                        message = 'Tên đăng nhập không hợp lệ. Chỉ dùng chữ cái, số và dấu gạch dưới.';
+                    } else {
+                        message = 'Thông tin đăng ký không hợp lệ. Vui lòng kiểm tra lại.';
+                    }
+                } else if (status >= 500) {
+                    message = 'Máy chủ đang bận. Vui lòng thử lại sau.';
+                }
+            } else if (error.message.includes('timeout')) {
+                message = 'Kết nối quá chậm. Vui lòng thử lại.';
+            } else if (error.message.includes('Network Error')) {
+                message = 'Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.';
+            }
+            
+            return { success: false, message };
+        }
+    };
+
     const updateProfile = async (data) => {
         try {
             // Optimistic update
@@ -157,7 +235,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     return (
-        <AuthContext.Provider value={{ user, login, register, logout, updateProfile, loading }}>
+        <AuthContext.Provider value={{ user, login, register, loginInstitution, registerInstitution, logout, updateProfile, loading }}>
             {children}
         </AuthContext.Provider>
     );

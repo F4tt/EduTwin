@@ -63,17 +63,24 @@ def import_knn_reference_dataset(
     file_bytes: bytes,
     filename: str,
     uploader_id: Optional[int],
+    institution_id: Optional[int] = None,
 ) -> ExcelImportSummary:
     summary = ExcelImportSummary(filename=filename)
 
     try:
-        df = pd.read_excel(BytesIO(file_bytes))
+        # Detect file type and read accordingly
+        file_ext = filename.lower().split('.')[-1]
+        if file_ext == 'csv':
+            df = pd.read_csv(BytesIO(file_bytes))
+        else:
+            # Default to Excel for .xlsx, .xls
+            df = pd.read_excel(BytesIO(file_bytes))
     except Exception as exc:  # noqa: BLE001
-        summary.errors.append(f"Không thể đọc file Excel: {exc}")
+        summary.errors.append(f"Không thể đọc file: {exc}")
         return summary
 
     if df.empty:
-        summary.warnings.append("File Excel không có dữ liệu.")
+        summary.warnings.append("File không có dữ liệu.")
         return summary
 
     column_map, invalid_columns = _build_knn_column_map(list(df.columns))
@@ -87,12 +94,29 @@ def import_knn_reference_dataset(
             f"Các cột không được nhận dạng và sẽ bị bỏ qua: {', '.join(invalid_columns)}"
         )
 
-    existing = db.query(models.KNNReferenceSample).count()
+    # Delete existing samples for this institution (or global if institution_id is None)
+    if institution_id:
+        existing = db.query(models.KNNReferenceSample).filter(
+            models.KNNReferenceSample.institution_id == institution_id
+        ).count()
+        if existing:
+            print(f"[IMPORT] Deleting {existing} existing reference samples for institution {institution_id}...")
+            db.query(models.KNNReferenceSample).filter(
+                models.KNNReferenceSample.institution_id == institution_id
+            ).delete()
+    else:
+        existing = db.query(models.KNNReferenceSample).filter(
+            models.KNNReferenceSample.institution_id == None
+        ).count()
+        if existing:
+            print(f"[IMPORT] Deleting {existing} existing global reference samples...")
+            db.query(models.KNNReferenceSample).filter(
+                models.KNNReferenceSample.institution_id == None
+            ).delete()
+    
     if existing:
-        print(f"[IMPORT] Deleting {existing} existing reference samples...")
-        db.query(models.KNNReferenceSample).delete()
         db.commit()  # Commit deletion immediately to prevent race conditions
-        print(f"[IMPORT] Deleted successfully, verified count: {db.query(models.KNNReferenceSample).count()}")
+        print(f"[IMPORT] Deleted successfully")
         summary.cleared_existing = True
 
     for idx, row in df.iterrows():
@@ -121,6 +145,7 @@ def import_knn_reference_dataset(
             sample_label=f"row_{row_number}",
             feature_data=feature_map,
             metadata_={"column_count": len(feature_map)},
+            institution_id=institution_id,  # Set institution_id for per-institution data
         )
         db.add(sample)
         summary.imported_rows += 1
@@ -135,6 +160,7 @@ def import_knn_reference_dataset(
     }
     log_record = models.DataImportLog(
         uploaded_by=uploader_id,
+        institution_id=institution_id,  # Set institution_id for import log
         filename=filename,
         total_rows=summary.total_rows,
         imported_rows=summary.imported_rows,

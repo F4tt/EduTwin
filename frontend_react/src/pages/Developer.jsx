@@ -210,8 +210,8 @@ const Developer = () => {
         const selectedFile = e.target.files[0];
         if (selectedFile) {
             const ext = selectedFile.name.split('.').pop().toLowerCase();
-            if (ext !== 'xlsx' && ext !== 'xls') {
-                setMessage({ type: 'error', text: 'Chỉ chấp nhận file Excel (.xlsx, .xls)' });
+            if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'csv') {
+                setMessage({ type: 'error', text: 'Chỉ chấp nhận file Excel (.xlsx, .xls) hoặc CSV (.csv)' });
                 return;
             }
             setFile(selectedFile);
@@ -221,14 +221,14 @@ const Developer = () => {
 
     const handleUpload = async () => {
         if (!file) {
-            setMessage({ type: 'error', text: 'Vui lòng chọn file trước khi upload.' });
+            setMessage({ type: 'error', text: 'Vui lòng chọn file trước khi tải lên.' });
             return;
         }
 
         setUploading(true);
         setMessage({ type: '', text: '' });
         setSummary(null);
-        notifyPipelineProcessing({ reason: 'dataset-import', message: 'Đang import dataset và cập nhật pipeline...' });
+        notifyPipelineProcessing({ reason: 'dataset-import', message: 'Đang tải lên tập dữ liệu và cập nhật pipeline...' });
 
         const formData = new FormData();
         formData.append('file', file);
@@ -239,7 +239,7 @@ const Developer = () => {
                 timeout: 90000
             });
             setSummary(res.data.summary || {});
-            setMessage({ type: 'success', text: 'Import thành công!' });
+            setMessage({ type: 'success', text: 'Tải lên thành công!' });
             setFile(null);
             notifyPipelineCompleted({ reason: 'dataset-import', stats: res.data.pipeline, message: 'Pipeline đã đồng bộ dataset mới.' });
             emitReferenceDatasetChanged({ summary: res.data.summary || {} });
@@ -364,12 +364,12 @@ const Developer = () => {
                             }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
                                     <Clock size={18} style={{ color: 'var(--text-tertiary)' }} />
-                                    <strong style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>Lần import gần nhất:</strong>
+                                    <strong style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>Lần tải lên gần nhất:</strong>
                                 </div>
                                 <div style={{ fontSize: '0.95rem', color: 'var(--text-primary)', lineHeight: '1.8' }}>
                                     <div><span style={{ color: 'var(--text-secondary)' }}>File:</span> <strong>{datasetStatus.last_import.filename}</strong></div>
                                     <div><span style={{ color: 'var(--text-secondary)' }}>Thời gian:</span> {new Date(datasetStatus.last_import.created_at).toLocaleString('vi-VN')}</div>
-                                    <div><span style={{ color: 'var(--text-secondary)' }}>Đã import:</span> {datasetStatus.last_import.imported_rows.toLocaleString('vi-VN')} / {datasetStatus.last_import.total_rows.toLocaleString('vi-VN')} dòng</div>
+                                    <div><span style={{ color: 'var(--text-secondary)' }}>Đã tải lên:</span> {datasetStatus.last_import.imported_rows.toLocaleString('vi-VN')} / {datasetStatus.last_import.total_rows.toLocaleString('vi-VN')} dòng</div>
                                     {datasetStatus.last_import.skipped_rows > 0 && (
                                         <div style={{ color: 'var(--warning-color)', marginTop: '0.5rem' }}>
                                             <strong>⚠ Đã bỏ qua:</strong> {datasetStatus.last_import.skipped_rows.toLocaleString('vi-VN')} dòng
@@ -392,7 +392,7 @@ const Developer = () => {
                                 gap: '0.5rem'
                             }}>
                                 <AlertCircle size={18} />
-                                Chưa có bộ dữ liệu tham chiếu. Vui lòng import file Excel để sử dụng tính năng dự đoán.
+                                Chưa có bộ dữ liệu tham chiếu. Vui lòng tải lên tập dữ liệu để sử dụng tính năng dự đoán.
                             </div>
                         )}
                     </div>
@@ -405,16 +405,16 @@ const Developer = () => {
             <div className="card" style={{ marginBottom: '2rem' }}>
                 <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
                     <Upload size={24} style={{ color: 'var(--primary-color)' }} />
-                    Import Dataset Tham Chiếu
+                    Tải Lên Tập Dữ Liệu Tham Chiếu
                 </h3>
                 <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Upload file Excel chứa dữ liệu tham chiếu cho mô hình học máy. File phải có các cột dạng <code style={{ background: 'var(--bg-body)', padding: '2px 6px', borderRadius: '4px' }}>Môn_Kỳ_Lớp</code> (VD: <code style={{ background: 'var(--bg-body)', padding: '2px 6px', borderRadius: '4px' }}>Toán_1_10</code>).
+                    Tải lên file chứa dữ liệu tham chiếu cho mô hình học máy. File phải có các cột dạng <code style={{ background: 'var(--bg-body)', padding: '2px 6px', borderRadius: '4px' }}>Môn_Kỳ_Lớp</code> (VD: <code style={{ background: 'var(--bg-body)', padding: '2px 6px', borderRadius: '4px' }}>Toán_1_10</code>).
                 </p>
 
                 <div style={{ marginBottom: '1.5rem' }}>
                     <input
                         type="file"
-                        accept=".xlsx,.xls"
+                        accept=".xlsx,.xls,.csv"
                         onChange={handleFileChange}
                         className="input-field"
                         style={{
@@ -440,12 +440,12 @@ const Developer = () => {
                     disabled={!file || uploading}
                 >
                     {uploading ? <RefreshCw size={18} className="spin" /> : <Upload size={18} />}
-                    {uploading ? 'Đang upload...' : 'Upload Dataset'}
+                    {uploading ? 'Đang tải lên...' : 'Tải lên tập dữ liệu'}
                 </button>
 
                 {summary && (
                     <div style={{ marginTop: '1.5rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                        <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>📊 Kết quả Import:</h4>
+                        <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>📊 Kết quả tải lên:</h4>
                         <ul style={{ margin: 0, paddingLeft: '1.5rem', fontSize: '0.95rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                             <li>Tổng số dòng hợp lệ: <strong>{summary.total_rows || 0}</strong></li>
                             <li>Số mẫu tham chiếu: <strong>{summary.reference_samples || 0}</strong></li>

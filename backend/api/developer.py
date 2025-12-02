@@ -45,8 +45,18 @@ def get_db():
 
 
 def _ensure_developer(user: dict | None) -> None:
-    if not user or user.get("role") not in {"developer", "admin"}:
-        raise HTTPException(status_code=403, detail="Chỉ developer mới được phép truy cập tính năng này.")
+    # Allow developer, admin, or institution to access these tools
+    if not user:
+        raise HTTPException(status_code=403, detail="Yêu cầu đăng nhập để truy cập tính năng này.")
+    
+    user_type = user.get("user_type")
+    role = user.get("role")
+    
+    # Allow institutions (user_type="institution") or developer/admin roles
+    if user_type == "institution" or role in {"developer", "admin"}:
+        return
+    
+    raise HTTPException(status_code=403, detail="Chỉ developer hoặc cơ sở giáo dục mới được phép truy cập tính năng này.")
 
 
 def _run_prediction_pipeline(db: Session) -> dict:
@@ -126,11 +136,15 @@ async def import_excel_data(
     if not contents:
         raise HTTPException(status_code=400, detail="File rỗng.")
 
+    # Get institution_id if user is institution
+    institution_id = user.get("institution_id") if user.get("user_type") == "institution" else None
+    
     summary = excel_importer.import_knn_reference_dataset(
         db,
         file_bytes=contents,
         filename=file.filename or "knn_reference.xlsx",
-        uploader_id=user.get("user_id"),
+        uploader_id=user.get("user_id") or user.get("institution_id"),
+        institution_id=institution_id,
     )
 
     # Mark all users for update (dataset changed)
@@ -211,21 +225,40 @@ async def llm_test(payload: dict = Body(...)):
 @router.get("/dataset-status")
 @require_auth
 def get_dataset_status(request: Request, db: Session = Depends(get_db)):
-    """Get current dataset status: count, size, last import time. Only for developer/admin."""
+    """Get current dataset status: count, size, last import time. Only for developer/admin/institution."""
     try:
         user = get_current_user(request)
         _ensure_developer(user)
 
-        # Count reference samples (shared dataset for all users)
-        sample_count = db.query(models.KNNReferenceSample).count()
+        # Get institution_id if user is institution, otherwise None for global data
+        institution_id = user.get("institution_id") if user.get("user_type") == "institution" else None
+
+        # Count reference samples (filtered by institution or global)
+        if institution_id:
+            sample_count = db.query(models.KNNReferenceSample).filter(
+                models.KNNReferenceSample.institution_id == institution_id
+            ).count()
+        else:
+            sample_count = db.query(models.KNNReferenceSample).filter(
+                (models.KNNReferenceSample.institution_id == None) | 
+                (models.KNNReferenceSample.institution_id.is_(None))
+            ).count()
         
-        # Get last import log for KNN reference dataset
+        # Get last import log for KNN reference dataset (filtered by institution)
         # Try to find imports with dataset_type = 'knn_reference' in metadata
-        all_imports = (
-            db.query(models.DataImportLog)
-            .order_by(models.DataImportLog.created_at.desc())
-            .all()
-        )
+        import_query = db.query(models.DataImportLog)
+        
+        # Filter by institution_id
+        if institution_id:
+            import_query = import_query.filter(
+                models.DataImportLog.institution_id == institution_id
+            )
+        else:
+            import_query = import_query.filter(
+                models.DataImportLog.institution_id.is_(None)
+            )
+        
+        all_imports = import_query.order_by(models.DataImportLog.created_at.desc()).all()
         
         last_import = None
         for imp in all_imports:
@@ -241,8 +274,16 @@ def get_dataset_status(request: Request, db: Session = Depends(get_db)):
         
         # Calculate dataset size (approximate)
         if sample_count > 0:
-            # Get a sample to estimate size per record
-            sample = db.query(models.KNNReferenceSample).first()
+            # Get a sample to estimate size per record (filtered by institution)
+            if institution_id:
+                sample = db.query(models.KNNReferenceSample).filter(
+                    models.KNNReferenceSample.institution_id == institution_id
+                ).first()
+            else:
+                sample = db.query(models.KNNReferenceSample).filter(
+                    models.KNNReferenceSample.institution_id.is_(None)
+                ).first()
+            
             if sample and sample.feature_data:
                 avg_features = len(sample.feature_data)
                 # Rough estimate: each feature is ~8 bytes (float) + key overhead
@@ -280,24 +321,54 @@ def get_dataset_status(request: Request, db: Session = Depends(get_db)):
 @router.get("/model-parameters", response_model=ParametersResponse)
 @require_auth
 def get_model_parameters(request: Request, db: Session = Depends(get_db)):
-    """Get current model parameters (KNN n, KR bandwidth, LWLR tau). Only for developer/admin."""
+    """Get current model parameters (KNN n, KR bandwidth, LWLR tau). Only for developer/admin/institution."""
     try:
         user = get_current_user(request)
         _ensure_developer(user)
 
-        params = db.query(models.ModelParameters).first()
-        if not params:
-            try:
-                # Create with defaults
-                params = models.ModelParameters(knn_n=15, kr_bandwidth=1.25, lwlr_tau=3.0)
-                db.add(params)
-                db.commit()
-                db.refresh(params)
-            except Exception as e:
-                db.rollback()
-                params = db.query(models.ModelParameters).first()
-                if not params:
-                    raise HTTPException(status_code=500, detail=f"Không thể khởi tạo thông số mô hình: {str(e)}")
+        institution_id = user.get("institution_id") if user.get("user_type") == "institution" else None
+
+        if institution_id:
+            # Get institution-specific parameters
+            params = db.query(models.InstitutionModelParameters).filter(
+                models.InstitutionModelParameters.institution_id == institution_id
+            ).first()
+            if not params:
+                try:
+                    # Create defaults for this institution
+                    params = models.InstitutionModelParameters(
+                        institution_id=institution_id,
+                        knn_n=15,
+                        kr_bandwidth=1.25,
+                        lwlr_tau=3.0,
+                        active_model='knn'
+                    )
+                    db.add(params)
+                    db.commit()
+                    db.refresh(params)
+                except Exception as e:
+                    db.rollback()
+                    # Check if record was created by another request (race condition)
+                    params = db.query(models.InstitutionModelParameters).filter(
+                        models.InstitutionModelParameters.institution_id == institution_id
+                    ).first()
+                    if not params:
+                        raise HTTPException(status_code=500, detail=f"Không thể khởi tạo thông số mô hình: {str(e)}")
+        else:
+            # Get global parameters
+            params = db.query(models.ModelParameters).first()
+            if not params:
+                try:
+                    # Create with defaults
+                    params = models.ModelParameters(knn_n=15, kr_bandwidth=1.25, lwlr_tau=3.0)
+                    db.add(params)
+                    db.commit()
+                    db.refresh(params)
+                except Exception as e:
+                    db.rollback()
+                    params = db.query(models.ModelParameters).first()
+                    if not params:
+                        raise HTTPException(status_code=500, detail=f"Không thể khởi tạo thông số mô hình: {str(e)}")
 
         return ParametersResponse(
             knn_n=params.knn_n,
@@ -351,15 +422,39 @@ async def update_model_parameters(background_tasks: BackgroundTasks, request: Re
         raise HTTPException(status_code=400, detail="LWLR tau phải trong khoảng 0.5-10.0")
 
     try:
-        params = db.query(models.ModelParameters).first()
-        if not params:
-            params = models.ModelParameters()
-            db.add(params)
+        institution_id = user.get("institution_id") if user.get("user_type") == "institution" else None
 
-        params.knn_n = knn_n
-        params.kr_bandwidth = kr_bandwidth
-        params.lwlr_tau = lwlr_tau
-        params.updated_by = user.get("user_id")
+        if institution_id:
+            # Update institution-specific parameters
+            params = db.query(models.InstitutionModelParameters).filter(
+                models.InstitutionModelParameters.institution_id == institution_id
+            ).first()
+            if not params:
+                params = models.InstitutionModelParameters(
+                    institution_id=institution_id,
+                    knn_n=knn_n,
+                    kr_bandwidth=kr_bandwidth,
+                    lwlr_tau=lwlr_tau,
+                    active_model='knn'
+                )
+                db.add(params)
+            else:
+                params.knn_n = knn_n
+                params.kr_bandwidth = kr_bandwidth
+                params.lwlr_tau = lwlr_tau
+                from datetime import datetime
+                params.updated_at = datetime.utcnow()
+        else:
+            # Update global parameters
+            params = db.query(models.ModelParameters).first()
+            if not params:
+                params = models.ModelParameters()
+                db.add(params)
+
+            params.knn_n = knn_n
+            params.kr_bandwidth = kr_bandwidth
+            params.lwlr_tau = lwlr_tau
+            params.updated_by = user.get("user_id")
 
         db.commit()
         db.refresh(params)
@@ -384,27 +479,57 @@ async def update_model_parameters(background_tasks: BackgroundTasks, request: Re
 @router.get("/model-status")
 @require_auth
 def get_model_status(request: Request, db: Session = Depends(get_db)):
-    """Get current active ML model and available options. Only for developer/admin."""
+    """Get current active ML model and available options. Only for developer/admin/institution."""
     try:
         user = get_current_user(request)
         _ensure_developer(user)
 
-        config = db.query(models.MLModelConfig).first()
-        if not config:
-            try:
-                config = models.MLModelConfig(active_model="knn")
-                db.add(config)
-                db.commit()
-                db.refresh(config)
-            except Exception as e:
-                db.rollback()
-                # If insert fails, try to query again (might have been created by another request)
-                config = db.query(models.MLModelConfig).first()
-                if not config:
-                    raise HTTPException(status_code=500, detail=f"Không thể khởi tạo cấu hình mô hình: {str(e)}")
+        institution_id = user.get("institution_id") if user.get("user_type") == "institution" else None
+
+        if institution_id:
+            # Get institution-specific model config
+            config = db.query(models.InstitutionModelParameters).filter(
+                models.InstitutionModelParameters.institution_id == institution_id
+            ).first()
+            if not config:
+                try:
+                    config = models.InstitutionModelParameters(
+                        institution_id=institution_id,
+                        knn_n=15,
+                        kr_bandwidth=1.25,
+                        lwlr_tau=3.0,
+                        active_model="knn"
+                    )
+                    db.add(config)
+                    db.commit()
+                    db.refresh(config)
+                except Exception as e:
+                    db.rollback()
+                    # Check if record was created by another request (race condition)
+                    config = db.query(models.InstitutionModelParameters).filter(
+                        models.InstitutionModelParameters.institution_id == institution_id
+                    ).first()
+                    if not config:
+                        raise HTTPException(status_code=500, detail=f"Không thể khởi tạo cấu hình mô hình: {str(e)}")
+            active_model = config.active_model
+        else:
+            # Get global model config
+            config = db.query(models.MLModelConfig).first()
+            if not config:
+                try:
+                    config = models.MLModelConfig(active_model="knn")
+                    db.add(config)
+                    db.commit()
+                    db.refresh(config)
+                except Exception as e:
+                    db.rollback()
+                    config = db.query(models.MLModelConfig).first()
+                    if not config:
+                        raise HTTPException(status_code=500, detail=f"Không thể khởi tạo cấu hình mô hình: {str(e)}")
+            active_model = config.active_model
 
         return {
-            "active_model": config.active_model,
+            "active_model": active_model,
             "available_models": ["knn", "kernel_regression", "lwlr"],
             "descriptions": {
                 "knn": "K-Nearest Neighbors (default, distance-weighted)",
@@ -478,25 +603,66 @@ async def select_model(background_tasks: BackgroundTasks, request: Request, db: 
         if model_name not in allowed_models:
             raise HTTPException(status_code=400, detail=f"Mô hình không hợp lệ. Cho phép: {', '.join(allowed_models)}")
 
-        config = db.query(models.MLModelConfig).first()
-        if not config:
-            try:
-                config = models.MLModelConfig(active_model=model_name, updated_by=user.get("user_id"))
-                db.add(config)
-                db.commit()
-                db.refresh(config)
-            except Exception as e:
-                db.rollback()
-                raise HTTPException(status_code=500, detail=f"Không thể tạo cấu hình mô hình: {str(e)}")
+        institution_id = user.get("institution_id") if user.get("user_type") == "institution" else None
+
+        if institution_id:
+            # Update institution-specific model
+            config = db.query(models.InstitutionModelParameters).filter(
+                models.InstitutionModelParameters.institution_id == institution_id
+            ).first()
+            if not config:
+                try:
+                    config = models.InstitutionModelParameters(
+                        institution_id=institution_id,
+                        knn_n=15,
+                        kr_bandwidth=1.25,
+                        lwlr_tau=3.0,
+                        active_model=model_name
+                    )
+                    db.add(config)
+                    db.commit()
+                    db.refresh(config)
+                except Exception as e:
+                    db.rollback()
+                    # Check if record was created by another request (race condition)
+                    config = db.query(models.InstitutionModelParameters).filter(
+                        models.InstitutionModelParameters.institution_id == institution_id
+                    ).first()
+                    if not config:
+                        raise HTTPException(status_code=500, detail=f"Không thể tạo cấu hình mô hình: {str(e)}")
+            else:
+                try:
+                    config.active_model = model_name
+                    from datetime import datetime
+                    config.updated_at = datetime.utcnow()
+                    db.commit()
+                    db.refresh(config)
+                except Exception as e:
+                    db.rollback()
+                    raise HTTPException(status_code=500, detail=f"Không thể cập nhật cấu hình mô hình: {str(e)}")
+            active_model_value = config.active_model
         else:
-            try:
-                config.active_model = model_name
-                config.updated_by = user.get("user_id")
-                db.commit()
-                db.refresh(config)
-            except Exception as e:
-                db.rollback()
-                raise HTTPException(status_code=500, detail=f"Không thể cập nhật cấu hình mô hình: {str(e)}")
+            # Update global model config
+            config = db.query(models.MLModelConfig).first()
+            if not config:
+                try:
+                    config = models.MLModelConfig(active_model=model_name, updated_by=user.get("user_id"))
+                    db.add(config)
+                    db.commit()
+                    db.refresh(config)
+                except Exception as e:
+                    db.rollback()
+                    raise HTTPException(status_code=500, detail=f"Không thể tạo cấu hình mô hình: {str(e)}")
+            else:
+                try:
+                    config.active_model = model_name
+                    config.updated_by = user.get("user_id")
+                    db.commit()
+                    db.refresh(config)
+                except Exception as e:
+                    db.rollback()
+                    raise HTTPException(status_code=500, detail=f"Không thể cập nhật cấu hình mô hình: {str(e)}")
+            active_model_value = config.active_model
 
         # Increment version to mark that predictions need update
         increment_ml_version(db, 'model')
@@ -504,7 +670,7 @@ async def select_model(background_tasks: BackgroundTasks, request: Request, db: 
 
         return JSONResponse(content={
             "message": f"Đã chuyển sang mô hình: {model_name}",
-            "active_model": config.active_model,
+            "active_model": active_model_value,
             "ml_version": current_version,
             "note": "Dự đoán sẽ được cập nhật khi user truy cập dữ liệu."
         })
@@ -512,5 +678,181 @@ async def select_model(background_tasks: BackgroundTasks, request: Request, db: 
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi khi chọn mô hình: {str(e)}")
+
+
+# Teaching Structure endpoints
+class TeachingStructureRequest(BaseModel):
+    num_time_points: int
+    num_subjects: int
+    time_point_labels: list[str]
+    subject_labels: list[str]
+
+
+@router.get("/teaching-structure")
+async def get_teaching_structure(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Get teaching structure for current institution"""
+    user = get_current_user(request)
+    _ensure_developer(user)
+    
+    if user.get("user_type") != "institution":
+        raise HTTPException(status_code=403, detail="Chỉ institution mới có thể truy cập cấu trúc giảng dạy")
+    
+    institution_id = user.get("institution_id")
+    if not institution_id:
+        raise HTTPException(status_code=400, detail="Không tìm thấy institution_id")
+    
+    structure = db.query(models.TeachingStructure).filter(
+        models.TeachingStructure.institution_id == institution_id
+    ).first()
+    
+    if not structure:
+        return JSONResponse(content={"has_structure": False})
+    
+    return JSONResponse(content={
+        "has_structure": True,
+        "num_time_points": structure.num_time_points,
+        "num_subjects": structure.num_subjects,
+        "time_point_labels": structure.time_point_labels,
+        "subject_labels": structure.subject_labels,
+        "updated_at": structure.updated_at.isoformat() if structure.updated_at else None
+    })
+
+
+@router.post("/teaching-structure")
+async def save_teaching_structure(
+    request: Request,
+    data: TeachingStructureRequest,
+    db: Session = Depends(get_db)
+):
+    """Save or update teaching structure for current institution"""
+    user = get_current_user(request)
+    _ensure_developer(user)
+    
+    if user.get("user_type") != "institution":
+        raise HTTPException(status_code=403, detail="Chỉ institution mới có thể lưu cấu trúc giảng dạy")
+    
+    institution_id = user.get("institution_id")
+    if not institution_id:
+        raise HTTPException(status_code=400, detail="Không tìm thấy institution_id")
+    
+    # Validate
+    if data.num_time_points != len(data.time_point_labels):
+        raise HTTPException(status_code=400, detail="Số lượng mốc thời gian không khớp với số labels")
+    if data.num_subjects != len(data.subject_labels):
+        raise HTTPException(status_code=400, detail="Số lượng môn học không khớp với số labels")
+    
+    # Check if structure exists
+    structure = db.query(models.TeachingStructure).filter(
+        models.TeachingStructure.institution_id == institution_id
+    ).first()
+    
+    if structure:
+        # Update existing
+        structure.num_time_points = data.num_time_points
+        structure.num_subjects = data.num_subjects
+        structure.time_point_labels = data.time_point_labels
+        structure.subject_labels = data.subject_labels
+        message = "Đã cập nhật cấu trúc giảng dạy"
+    else:
+        # Create new
+        structure = models.TeachingStructure(
+            institution_id=institution_id,
+            num_time_points=data.num_time_points,
+            num_subjects=data.num_subjects,
+            time_point_labels=data.time_point_labels,
+            subject_labels=data.subject_labels
+        )
+        db.add(structure)
+        message = "Đã lưu cấu trúc giảng dạy"
+    
+    db.commit()
+    db.refresh(structure)
+    
+    return JSONResponse(content={
+        "message": message,
+        "structure": {
+            "num_time_points": structure.num_time_points,
+            "num_subjects": structure.num_subjects,
+            "time_point_labels": structure.time_point_labels,
+            "subject_labels": structure.subject_labels,
+            "updated_at": structure.updated_at.isoformat()
+        }
+    })
+
+
+# Pipeline toggle endpoint
+class PipelineToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/pipeline-toggle")
+async def toggle_pipeline(
+    request: Request,
+    data: PipelineToggleRequest,
+    db: Session = Depends(get_db)
+):
+    """Toggle pipeline enabled/disabled for current institution"""
+    user = get_current_user(request)
+    _ensure_developer(user)
+    
+    if user.get("user_type") == "institution":
+        institution_id = user.get("institution_id")
+        if not institution_id:
+            raise HTTPException(status_code=400, detail="Không tìm thấy institution_id")
+        
+        # Get or create institution model parameters
+        params = db.query(models.InstitutionModelParameters).filter(
+            models.InstitutionModelParameters.institution_id == institution_id
+        ).first()
+        
+        if not params:
+            params = models.InstitutionModelParameters(
+                institution_id=institution_id,
+                pipeline_enabled=data.enabled
+            )
+            db.add(params)
+        else:
+            params.pipeline_enabled = data.enabled
+        
+        db.commit()
+        db.refresh(params)
+        
+        return JSONResponse(content={
+            "message": f"Pipeline đã được {'bật' if data.enabled else 'tắt'}",
+            "pipeline_enabled": params.pipeline_enabled
+        })
+    else:
+        # For global admin/developer - not supported yet
+        raise HTTPException(status_code=403, detail="Tính năng này chỉ dành cho institution")
+
+
+@router.get("/pipeline-status")
+async def get_pipeline_status(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Get pipeline status for current institution"""
+    user = get_current_user(request)
+    _ensure_developer(user)
+    
+    if user.get("user_type") == "institution":
+        institution_id = user.get("institution_id")
+        if not institution_id:
+            raise HTTPException(status_code=400, detail="Không tìm thấy institution_id")
+        
+        params = db.query(models.InstitutionModelParameters).filter(
+            models.InstitutionModelParameters.institution_id == institution_id
+        ).first()
+        
+        if not params:
+            return JSONResponse(content={"pipeline_enabled": True})  # Default enabled
+        
+        return JSONResponse(content={"pipeline_enabled": params.pipeline_enabled})
+    else:
+        # For global admin/developer
+        return JSONResponse(content={"pipeline_enabled": True})
 
 

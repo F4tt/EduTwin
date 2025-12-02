@@ -23,8 +23,15 @@ axiosClient.interceptors.response.use(
                 return Promise.reject(error);
             }
             
+            // Skip redirect if user is trying to login (avoid clearing error messages)
+            if (requestUrl.includes('/auth/login') || requestUrl.includes('/auth/register') || 
+                requestUrl.includes('/auth/institution/login') || requestUrl.includes('/auth/institution/register')) {
+                return Promise.reject(error);
+            }
+            
             // For other endpoints, redirect to login (but avoid loop)
-            if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+            const currentPath = window.location.pathname;
+            if (!currentPath.startsWith('/login') && currentPath !== '/register') {
                 window.location.href = '/login';
             }
         }

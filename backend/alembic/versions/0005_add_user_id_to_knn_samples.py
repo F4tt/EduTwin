@@ -1,7 +1,7 @@
 """add user_id to knn_reference_samples
 
-Revision ID: 0005
-Revises: 0004
+Revision ID: 0005_add_user_id_to_knn_samples
+Revises: 0004_add_learning_goals
 Create Date: 2025-11-28
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '0005'
-down_revision = '0004'
+revision = '0005_add_user_id_to_knn_samples'
+down_revision = '0004_add_learning_goals'
 branch_labels = None
 depends_on = None
 

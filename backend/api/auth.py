@@ -103,6 +103,40 @@ class ChangePassword(BaseModel):
             raise ValueError("Mật khẩu chỉ được chứa ký tự ASCII")
         return v
 
+
+class InstitutionRegister(BaseModel):
+    institution_name: Annotated[str, StringConstraints(min_length=3, max_length=200)]
+    institution_type: str | None = None
+    username: Annotated[str, StringConstraints(min_length=3, max_length=32)]
+    password: Annotated[str, StringConstraints(min_length=6, max_length=128)]
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    contact_person: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def username_ascii(cls, v: str) -> str:
+        if not v.isascii() or not all(ch.isalnum() or ch in ("_", "-") for ch in v):
+            raise ValueError("Tên đăng nhập chỉ được dùng chữ số và chữ cái tiếng Anh (kèm '_' hoặc '-')")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def password_ascii(cls, v: str) -> str:
+        if not v.isascii():
+            raise ValueError("Mật khẩu chỉ được dùng ký tự tiếng Anh")
+        return v
+
+
+class InstitutionLogin(BaseModel):
+    username: str
+    password: str
+    def ascii_new(cls, v: str) -> str:
+        if not v.isascii():
+            raise ValueError("Mật khẩu chỉ được chứa ký tự ASCII")
+        return v
+
 def get_db():
     db = database.SessionLocal()
     try:
@@ -340,5 +374,78 @@ def get_current_user_info(request: Request):
         "user": user,
         "message": "Thông tin user hiện tại"
     }
+
+
+# ============ INSTITUTION ENDPOINTS ============
+
+@router.post("/institution/register")
+def register_institution(data: InstitutionRegister, db: Session = Depends(get_db)):
+    """Đăng ký tài khoản cơ sở giáo dục"""
+    # Kiểm tra username đã tồn tại
+    existing = db.query(models.Institution).filter(models.Institution.username == data.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
+
+    # Hash password
+    hashed_pw = pwd_context.hash(data.password)
+    new_institution = models.Institution(
+        institution_name=data.institution_name.strip(),
+        institution_type=data.institution_type,
+        username=data.username,
+        hashed_password=hashed_pw,
+        email=data.email,
+        phone=data.phone,
+        address=data.address,
+        contact_person=data.contact_person,
+        is_active=True,
+    )
+    db.add(new_institution)
+    db.commit()
+    db.refresh(new_institution)
+    return {"message": "Đăng ký cơ sở giáo dục thành công"}
+
+
+@router.post("/institution/login")
+def login_institution(data: InstitutionLogin, response: Response, db: Session = Depends(get_db)):
+    """Đăng nhập cho cơ sở giáo dục"""
+    if not data.username.isascii() or not data.password.isascii():
+        raise HTTPException(status_code=400, detail="Tên đăng nhập và mật khẩu chỉ được dùng ký tự tiếng Anh")
+    
+    institution = db.query(models.Institution).filter(models.Institution.username == data.username).first()
+    if not institution or not pwd_context.verify(data.password, institution.hashed_password):
+        raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không đúng")
+
+    if not institution.is_active:
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị vô hiệu hóa")
+
+    # Tạo session cho institution
+    institution_info = {
+        "institution_id": institution.id,
+        "username": institution.username,
+        "institution_name": institution.institution_name,
+        "institution_type": institution.institution_type,
+        "email": institution.email,
+        "phone": institution.phone,
+        "address": institution.address,
+        "contact_person": institution.contact_person,
+        "user_type": "institution"  # Important flag to distinguish from regular users
+    }
+    
+    session_id = SessionManager.create_session(institution_info)
+    
+    # Set session cookie
+    response.set_cookie(
+        key="session_id",
+        value=session_id,
+        httponly=True,
+        secure=False,
+        samesite="lax"
+    )
+    
+    return {
+        "message": "Đăng nhập thành công",
+        "institution": institution_info
+    }
+
 
 # Advanced session management endpoints removed - not needed for basic functionality

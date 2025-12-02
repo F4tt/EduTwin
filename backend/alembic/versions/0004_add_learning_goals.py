@@ -1,7 +1,7 @@
 """add learning goals table
 
-Revision ID: 0004
-Revises: 0003
+Revision ID: 0004_add_learning_goals
+Revises: 0003_add_first_login_flag
 Create Date: 2025-11-26
 """
 from alembic import op
@@ -9,8 +9,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = '0004'
-down_revision = '0003'
+revision = '0004_add_learning_goals'
+down_revision = '0003_add_first_login_flag'
 branch_labels = None
 depends_on = None
 

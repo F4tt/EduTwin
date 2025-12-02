@@ -78,6 +78,7 @@ class DataImportLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    institution_id = Column(Integer, ForeignKey("institutions.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     total_rows = Column(Integer, nullable=False, default=0)
     imported_rows = Column(Integer, nullable=False, default=0)
@@ -87,6 +88,7 @@ class DataImportLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     uploader = relationship("User", back_populates="data_imports")
+    institution = relationship("Institution")
 
 
 class LearningDocument(Base):
@@ -204,12 +206,14 @@ class KNNReferenceSample(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    institution_id = Column(Integer, ForeignKey("institutions.id", ondelete="CASCADE"), nullable=True, index=True)
     sample_label = Column(String, nullable=True)
     feature_data = Column(JSON, nullable=False)
     metadata_ = Column('metadata', JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User")
+    institution = relationship("Institution")
 
 
 class LearningGoal(Base):
@@ -227,3 +231,55 @@ class LearningGoal(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User")
+
+
+class Institution(Base):
+    __tablename__ = "institutions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    institution_name = Column(String, nullable=False)
+    institution_type = Column(String, nullable=True)  # "university", "high_school", "training_center", etc.
+    username = Column(String, unique=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    website = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    logo_url = Column(String, nullable=True)
+    contact_person = Column(String, nullable=True)
+    metadata_ = Column('metadata', JSON, nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default=text("true"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class InstitutionModelParameters(Base):
+    """Store ML model parameters per institution"""
+    __tablename__ = "institution_model_parameters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    institution_id = Column(Integer, ForeignKey('institutions.id', ondelete='CASCADE'), nullable=False, unique=True)
+    knn_n = Column(Integer, nullable=False, default=15)
+    kr_bandwidth = Column(Float, nullable=False, default=1.25)
+    lwlr_tau = Column(Float, nullable=False, default=3.0)
+    active_model = Column(String, nullable=False, default='knn')
+    pipeline_enabled = Column(Boolean, nullable=False, server_default=text("true"))
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TeachingStructure(Base):
+    """Store teaching structure configuration per institution"""
+    __tablename__ = "teaching_structures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    institution_id = Column(Integer, ForeignKey('institutions.id', ondelete='CASCADE'), nullable=False, unique=True)
+    num_time_points = Column(Integer, nullable=False)
+    num_subjects = Column(Integer, nullable=False)
+    time_point_labels = Column(JSON, nullable=False)  # Array of strings
+    subject_labels = Column(JSON, nullable=False)  # Array of strings
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    institution = relationship("Institution")

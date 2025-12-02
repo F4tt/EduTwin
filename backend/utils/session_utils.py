@@ -28,9 +28,10 @@ class SessionManager:
     
     @staticmethod
     def create_session(user_data: dict) -> str:
-        """Tạo session mới cho user"""
+        """Tạo session mới cho user hoặc institution"""
         session_id = str(uuid.uuid4())
         session_data = {
+            # User fields
             "user_id": user_data.get("user_id"),
             "username": user_data.get("username"),
             "first_name": user_data.get("first_name"),
@@ -43,6 +44,13 @@ class SessionManager:
             "name": user_data.get("name"),
             "role": user_data.get("role"),
             "is_first_login": user_data.get("is_first_login", False),
+            # Institution fields
+            "institution_id": user_data.get("institution_id"),
+            "institution_name": user_data.get("institution_name"),
+            "institution_type": user_data.get("institution_type"),
+            "contact_person": user_data.get("contact_person"),
+            "user_type": user_data.get("user_type"),  # "institution" flag
+            # Session metadata
             "created_at": datetime.utcnow().isoformat(),
             "last_activity": datetime.utcnow().isoformat()
         }
