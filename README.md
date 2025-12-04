@@ -102,7 +102,7 @@ flowchart TB
 - **Lịch sử hội thoại**: Lưu trữ và theo dõi các cuộc trò chuyện trước đó
 
 ### 📊 3. Dashboard học tập và phân tích
-- **Theo dõi tiến độ**: Visualize kết quả học tập qua các biểu đồ (Chart.js, Recharts)
+- **Theo dõi tiến độ**: Trực quan hóa kết quả học tập qua các biểu đồ (Chart.js, Recharts)
 - **Phân tích dataset**: Xem thống kê và phân phối dữ liệu tham chiếu
 - **So sánh benchmark**: Đối chiếu điểm số với các học sinh có đặc điểm tương tự
 - **Báo cáo chi tiết**: Xuất dữ liệu và phân tích xu hướng học tập
@@ -191,6 +191,6 @@ flowchart TB
 - **PowerShell Scripts**: Automation cho deployment (AWS) 
 ## Hướng phát triển
 - Tăng cường chi tiết tính năng: Hiện tại mức độ chi tiết của các tác vụ dự đoán đang bị giới hạn bởi tập dữ liệu tham chiếu, nếu có khả năng thu thập các tập dữ liệu chi tiết với các thông tin như:
-hoàn cảnh gia đình, môn học năng khiếu, thời gian học, chương trình phụ đạo, khóa học online,... thì sẽ trực đưa ra được các dự đoán chi tiết hơn -> nhiều thông tin hơn -> LLM phản hồi chính xác và chi tiết hơn -> tăng cường cá nhân hóa thông qua việc đưa ra các đề xuấ, phân tích, lộ trình riêng cho từng học sinh.
+hoàn cảnh gia đình, môn học năng khiếu, thời gian học, chương trình phụ đạo, khóa học online,... thì sẽ trực tiếp đưa ra được các dự đoán chi tiết hơn -> nhiều thông tin hơn -> LLM phản hồi chính xác và chi tiết hơn -> tăng cường cá nhân hóa thông qua việc đưa ra các đề xuất, phân tích, lộ trình riêng cho từng học sinh.
 - Tăng cường tính chuyên môn của hệ thống: Huấn luyện và tự deploy LLM chuyên môn trong tác vụ giáo dục -> tăng cường độ chính xác phản hồi, không phụ thuộc và LLM API của bên thứ 3, tăng cường bảo mật thông tin.
 - Tăng cường tính hệ thống và tự động hóa: Kết nối đến các cơ sở dữ liệu của trường/tổ chức để tự động update mỗi khi có dữ liệu mới thay vì nhập thủ công (như SMAS và VNEDU)
