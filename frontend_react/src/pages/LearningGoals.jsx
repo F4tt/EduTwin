@@ -314,10 +314,30 @@ const LearningGoals = () => {
                                 max="10"
                                 value={targetScore}
                                 onChange={(e) => setTargetScore(e.target.value)}
-                                placeholder="Nhập điểm từ 0.0 đến 10.0"
+                                placeholder="0.0 đến 10.0"
                                 style={{
                                     flex: '0 0 200px',
                                     fontSize: '1rem',
+                                    borderColor: (() => {
+                                        const hasChanges = currentGoal && targetScore && 
+                                            parseFloat(targetScore) !== currentGoal.target_average;
+                                        return hasChanges ? '#dc2626' : 'var(--border-color)';
+                                    })(),
+                                    borderWidth: (() => {
+                                        const hasChanges = currentGoal && targetScore && 
+                                            parseFloat(targetScore) !== currentGoal.target_average;
+                                        return hasChanges ? '2px' : '1px';
+                                    })(),
+                                    backgroundColor: (() => {
+                                        const hasChanges = currentGoal && targetScore && 
+                                            parseFloat(targetScore) !== currentGoal.target_average;
+                                        return hasChanges ? '#fef2f2' : 'transparent';
+                                    })(),
+                                    boxShadow: (() => {
+                                        const hasChanges = currentGoal && targetScore && 
+                                            parseFloat(targetScore) !== currentGoal.target_average;
+                                        return hasChanges ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none';
+                                    })()
                                 }}
                             />
                             <button

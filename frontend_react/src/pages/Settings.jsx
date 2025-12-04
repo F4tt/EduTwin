@@ -28,10 +28,10 @@ const Settings = () => {
 
     const fetchLearnedPreferences = async () => {
         try {
-            const res = await axiosClient.get('/user/learned-personalization');
-            const prefs = res.data.learned_preferences || [];
-            console.log('[Settings] Learned preferences:', prefs);
-            setLearnedPrefs(Array.isArray(prefs) ? prefs : []);
+            const res = await axiosClient.get('/user/preferences');
+            const learned = res.data.learned || [];
+            console.log('[Settings] Learned preferences:', learned);
+            setLearnedPrefs(Array.isArray(learned) ? learned : []);
         } catch (e) {
             console.error('Failed to fetch learned preferences:', e);
             setLearnedPrefs([]);
@@ -40,6 +40,11 @@ const Settings = () => {
 
     const handleChange = (e) => {
         setFormData({ ...formData, [e.target.name]: e.target.value });
+    };
+
+    // Kiểm tra xem một field có thay đổi chưa lưu không
+    const isFieldChanged = (fieldName) => {
+        return formData[fieldName] !== (user?.[fieldName] || '');
     };
 
     const handleSave = async () => {
@@ -140,19 +145,63 @@ const Settings = () => {
                     </div>
                     <div>
                         <label className="label">Email</label>
-                        <input className="input-field" name="email" value={formData.email} onChange={handleChange} />
+                        <input 
+                            className="input-field" 
+                            name="email" 
+                            value={formData.email} 
+                            onChange={handleChange}
+                            style={{
+                                borderColor: isFieldChanged('email') ? '#dc2626' : 'var(--border-color)',
+                                borderWidth: isFieldChanged('email') ? '2px' : '1px',
+                                backgroundColor: isFieldChanged('email') ? '#fef2f2' : 'transparent',
+                                boxShadow: isFieldChanged('email') ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                            }}
+                        />
                     </div>
                     <div>
                         <label className="label">Số điện thoại</label>
-                        <input className="input-field" name="phone" value={formData.phone} onChange={handleChange} />
+                        <input 
+                            className="input-field" 
+                            name="phone" 
+                            value={formData.phone} 
+                            onChange={handleChange}
+                            style={{
+                                borderColor: isFieldChanged('phone') ? '#dc2626' : 'var(--border-color)',
+                                borderWidth: isFieldChanged('phone') ? '2px' : '1px',
+                                backgroundColor: isFieldChanged('phone') ? '#fef2f2' : 'transparent',
+                                boxShadow: isFieldChanged('phone') ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                            }}
+                        />
                     </div>
                     <div>
                         <label className="label">Địa chỉ</label>
-                        <input className="input-field" name="address" value={formData.address} onChange={handleChange} />
+                        <input 
+                            className="input-field" 
+                            name="address" 
+                            value={formData.address} 
+                            onChange={handleChange}
+                            style={{
+                                borderColor: isFieldChanged('address') ? '#dc2626' : 'var(--border-color)',
+                                borderWidth: isFieldChanged('address') ? '2px' : '1px',
+                                backgroundColor: isFieldChanged('address') ? '#fef2f2' : 'transparent',
+                                boxShadow: isFieldChanged('address') ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                            }}
+                        />
                     </div>
                     <div>
                         <label className="label">Tuổi</label>
-                        <input className="input-field" name="age" value={formData.age} onChange={handleChange} />
+                        <input 
+                            className="input-field" 
+                            name="age" 
+                            value={formData.age} 
+                            onChange={handleChange}
+                            style={{
+                                borderColor: isFieldChanged('age') ? '#dc2626' : 'var(--border-color)',
+                                borderWidth: isFieldChanged('age') ? '2px' : '1px',
+                                backgroundColor: isFieldChanged('age') ? '#fef2f2' : 'transparent',
+                                boxShadow: isFieldChanged('age') ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                            }}
+                        />
                     </div>
 
                     <div style={{ paddingTop: '0.5rem' }}>

@@ -364,18 +364,75 @@ const DataViz = () => {
 
     useEffect(() => {
         if (typeof window === 'undefined' || !window.localStorage) return;
+        
+        // Step 1: Load từ localStorage ngay lập tức (instant UX)
         try {
             const raw = window.localStorage.getItem(AI_COMMENTS_STORAGE_KEY);
-            if (!raw) return;
-            const parsed = JSON.parse(raw);
-            if (parsed && parsed.version === AI_COMMENTS_VERSION && parsed.insights) {
-                setAiInsights(parsed.insights);
-            } else {
-                window.localStorage.removeItem(AI_COMMENTS_STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && parsed.version === AI_COMMENTS_VERSION && parsed.insights) {
+                    setAiInsights(parsed.insights);
+                    console.log('[DataViz] Loaded AI insights from localStorage cache');
+                } else {
+                    window.localStorage.removeItem(AI_COMMENTS_STORAGE_KEY);
+                }
             }
         } catch (storageErr) {
-            console.error('Failed to restore AI comments', storageErr);
+            console.error('Failed to restore AI comments from localStorage', storageErr);
         }
+        
+        // Step 2: Fetch từ database trong background (cross-device sync)
+        const fetchFromDatabase = async () => {
+            try {
+                const res = await axiosClient.get('/chatbot/insights', {
+                    params: { insight_type: 'slide_comment' }
+                });
+                
+                if (res.data.insights && res.data.insights.length > 0) {
+                    // Reconstruct slide_comments structure từ database
+                    const slideComments = {
+                        overview: {},
+                        exam_blocks: { blocks: {} },
+                        subjects: {}
+                    };
+                    
+                    res.data.insights.forEach(insight => {
+                        const { context_key, content, metadata } = insight;
+                        
+                        if (context_key?.startsWith('overview_')) {
+                            const tab = context_key.replace('overview_', '');
+                            slideComments.overview[tab] = {
+                                narrative: { overview: content }
+                            };
+                        } else if (context_key?.startsWith('exam_block_')) {
+                            const block = context_key.replace('exam_block_', '');
+                            slideComments.exam_blocks.blocks[block] = {
+                                narrative: { comment: content }
+                            };
+                        } else if (context_key?.startsWith('subject_')) {
+                            const subject = context_key.replace('subject_', '');
+                            slideComments.subjects[subject] = {
+                                narrative: { comment: content }
+                            };
+                        }
+                    });
+                    
+                    // Update state và localStorage
+                    setAiInsights(slideComments);
+                    window.localStorage.setItem(
+                        AI_COMMENTS_STORAGE_KEY, 
+                        JSON.stringify({ version: AI_COMMENTS_VERSION, insights: slideComments })
+                    );
+                    
+                    console.log('[DataViz] Synced AI insights from database');
+                }
+            } catch (error) {
+                console.error('[DataViz] Failed to fetch insights from database:', error);
+                // Không cần alert - localStorage cache vẫn hoạt động
+            }
+        };
+        
+        fetchFromDatabase();
     }, []);
 
     const handleGenerateComments = async (silent = false) => {
@@ -383,11 +440,20 @@ const DataViz = () => {
             setAiProcessing(true);
         }
         try {
-            const res = await axiosClient.post('/study/generate-slide-comments', {}, {
+            // Generate insights và persist vào database
+            const res = await axiosClient.post('/study/generate-slide-comments', {
+                persist: true  // Lưu vào database cho cross-device sync
+            }, {
                 timeout: 60000, // 60s timeout for AI analysis
             });
             if (!silent) {
-                persistAiInsightsState(res.data.slide_comments || {}, res.data.comments_version || AI_COMMENTS_VERSION);
+                const slideComments = res.data.slide_comments || {};
+                const version = res.data.comments_version || AI_COMMENTS_VERSION;
+                
+                // Persist vào localStorage cho instant load
+                persistAiInsightsState(slideComments, version);
+                
+                console.log('[DataViz] AI insights generated and persisted to database + localStorage');
             }
         } catch (e) {
             if (!silent) alert('Lỗi sinh nhận xét: ' + e.message);

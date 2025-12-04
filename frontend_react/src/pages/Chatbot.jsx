@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import axiosClient from '../api/axiosClient';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
+import PreferenceVisualizer from '../components/PreferenceVisualizer';
 
 const Chatbot = () => {
     const { user } = useAuth();
@@ -14,6 +16,7 @@ const Chatbot = () => {
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [pendingScore, setPendingScore] = useState(null);
+    const [preferenceCount, setPreferenceCount] = useState(0);
     const [collapsed, setCollapsed] = useState(() => {
         try {
             return localStorage.getItem('chat_sidebar_collapsed') === 'true';
@@ -22,24 +25,44 @@ const Chatbot = () => {
         }
     });
     const messagesEndRef = useRef(null);
+    const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
+
+    useEffect(() => {
+        // Find the portal target in Layout
+        const target = document.getElementById('header-portal');
+        if (target) {
+            setHeaderPortalTarget(target);
+        }
+    }, []);
 
     useEffect(() => {
         fetchSessions();
+        fetchPreferenceCount();
     }, []);
+
+    const fetchPreferenceCount = async () => {
+        try {
+            const res = await axiosClient.get('/user/preferences');
+            const learned = res.data.learned || [];
+            setPreferenceCount(Array.isArray(learned) ? learned.length : 0);
+        } catch (e) {
+            console.error('Failed to fetch preference count:', e);
+        }
+    };
 
     useEffect(() => {
         if (currentSessionId) {
             fetchMessages(currentSessionId);
-            
+
             // Join WebSocket room for this chat session
             if (!String(currentSessionId).startsWith('draft')) {
                 joinChatSession(currentSessionId);
             }
-            
+
             // Clear previous messages from WebSocket
             clearChatMessages();
         }
-        
+
         // Cleanup: leave room when session changes
         return () => {
             if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
@@ -60,8 +83,8 @@ const Chatbot = () => {
                 };
                 // Avoid duplicates by checking if message already exists
                 setMessages(prev => {
-                    const isDuplicate = prev.some(m => 
-                        m.content === newMsg.content && 
+                    const isDuplicate = prev.some(m =>
+                        m.content === newMsg.content &&
                         m.role === newMsg.role &&
                         prev.indexOf(m) >= prev.length - 2 // Check last 2 messages
                     );
@@ -130,12 +153,27 @@ const Chatbot = () => {
         }
     };
 
-    const createNewSession = () => {
-        const draftId = `draft-${Date.now()}`;
-        const newSession = { id: draftId, title: 'Phiên mới' };
-        setSessions([newSession, ...sessions]);
-        setCurrentSessionId(draftId);
-        setMessages([]);
+    const createNewSession = async () => {
+        try {
+            // Call backend to create session with initial greeting
+            const res = await axiosClient.post('/chatbot/sessions', { title: 'Phiên mới' });
+            const newSession = { id: res.data.id, title: res.data.title || 'Phiên mới' };
+
+            // Add to sessions list and set as current
+            setSessions([newSession, ...sessions]);
+            setCurrentSessionId(newSession.id);
+
+            // Fetch messages to get the initial greeting
+            fetchMessages(newSession.id);
+        } catch (e) {
+            console.error('Failed to create session:', e);
+            // Fallback to draft session on error
+            const draftId = `draft-${Date.now()}`;
+            const newSession = { id: draftId, title: 'Phiên mới' };
+            setSessions([newSession, ...sessions]);
+            setCurrentSessionId(draftId);
+            setMessages([]);
+        }
     };
 
     const toggleCollapsed = () => {
@@ -187,6 +225,9 @@ const Chatbot = () => {
             // Refresh sessions to get updated titles if any
             fetchSessions();
 
+            // Refresh preference count (backend learns after every 5 messages)
+            fetchPreferenceCount();
+
         } catch (e) {
             setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối: ' + e.message }]);
         } finally {
@@ -214,6 +255,12 @@ const Chatbot = () => {
 
     return (
         <div className="container chat-container">
+            {/* Render PreferenceVisualizer in the Header Portal */}
+            {headerPortalTarget && createPortal(
+                <PreferenceVisualizer preferenceCount={preferenceCount} />,
+                headerPortalTarget
+            )}
+
             {/* Expand Button (Visible when sidebar is collapsed) */}
             {collapsed && (
                 <div style={{ width: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -353,11 +400,11 @@ const Chatbot = () => {
                     <div>
                         <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>Trợ lý ảo EduTwin</h3>
                         <div className="chat-header-status">
-                            <span style={{ 
-                                width: '8px', 
-                                height: '8px', 
-                                borderRadius: '50%', 
-                                background: connected ? '#10b981' : '#ef4444' 
+                            <span style={{
+                                width: '8px',
+                                height: '8px',
+                                borderRadius: '50%',
+                                background: connected ? '#10b981' : '#ef4444'
                             }}></span>
                             <span>{connected ? 'Đang kết nối' : 'Mất kết nối'}</span>
                         </div>

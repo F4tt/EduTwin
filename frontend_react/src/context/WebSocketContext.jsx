@@ -17,7 +17,6 @@ export const WebSocketProvider = ({ children }) => {
     const [socket, setSocket] = useState(null);
     const [connected, setConnected] = useState(false);
     const [chatMessages, setChatMessages] = useState([]);
-    const [notifications, setNotifications] = useState([]);
     const [studyUpdates, setStudyUpdates] = useState([]);
     const [predictions, setPredictions] = useState([]);
     const [isTyping, setIsTyping] = useState(false);
@@ -41,7 +40,7 @@ export const WebSocketProvider = ({ children }) => {
         }
         
         // Connect to WebSocket
-        const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000/ws';
+        const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000';
         
         const newSocket = io(wsUrl, {
             path: '/socket.io',
@@ -97,12 +96,6 @@ export const WebSocketProvider = ({ children }) => {
             setIsTyping(data.is_typing);
         });
         
-        // Notification events
-        newSocket.on('notification', (data) => {
-            console.log('Received notification:', data);
-            setNotifications(prev => [...prev, { ...data, id: Date.now(), read: false }]);
-        });
-        
         // Study update events
         newSocket.on('study_update', (data) => {
             console.log('Received study update:', data);
@@ -112,17 +105,6 @@ export const WebSocketProvider = ({ children }) => {
         newSocket.on('prediction_update', (data) => {
             console.log('Received prediction update:', data);
             setPredictions(data.predictions || []);
-        });
-        
-        newSocket.on('pending_confirmation', (data) => {
-            console.log('Received pending confirmation:', data);
-            setNotifications(prev => [...prev, {
-                id: Date.now(),
-                type: 'confirmation',
-                data: data,
-                read: false,
-                timestamp: new Date().toISOString()
-            }]);
         });
         
         // Error handling
@@ -195,39 +177,18 @@ export const WebSocketProvider = ({ children }) => {
         setChatMessages([]);
     }, []);
     
-    // Mark notification as read
-    const markNotificationRead = useCallback((notificationId) => {
-        setNotifications(prev =>
-            prev.map(notif =>
-                notif.id === notificationId ? { ...notif, read: true } : notif
-            )
-        );
-    }, []);
-    
-    // Clear all notifications
-    const clearNotifications = useCallback(() => {
-        setNotifications([]);
-    }, []);
-    
-    // Get unread notification count
-    const unreadCount = notifications.filter(n => !n.read).length;
-    
     const value = {
         socket,
         connected,
         chatMessages,
-        notifications,
         studyUpdates,
         predictions,
         isTyping,
-        unreadCount,
         joinChatSession,
         leaveChatSession,
         emit,
         on,
-        clearChatMessages,
-        markNotificationRead,
-        clearNotifications
+        clearChatMessages
     };
     
     return (

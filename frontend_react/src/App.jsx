@@ -13,6 +13,7 @@ const StudyUpdate = lazy(() => import('./pages/StudyUpdate'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Developer = lazy(() => import('./pages/Developer'));
 const LearningGoals = lazy(() => import('./pages/LearningGoals'));
+const CustomModel = lazy(() => import('./pages/CustomModel'));
 
 // Loading fallback component
 const PageLoader = () => (
@@ -91,6 +92,11 @@ function AppRoutes() {
         <Route path="developer" element={
           <Suspense fallback={<PageLoader />}>
             <Developer />
+          </Suspense>
+        } />
+        <Route path="custom-model" element={
+          <Suspense fallback={<PageLoader />}>
+            <CustomModel />
           </Suspense>
         } />
         <Route path="settings" element={

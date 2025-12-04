@@ -1,15 +1,14 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { MessageSquare, BarChart2, BookOpen, Settings, LogOut, Wrench, Target } from 'lucide-react';
-import NotificationBell from './NotificationBell';
+import { MessageSquare, BarChart2, BookOpen, Settings, LogOut, Wrench, Target, Sliders } from 'lucide-react';
 
 const Layout = () => {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
 
-    const handleLogout = () => {
-        logout();
+    const handleLogout = async () => {
+        await logout();
         navigate('/login');
     };
 
@@ -18,6 +17,7 @@ const Layout = () => {
         { path: '/data', icon: <BarChart2 size={20} />, label: 'Phân tích' },
         { path: '/goals', icon: <Target size={20} />, label: 'Mục tiêu' },
         { path: '/study', icon: <BookOpen size={20} />, label: 'Điểm số' },
+        { path: '/custom-model', icon: <Sliders size={20} />, label: 'Mô hình tùy chỉnh' },
         { path: '/settings', icon: <Settings size={20} />, label: 'Cài đặt' },
     ];
 
@@ -113,21 +113,23 @@ const Layout = () => {
 
             {/* Main Content */}
             <main style={{ flex: 1, overflowY: 'auto', position: 'relative', background: 'var(--bg-body)' }}>
-                {/* Top bar with notifications */}
+                {/* Top bar */}
                 <div style={{
                     position: 'sticky',
                     top: 0,
                     zIndex: 100,
                     background: 'var(--bg-body)',
                     borderBottom: '1px solid var(--border-color)',
-                    padding: '1rem 2rem',
+                    padding: '0.5rem 2rem',
+                    height: '80px',
                     display: 'flex',
-                    justifyContent: 'flex-end',
-                    alignItems: 'center'
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    boxSizing: 'border-box'
                 }}>
-                    <NotificationBell />
+                    <div id="header-portal" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}></div>
                 </div>
-                
+
                 <div style={{ padding: '2rem' }}>
                     <Outlet />
                 </div>

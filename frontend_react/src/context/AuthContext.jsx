@@ -107,7 +107,7 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
-    const logout = () => {
+    const logout = async () => {
         // Clear AI insights cache for this user before logout
         const username = user?.username;
         if (username && typeof window !== 'undefined' && window.localStorage) {
@@ -121,6 +121,13 @@ export const AuthProvider = ({ children }) => {
             } catch (e) {
                 console.error('Failed to clear AI cache on logout:', e);
             }
+        }
+        
+        // Cleanup empty chat sessions before logout
+        try {
+            await axiosClient.delete('/chatbot/cleanup-empty-sessions');
+        } catch (e) {
+            console.error('Failed to cleanup empty sessions:', e);
         }
         
         setUser(null);

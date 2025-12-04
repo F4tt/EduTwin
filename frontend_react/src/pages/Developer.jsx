@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { useAuth } from '../context/AuthContext';
 import axiosClient from '../api/axiosClient';
-import { Upload, RefreshCw, AlertCircle, Brain, Database, Clock, FileText, Zap, CheckCircle, Settings, Lightbulb, Save } from 'lucide-react';
+import { Upload, RefreshCw, AlertCircle, Brain, Database, Clock, FileText, Zap, CheckCircle, Settings, Lightbulb, Save, Download } from 'lucide-react';
 import {
     emitMlModelChanged,
     emitMlParametersChanged,
@@ -24,6 +25,7 @@ const Developer = () => {
 
     // Model parameters state
     const [parameters, setParameters] = useState({ knn_n: 15, kr_bandwidth: 1.25, lwlr_tau: 3.0 });
+    const [originalParameters, setOriginalParameters] = useState({ knn_n: 15, kr_bandwidth: 1.25, lwlr_tau: 3.0 });
     const [loadingParams, setLoadingParams] = useState(false);
     const [savingParams, setSavingParams] = useState(false);
     const [paramMessage, setParamMessage] = useState('');
@@ -129,6 +131,7 @@ const Developer = () => {
         try {
             const res = await axiosClient.get('/developer/model-parameters');
             setParameters(res.data);
+            setOriginalParameters(res.data); // Save original values
         } catch (e) {
             console.error('Error fetching model parameters:', e);
         } finally {
@@ -146,6 +149,7 @@ const Developer = () => {
             const res = await axiosClient.post('/developer/model-parameters', parameters);
             console.log('Save response:', res.data);
             setParamMessage('✓ ' + (res.data.message || 'Đã cập nhật thông số thành công'));
+            setOriginalParameters(parameters); // Update original values after successful save
             emitMlParametersChanged({ parameters: { ...parameters } });
             setTimeout(() => setParamMessage(''), 3000);
             // Backend uses lazy evaluation - predictions updated when user accesses data
@@ -217,6 +221,25 @@ const Developer = () => {
             setFile(selectedFile);
             setMessage({ type: '', text: '' });
         }
+    };
+
+    const handleDownloadTemplate = () => {
+        // Template columns
+        const columns = [
+            'Maths_1_10', 'Literature_1_10', 'Physics_1_10', 'Chemistry_1_10', 'Biology_1_10', 'History_1_10', 'Geography_1_10', 'English_1_10', 'Civic Education_1_10',
+            'Maths_2_10', 'Literature_2_10', 'Physics_2_10', 'Chemistry_2_10', 'Biology_2_10', 'History_2_10', 'Geography_2_10', 'English_2_10', 'Civic Education_2_10',
+            'Maths_1_11', 'Literature_1_11', 'Physics_1_11', 'Chemistry_1_11', 'Biology_1_11', 'History_1_11', 'Geography_1_11', 'English_1_11', 'Civic Education_1_11',
+            'Maths_2_11', 'Literature_2_11', 'Physics_2_11', 'Chemistry_2_11', 'Biology_2_11', 'History_2_11', 'Geography_2_11', 'English_2_11', 'Civic Education_2_11',
+            'Maths_1_12', 'Literature_1_12', 'Physics_1_12', 'Chemistry_1_12', 'Biology_1_12', 'History_1_12', 'Geography_1_12', 'English_1_12', 'Civic Education_1_12',
+            'Maths_2_12', 'Literature_2_12', 'Physics_2_12', 'Chemistry_2_12', 'Biology_2_12', 'History_2_12', 'Geography_2_12', 'English_2_12', 'Civic Education_2_12'
+        ];
+
+        // Create Excel file using xlsx library
+        const exampleRow = columns.map(() => '8.5');
+        const ws = XLSX.utils.aoa_to_sheet([columns, exampleRow]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Scores');
+        XLSX.writeFile(wb, 'edutwin_template.xlsx');
     };
 
     const handleUpload = async () => {
@@ -402,77 +425,200 @@ const Developer = () => {
             </div>
 
             {/* Import Excel Section */}
-            <div className="card" style={{ marginBottom: '2rem' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
-                    <Upload size={24} style={{ color: 'var(--primary-color)' }} />
-                    Import Dataset Tham Chiếu
-                </h3>
-                <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Upload file Excel chứa dữ liệu tham chiếu cho mô hình học máy. File phải có các cột dạng <code style={{ background: 'var(--bg-body)', padding: '2px 6px', borderRadius: '4px' }}>Môn_Kỳ_Lớp</code> (VD: <code style={{ background: 'var(--bg-body)', padding: '2px 6px', borderRadius: '4px' }}>Toán_1_10</code>).
-                </p>
-
-                <div style={{ marginBottom: '1.5rem' }}>
-                    <input
-                        type="file"
-                        accept=".xlsx,.xls"
-                        onChange={handleFileChange}
-                        className="input-field"
+            <div className="card" style={{
+                marginBottom: '2rem',
+                background: 'white',
+                border: '1px solid var(--border-color)',
+                boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+                overflow: 'hidden',
+                padding: 0
+            }}>
+                <div style={{
+                    padding: '1.25rem 1.5rem',
+                    borderBottom: '1px solid var(--border-color)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    background: 'var(--bg-surface)'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div style={{
+                            background: 'var(--primary-light)',
+                            padding: '0.5rem',
+                            borderRadius: '8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--primary-color)'
+                        }}>
+                            <Upload size={20} />
+                        </div>
+                        <div>
+                            <h3 style={{ fontSize: '1rem', fontWeight: '600', margin: 0, color: 'var(--text-primary)' }}>
+                                Tải Lên Tập Dữ Liệu Tham Chiếu
+                            </h3>
+                            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+                                Tải lên file Excel theo định dạng mẫu được cung cấp
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        className="btn btn-ghost"
+                        onClick={handleDownloadTemplate}
                         style={{
-                            padding: '1rem',
-                            border: '2px dashed var(--border-color)',
-                            borderRadius: 'var(--radius-md)',
-                            width: '100%',
-                            cursor: 'pointer',
-                            background: 'var(--bg-body)'
+                            fontSize: '0.85rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            color: 'var(--primary-color)',
+                            fontWeight: '500'
                         }}
-                    />
-                    {file && (
-                        <p style={{ marginTop: '0.75rem', fontSize: '0.95rem', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <FileText size={16} />
-                            Đã chọn: <strong>{file.name}</strong>
-                        </p>
-                    )}
+                    >
+                        <Download size={16} />
+                        Tải file định dạng mẫu
+                    </button>
                 </div>
 
-                <button
-                    className="btn btn-primary"
-                    onClick={handleUpload}
-                    disabled={!file || uploading}
-                >
-                    {uploading ? <RefreshCw size={18} className="spin" /> : <Upload size={18} />}
-                    {uploading ? 'Đang upload...' : 'Upload Dataset'}
-                </button>
+                <div style={{ padding: '2rem' }}>
+                    {!file ? (
+                        <>
+                            <input
+                                type="file"
+                                accept=".xlsx,.xls"
+                                onChange={handleFileChange}
+                                className="input-field"
+                                id="dataset-upload-input"
+                                style={{ display: 'none' }}
+                            />
+                            <label
+                                htmlFor="dataset-upload-input"
+                                style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: '3rem',
+                                    border: '2px dashed var(--border-color)',
+                                    borderRadius: 'var(--radius-lg)',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s',
+                                    background: 'var(--bg-body)',
+                                    gap: '1rem'
+                                }}
+                                onMouseOver={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--primary-color)';
+                                    e.currentTarget.style.background = 'var(--primary-light)';
+                                }}
+                                onMouseOut={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--border-color)';
+                                    e.currentTarget.style.background = 'var(--bg-body)';
+                                }}
+                            >
+                                <div style={{
+                                    background: 'white',
+                                    padding: '1rem',
+                                    borderRadius: '50%',
+                                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                                    color: 'var(--text-secondary)'
+                                }}>
+                                    <Database size={24} />
+                                </div>
+                                <div style={{ textAlign: 'center' }}>
+                                    <span style={{ display: 'block', fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                                        Click để tải lên tập dữ liệu
+                                    </span>
+                                    <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
+                                        Hỗ trợ .xlsx, .xls
+                                    </span>
+                                </div>
+                            </label>
+                        </>
+                    ) : (
+                        <div style={{
+                            padding: '1.5rem',
+                            border: '1px solid var(--primary-color)',
+                            borderRadius: 'var(--radius-lg)',
+                            background: 'var(--primary-light)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            animation: 'fadeIn 0.3s ease'
+                        }}>
+                            <div style={{
+                                background: 'var(--primary-color)',
+                                color: 'white',
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                marginBottom: '1rem',
+                                boxShadow: '0 4px 6px -1px rgba(var(--primary-rgb), 0.3)'
+                            }}>
+                                <FileText size={24} />
+                            </div>
+                            <h4 style={{ margin: '0 0 0.25rem 0', color: 'var(--text-primary)', fontWeight: '600' }}>{file.name}</h4>
+                            <p style={{ margin: '0 0 1.5rem 0', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                                {(file.size / 1024).toFixed(1)} KB
+                            </p>
+                            <div style={{ display: 'flex', gap: '0.75rem' }}>
+                                <button
+                                    onClick={() => setFile(null)}
+                                    className="btn"
+                                    style={{
+                                        background: 'white',
+                                        border: '1px solid var(--border-color)',
+                                        color: 'var(--text-secondary)',
+                                        padding: '0.5rem 1rem'
+                                    }}
+                                >
+                                    Hủy bỏ
+                                </button>
+                                <button
+                                    onClick={handleUpload}
+                                    disabled={uploading}
+                                    className="btn btn-primary"
+                                    style={{ padding: '0.5rem 1.5rem' }}
+                                >
+                                    {uploading ? <RefreshCw size={18} className="spin" /> : <Upload size={18} />}
+                                    <span style={{ marginLeft: '0.5rem' }}>{uploading ? 'Đang upload...' : 'Upload Dataset'}</span>
+                                </button>
+                            </div>
+                        </div>
+                    )}
 
-                {summary && (
-                    <div style={{ marginTop: '1.5rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                        <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>📊 Kết quả Import:</h4>
-                        <ul style={{ margin: 0, paddingLeft: '1.5rem', fontSize: '0.95rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                            <li>Tổng số dòng hợp lệ: <strong>{summary.total_rows || 0}</strong></li>
-                            <li>Số mẫu tham chiếu: <strong>{summary.reference_samples || 0}</strong></li>
-                            {summary.cleared_existing && <li style={{ color: 'var(--warning-color)' }}>⚠ Đã thay thế dữ liệu cũ</li>}
-                        </ul>
-                        {summary.warnings && summary.warnings.length > 0 && (
-                            <details style={{ marginTop: '1rem' }}>
-                                <summary style={{ cursor: 'pointer', color: 'var(--warning-color)', fontWeight: '600' }}>
-                                    ⚠️ Cảnh báo ({summary.warnings.length})
-                                </summary>
-                                <ul style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--text-secondary)', paddingLeft: '1.5rem' }}>
-                                    {summary.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                                </ul>
-                            </details>
-                        )}
-                        {summary.errors && summary.errors.length > 0 && (
-                            <details style={{ marginTop: '1rem' }}>
-                                <summary style={{ cursor: 'pointer', color: 'var(--danger-color)', fontWeight: '600' }}>
-                                    ❗ Lỗi ({summary.errors.length})
-                                </summary>
-                                <ul style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--danger-color)', paddingLeft: '1.5rem' }}>
-                                    {summary.errors.map((e, i) => <li key={i}>{e}</li>)}
-                                </ul>
-                            </details>
-                        )}
-                    </div>
-                )}
+                    {summary && (
+                        <div style={{ marginTop: '1.5rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                            <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>📊 Kết quả Import:</h4>
+                            <ul style={{ margin: 0, paddingLeft: '1.5rem', fontSize: '0.95rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                <li>Tổng số dòng hợp lệ: <strong>{summary.total_rows || 0}</strong></li>
+                                <li>Số mẫu tham chiếu: <strong>{summary.reference_samples || 0}</strong></li>
+                                {summary.cleared_existing && <li style={{ color: 'var(--warning-color)' }}>⚠ Đã thay thế dữ liệu cũ</li>}
+                            </ul>
+                            {summary.warnings && summary.warnings.length > 0 && (
+                                <details style={{ marginTop: '1rem' }}>
+                                    <summary style={{ cursor: 'pointer', color: 'var(--warning-color)', fontWeight: '600' }}>
+                                        ⚠️ Cảnh báo ({summary.warnings.length})
+                                    </summary>
+                                    <ul style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--text-secondary)', paddingLeft: '1.5rem' }}>
+                                        {summary.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                                    </ul>
+                                </details>
+                            )}
+                            {summary.errors && summary.errors.length > 0 && (
+                                <details style={{ marginTop: '1rem' }}>
+                                    <summary style={{ cursor: 'pointer', color: 'var(--danger-color)', fontWeight: '600' }}>
+                                        ❗ Lỗi ({summary.errors.length})
+                                    </summary>
+                                    <ul style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--danger-color)', paddingLeft: '1.5rem' }}>
+                                        {summary.errors.map((e, i) => <li key={i}>{e}</li>)}
+                                    </ul>
+                                </details>
+                            )}
+                        </div>
+                    )}
+                </div>
             </div>
 
             {/* Model Parameters Section */}
@@ -525,7 +671,14 @@ const Developer = () => {
                                         value={parameters.knn_n}
                                         onChange={(e) => setParameters({ ...parameters, knn_n: parseInt(e.target.value) || 15 })}
                                         className="input-field"
-                                        style={{ width: '100px', textAlign: 'center' }}
+                                        style={{
+                                            width: '100px',
+                                            textAlign: 'center',
+                                            borderColor: parameters.knn_n !== originalParameters.knn_n ? '#dc2626' : 'var(--border-color)',
+                                            borderWidth: parameters.knn_n !== originalParameters.knn_n ? '2px' : '1px',
+                                            backgroundColor: parameters.knn_n !== originalParameters.knn_n ? '#fef2f2' : 'transparent',
+                                            boxShadow: parameters.knn_n !== originalParameters.knn_n ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                        }}
                                     />
                                 </div>
                             </div>
@@ -556,7 +709,14 @@ const Developer = () => {
                                         value={parameters.kr_bandwidth}
                                         onChange={(e) => setParameters({ ...parameters, kr_bandwidth: parseFloat(e.target.value) || 1.25 })}
                                         className="input-field"
-                                        style={{ width: '100px', textAlign: 'center' }}
+                                        style={{
+                                            width: '100px',
+                                            textAlign: 'center',
+                                            borderColor: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '#dc2626' : 'var(--border-color)',
+                                            borderWidth: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '2px' : '1px',
+                                            backgroundColor: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '#fef2f2' : 'transparent',
+                                            boxShadow: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                        }}
                                     />
                                 </div>
                             </div>
@@ -587,7 +747,14 @@ const Developer = () => {
                                         value={parameters.lwlr_tau}
                                         onChange={(e) => setParameters({ ...parameters, lwlr_tau: parseFloat(e.target.value) || 3.0 })}
                                         className="input-field"
-                                        style={{ width: '100px', textAlign: 'center' }}
+                                        style={{
+                                            width: '100px',
+                                            textAlign: 'center',
+                                            borderColor: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '#dc2626' : 'var(--border-color)',
+                                            borderWidth: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '2px' : '1px',
+                                            backgroundColor: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '#fef2f2' : 'transparent',
+                                            boxShadow: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                        }}
                                     />
                                 </div>
                             </div>

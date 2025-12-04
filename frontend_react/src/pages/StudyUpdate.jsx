@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import * as XLSX from 'xlsx';
 import axiosClient from '../api/axiosClient';
-import { Save, Trash2 } from 'lucide-react';
+import { Save, Trash2, Download, Upload, FileText, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
     emitStudyScoresUpdated,
@@ -21,6 +22,8 @@ const StudyUpdate = () => {
     const pipelineTimeoutRef = useRef(null);
     const [currentGrade, setCurrentGrade] = useState(user?.current_grade || '');
     const skipNextRefreshRef = useRef(false);
+    const [uploadFile, setUploadFile] = useState(null);
+    const [uploading, setUploading] = useState(false);
 
     useEffect(() => {
         // sync current grade when auth profile changes
@@ -132,6 +135,20 @@ const StudyUpdate = () => {
 
     const handleChange = (key, value) => {
         setInputs(prev => ({ ...prev, [key]: value }));
+    };
+
+    // Kiểm tra xem một input có phải giá trị chưa lưu không
+    const isUnsavedInput = (key, currentValue) => {
+        const score = scores.find(s => s.key === key);
+        if (!score) return false;
+        
+        const inputVal = String(currentValue || '').trim();
+        if (!inputVal) return false;
+        
+        const parsedVal = parseFloat(inputVal.replace(',', '.'));
+        if (isNaN(parsedVal)) return false;
+        
+        return parsedVal !== score.actual;
     };
 
     const handleSaveGrade = async () => {
@@ -267,6 +284,70 @@ const StudyUpdate = () => {
         }
     };
 
+    const handleDownloadTemplate = () => {
+        const columns = scores.map(item => item.key);
+        const values = columns.map(key => inputs[key] || '');
+        
+        // Create Excel file using xlsx library
+        const ws = XLSX.utils.aoa_to_sheet([columns, values]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Scores');
+        XLSX.writeFile(wb, 'my_scores.xlsx');
+    };
+
+    const handleFileUpload = async () => {
+        if (!uploadFile) {
+            setMessage({ type: 'error', text: 'Vui lòng chọn file trước.' });
+            return;
+        }
+        if (!currentGrade) {
+            setMessage({ type: 'error', text: 'Vui lòng chọn học kỳ hiện tại trước khi upload.' });
+            return;
+        }
+
+        setUploading(true);
+        setMessage({ type: '', text: '' });
+
+        try {
+            // Use FormData to send Excel file to backend
+            const formData = new FormData();
+            formData.append('file', uploadFile);
+            formData.append('current_grade', currentGrade);
+
+            const res = await axiosClient.post('/study/scores/import-excel', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+
+            const imported = res.data.imported_scores || [];
+            const newInputs = { ...inputs };
+            const [currentSem, currentGr] = currentGrade.split('_');
+            const currentGradeNum = parseInt(currentGr);
+            const currentSemNum = parseInt(currentSem);
+            const currentIndex = (currentGradeNum - 10) * 2 + (currentSemNum - 1);
+
+            let updated = 0;
+            imported.forEach(score => {
+                const key = `${score.subject}_${score.grade_level}_${score.semester}`;
+                const gradeNum = parseInt(score.grade_level);
+                const semNum = parseInt(score.semester);
+                const slotIndex = (gradeNum - 10) * 2 + (semNum - 1);
+
+                if (slotIndex <= currentIndex) {
+                    newInputs[key] = String(score.score);
+                    updated++;
+                }
+            });
+
+            setInputs(newInputs);
+            setUploadFile(null);
+            setMessage({ type: 'success', text: `Đã tải lên ${updated} điểm từ file. Nhấn "Lưu điểm" để cập nhật.` });
+        } catch (e) {
+            setMessage({ type: 'error', text: 'Lỗi đọc file: ' + e.message });
+        } finally {
+            setUploading(false);
+        }
+    };
+
     const gradeOptions = [
         { value: '1_10', label: 'Học kỳ 1 - Lớp 10' },
         { value: '2_10', label: 'Học kỳ 2 - Lớp 10' },
@@ -307,6 +388,157 @@ const StudyUpdate = () => {
                 </p>
             </div>
 
+            {/* Upload Section */}
+            <div className="card" style={{
+                marginBottom: '2rem',
+                border: '1px solid var(--border-color)',
+                overflow: 'hidden',
+                padding: 0
+            }}>
+                <div style={{
+                    padding: '1.25rem 1.5rem',
+                    borderBottom: '1px solid var(--border-color)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    background: 'var(--bg-surface)'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div style={{
+                            background: 'var(--primary-light)',
+                            color: 'var(--primary-color)',
+                            padding: '0.5rem',
+                            borderRadius: '8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                        }}>
+                            <Upload size={20} />
+                        </div>
+                        <div>
+                            <h3 style={{ fontSize: '1rem', fontWeight: '600', margin: 0, color: 'var(--text-primary)' }}>Tải lên file để cập nhật điểm</h3>
+                            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>Cập nhật điểm nhanh chóng từ file Excel (xlsx, xls)</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={handleDownloadTemplate}
+                        className="btn btn-ghost"
+                        style={{ fontSize: '0.85rem', gap: '0.5rem', color: 'var(--primary-color)', fontWeight: '500' }}
+                        title="Tải file mẫu chứa dữ liệu hiện tại"
+                    >
+                        <Download size={16} /> Tải xuống dữ liệu hiện tại
+                    </button>
+                </div>
+
+                <div style={{ padding: '2rem' }}>
+                    {!uploadFile ? (
+                        <>
+                            <input
+                                type="file"
+                                accept=".xlsx,.xls"
+                                onChange={(e) => setUploadFile(e.target.files[0])}
+                                style={{ display: 'none' }}
+                                id="score-upload-input-update"
+                            />
+                            <label
+                                htmlFor="score-upload-input-update"
+                                style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: '2.5rem',
+                                    border: '2px dashed var(--border-color)',
+                                    borderRadius: 'var(--radius-lg)',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s',
+                                    background: 'var(--bg-body)',
+                                    gap: '1rem'
+                                }}
+                                onMouseOver={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--primary-color)';
+                                    e.currentTarget.style.background = 'var(--primary-light)';
+                                }}
+                                onMouseOut={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--border-color)';
+                                    e.currentTarget.style.background = 'var(--bg-body)';
+                                }}
+                            >
+                                <div style={{
+                                    background: 'white',
+                                    padding: '1rem',
+                                    borderRadius: '50%',
+                                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                                    color: 'var(--text-secondary)'
+                                }}>
+                                    <Upload size={24} />
+                                </div>
+                                <div style={{ textAlign: 'center' }}>
+                                    <span style={{ display: 'block', fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                                        Click để tải file lên
+                                    </span>
+                                    <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
+                                        Hỗ trợ định dạng .xlsx/.xls
+                                    </span>
+                                </div>
+                            </label>
+                        </>
+                    ) : (
+                        <div style={{
+                            padding: '1.5rem',
+                            border: '1px solid var(--primary-color)',
+                            borderRadius: 'var(--radius-lg)',
+                            background: 'var(--primary-light)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            animation: 'fadeIn 0.3s ease'
+                        }}>
+                            <div style={{
+                                background: 'var(--primary-color)',
+                                color: 'white',
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                marginBottom: '1rem',
+                                boxShadow: '0 4px 6px -1px rgba(var(--primary-rgb), 0.3)'
+                            }}>
+                                <FileText size={24} />
+                            </div>
+                            <h4 style={{ margin: '0 0 0.25rem 0', color: 'var(--text-primary)', fontWeight: '600' }}>{uploadFile.name}</h4>
+                            <p style={{ margin: '0 0 1.5rem 0', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                                {(uploadFile.size / 1024).toFixed(1)} KB
+                            </p>
+                            <div style={{ display: 'flex', gap: '0.75rem' }}>
+                                <button
+                                    onClick={() => setUploadFile(null)}
+                                    className="btn"
+                                    style={{
+                                        background: 'white',
+                                        border: '1px solid var(--border-color)',
+                                        color: 'var(--text-secondary)',
+                                        padding: '0.5rem 1rem'
+                                    }}
+                                >
+                                    Hủy bỏ
+                                </button>
+                                <button
+                                    onClick={handleFileUpload}
+                                    disabled={uploading || !currentGrade}
+                                    className="btn btn-primary"
+                                    style={{ padding: '0.5rem 1.5rem' }}
+                                >
+                                    {uploading ? 'Đang xử lý...' : 'Áp dụng ngay'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+
             <div className="card">
                 {/* Legend: actual vs predicted */}
                 <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.5rem', alignItems: 'center', paddingBottom: '1rem', borderBottom: '1px solid var(--border-color)' }}>
@@ -316,7 +548,7 @@ const StudyUpdate = () => {
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         <div style={{ width: '12px', height: '12px', background: 'var(--text-tertiary)', borderRadius: '3px' }} />
-                        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: '500' }}>Dự đoán (KNN)</div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: '500' }}>Dự đoán</div>
                     </div>
                 </div>
 
@@ -357,7 +589,15 @@ const StudyUpdate = () => {
                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                                             <input
                                                                 className="input-field"
-                                                                style={{ padding: '0.4rem 0.75rem', width: '90px', textAlign: 'center' }}
+                                                                style={{
+                                                                    padding: '0.4rem 0.75rem',
+                                                                    width: '90px',
+                                                                    textAlign: 'center',
+                                                                    borderColor: isUnsavedInput(item.key, inputs[item.key]) ? '#dc2626' : 'var(--border-color)',
+                                                                    borderWidth: isUnsavedInput(item.key, inputs[item.key]) ? '2px' : '1px',
+                                                                    backgroundColor: isUnsavedInput(item.key, inputs[item.key]) ? '#fef2f2' : 'transparent',
+                                                                    boxShadow: isUnsavedInput(item.key, inputs[item.key]) ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                                                }}
                                                                 value={inputs[item.key] || ''}
                                                                 placeholder={item.predicted ? `${item.predicted}` : '-'}
                                                                 onChange={(e) => handleChange(item.key, e.target.value)}

@@ -226,6 +226,17 @@ button {
   }
 }
 
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+  50% {
+    opacity: 0.9;
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
+  }
+}
+
 .animate-fade-in {
   animation: fadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
@@ -510,4 +521,18 @@ button {
   font-size: 1.2rem;
   color: var(--text-secondary);
   background: var(--bg-body);
+}
+
+/* Custom placeholder color for predicted scores */
+.custom-placeholder-yellow::placeholder {
+  color: #f59e0b;
+  opacity: 1;
+  font-weight: 500;
+}
+
+/* Custom placeholder color for imputed scores */
+.custom-placeholder-gray::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+  font-weight: 400;
 }
