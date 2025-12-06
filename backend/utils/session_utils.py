@@ -10,15 +10,14 @@ import inspect
 # Cấu hình Redis cho session storage
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
-# Khởi tạo Redis client với error handling
-try:
-    redis_client = redis.from_url(REDIS_URL)
-    # Test connection
-    redis_client.ping()
-except Exception as e:
-    print(f"Redis connection error: {e}")
-    # Fallback to localhost if Redis service not available
-    redis_client = redis.from_url("redis://localhost:6379")
+# Khởi tạo Redis client (lazy connection - không test ngay)
+redis_client = redis.from_url(
+    REDIS_URL,
+    socket_connect_timeout=5,
+    socket_timeout=5,
+    retry_on_timeout=True,
+    health_check_interval=30
+)
 
 # Thời gian hết hạn session (mặc định 24 giờ)
 SESSION_EXPIRE_HOURS = 24
@@ -186,5 +185,37 @@ def require_auth(f):
 # Role-based authentication removed - not needed for current functionality
 
 def get_current_user(request: Request):
-    """Lấy thông tin user hiện tại"""
-    return getattr(request.state, 'current_user', None)
+    """Lấy thông tin user hiện tại, raise 401 nếu chưa đăng nhập"""
+    session_id = request.cookies.get('session_id')
+    
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    
+    session_data = SessionManager.get_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=401, detail="Session không hợp lệ hoặc đã hết hạn")
+    
+    # Cập nhật thời gian hoạt động
+    SessionManager.update_session_activity(session_id)
+    
+    # Tạo object giả User để có thể access .id, .username, etc.
+    class UserSession:
+        def __init__(self, data):
+            self._data = data
+            self.id = data.get("user_id")
+            self.username = data.get("username")
+            self.email = data.get("email")
+            self.first_name = data.get("first_name")
+            self.last_name = data.get("last_name")
+            self.phone = data.get("phone")
+            self.address = data.get("address")
+            self.age = data.get("age")
+            self.current_grade = data.get("current_grade")
+            self.role = data.get("role")
+            self.is_first_login = data.get("is_first_login", False)
+        
+        def get(self, key, default=None):
+            """Support dict-like get() method for backward compatibility"""
+            return self._data.get(key, default)
+    
+    return UserSession(session_data)

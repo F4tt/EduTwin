@@ -179,28 +179,44 @@ class PersonalizationLearner:
         return summary[:10]  # Top 10 insights
 
 
-def get_learned_preferences_display(db: Session, user_id: int) -> Dict[str, List[str]]:
+def get_learned_preferences_display(db: Session, user_id: int) -> List[str]:
     """
-    Get learned preferences for a user in structured format.
-    Returns a dict with categorized preference descriptions for UI.
+    Get learned preferences for a user as a list of strings for UI display.
+    Returns a flat list of all learned preferences.
     """
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user or not user.preferences:
-        return {}
+        return []
     
     learned = user.preferences.get("learned")
     if not learned:
-        return {}
+        return []
     
-    # Handle dict format (new structure)
+    # Handle dict format (categorized) - flatten to list with category labels
     if isinstance(learned, dict):
+        result = []
+        category_names = {
+            "communication_style": "Phong cách giao tiếp",
+            "personality": "Tính cách",
+            "emotions": "Cảm xúc",
+            "habits": "Thói quen",
+            "schedule": "Lịch trình",
+            "interests": "Sở thích",
+            "goals": "Mục tiêu",
+            "general": "Chung"
+        }
+        for category, items in learned.items():
+            if items and isinstance(items, list):
+                category_display = category_names.get(category, category)
+                for item in items:
+                    result.append(f"[{category_display}] {item}")
+        return result
+    
+    # Handle list format (backward compatibility)
+    if isinstance(learned, list):
         return learned
     
-    # Handle list format (backward compatibility) - convert to dict
-    if isinstance(learned, list):
-        return {"general": learned}
-    
-    return {}
+    return []
 
 
 def get_personalization_prompt_addition(db: Session, user_id: int) -> str:
@@ -265,6 +281,8 @@ def update_user_personalization(db: Session, user_id: int, min_messages: int = 5
         user_id: User ID to update
         min_messages: Minimum number of messages in a session before learning
     """
+    MAX_TOTAL_PREFERENCES = 30  # Tổng tối đa 30 preferences
+    
     # Get recent chat sessions
     sessions = (
         db.query(models.ChatSession)
@@ -278,46 +296,104 @@ def update_user_personalization(db: Session, user_id: int, min_messages: int = 5
         return
     
     # Analyze sessions with enough messages and merge preferences
-    merged_preferences = {
-        "communication_style": set(),
-        "personality": set(),
-        "emotions": set(),
-        "habits": set(),
-        "schedule": set(),
-        "interests": set(),
-        "goals": set()
+    new_preferences = {
+        "communication_style": {},  # Changed to dict to track frequency
+        "personality": {},
+        "emotions": {},
+        "habits": {},
+        "schedule": {},
+        "interests": {},
+        "goals": {}
     }
     
     learner = PersonalizationLearner()
     
+    # Collect new preferences from recent sessions
     for session in sessions:
         db.refresh(session)
         if len(session.messages) >= min_messages:
             prefs = learner.analyze_session_preferences(session)
-            # Merge all categories
+            # Count frequency of each preference
             for category, items in prefs.items():
-                if category in merged_preferences:
-                    merged_preferences[category].update(items)
+                if category in new_preferences:
+                    for item in items:
+                        new_preferences[category][item] = new_preferences[category].get(item, 0) + 1
     
-    # Convert sets to lists and filter empty
+    # Get existing preferences
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        return
+    
+    if not user.preferences:
+        user.preferences = {}
+    
+    existing_learned = user.preferences.get("learned", {})
+    
+    # Convert existing list format to dict format if needed
+    if isinstance(existing_learned, dict):
+        existing_preferences = {
+            category: {item: 1 for item in items} if isinstance(items, list) else items
+            for category, items in existing_learned.items()
+        }
+    else:
+        existing_preferences = {"general": {}}
+    
+    # Merge new preferences with existing ones
+    merged_preferences = {}
+    for category in new_preferences.keys():
+        merged_preferences[category] = {}
+        
+        # Add existing preferences with decay (reduce importance over time)
+        if category in existing_preferences:
+            for item, count in existing_preferences[category].items():
+                # Decay old preferences slightly
+                merged_preferences[category][item] = count * 0.9
+        
+        # Add/update new preferences
+        for item, count in new_preferences[category].items():
+            if item in merged_preferences[category]:
+                # Boost if it appears again
+                merged_preferences[category][item] += count * 1.5
+            else:
+                merged_preferences[category][item] = count
+    
+    # Sort all preferences by frequency and limit to MAX_TOTAL_PREFERENCES
+    all_prefs = []
+    for category, items in merged_preferences.items():
+        for item, score in items.items():
+            all_prefs.append((category, item, score))
+    
+    # Sort by score descending (most important first)
+    all_prefs.sort(key=lambda x: x[2], reverse=True)
+    
+    # Keep only top MAX_TOTAL_PREFERENCES
+    top_prefs = all_prefs[:MAX_TOTAL_PREFERENCES]
+    
+    # Reconstruct categorized preferences
     final_preferences = {
-        k: list(v)[:5]  # Max 5 items per category
-        for k, v in merged_preferences.items() 
-        if v
+        "communication_style": [],
+        "personality": [],
+        "emotions": [],
+        "habits": [],
+        "schedule": [],
+        "interests": [],
+        "goals": []
     }
+    
+    for category, item, score in top_prefs:
+        if category in final_preferences:
+            final_preferences[category].append(item)
+    
+    # Remove empty categories
+    final_preferences = {k: v for k, v in final_preferences.items() if v}
     
     if not final_preferences:
         return
     
     # Update user preferences
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if user:
-        if not user.preferences:
-            user.preferences = {}
-        
-        user.preferences["learned"] = final_preferences
-        
-        from sqlalchemy.orm.attributes import flag_modified
-        flag_modified(user, "preferences")
-        
-        db.commit()
+    user.preferences["learned"] = final_preferences
+    
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(user, "preferences")
+    
+    db.commit()

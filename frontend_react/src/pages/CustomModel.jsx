@@ -37,16 +37,19 @@ const CustomModel = () => {
 
     const fetchAllStructures = async () => {
         try {
+            console.log('Fetching all structures...');
             const res = await axiosClient.get('/custom-model/teaching-structures');
+            console.log('API Response:', res.data);
             const structures = res.data.structures || [];
+            console.log('Structures found:', structures.length, structures);
             setAllStructures(structures);
             
-            // Initialize default current time points for all structures
+            // Initialize current time points from database or default to first
             const defaultTimePoints = {};
             structures.forEach(struct => {
                 if (struct.time_point_labels && struct.time_point_labels.length > 0) {
-                    // Set to first time point by default
-                    defaultTimePoints[struct.id] = struct.time_point_labels[0];
+                    // Use current_time_point from database, or default to first time point
+                    defaultTimePoints[struct.id] = struct.current_time_point || struct.time_point_labels[0];
                 }
             });
             setCurrentTimePoints(prev => ({ ...prev, ...defaultTimePoints }));
@@ -58,6 +61,7 @@ const CustomModel = () => {
             }
         } catch (e) {
             console.error('Error fetching structures:', e);
+            console.error('Error details:', e.response?.data);
         }
     };
 
@@ -169,6 +173,14 @@ const CustomModel = () => {
         setStructureMessage('');
 
         try {
+            console.log('Saving structure:', {
+                structure_name: structureName,
+                num_time_points: parseInt(numTimePoints),
+                num_subjects: parseInt(numSubjects),
+                time_point_labels: timePointLabels,
+                subject_labels: subjectLabels
+            });
+            
             const res = await axiosClient.post('/custom-model/teaching-structure', {
                 structure_name: structureName,
                 num_time_points: parseInt(numTimePoints),
@@ -176,6 +188,8 @@ const CustomModel = () => {
                 time_point_labels: timePointLabels,
                 subject_labels: subjectLabels
             });
+            
+            console.log('Save response:', res.data);
             setStructureMessage('✓ ' + res.data.message);
             setTimeout(() => setStructureMessage(''), 3000);
             
@@ -187,8 +201,12 @@ const CustomModel = () => {
             setSubjectLabels([]);
             setStructureConfirmed(false);
             
+            console.log('Fetching updated structures...');
             await fetchAllStructures();
+            console.log('Fetch completed');
         } catch (e) {
+            console.error('Error saving structure:', e);
+            console.error('Error response:', e.response?.data);
             setStructureMessage('Lỗi: ' + (e.response?.data?.detail || e.message));
         } finally {
             setSavingStructure(false);
@@ -291,6 +309,31 @@ const CustomModel = () => {
     const closeScoreModal = () => {
         setShowScoreModal(false);
         setSelectedStructureForScores(null);
+    };
+
+    const handleSaveCurrentTimePoint = async (structureId, newTimePoint) => {
+        if (!newTimePoint) {
+            setStructureMessage('Lỗi: Vui lòng chọn mốc thời gian');
+            return;
+        }
+
+        try {
+            await axiosClient.post(`/custom-model/update-current-time-point/${structureId}`, {
+                current_time_point: newTimePoint
+            });
+            
+            // Update local state
+            setCurrentTimePoints(prev => ({
+                ...prev,
+                [structureId]: newTimePoint
+            }));
+            
+            setStructureMessage('Đã lưu mốc thời gian hiện tại!');
+            setTimeout(() => setStructureMessage(''), 3000);
+        } catch (e) {
+            console.error('Error saving current time point:', e);
+            setStructureMessage('Lỗi: Không thể lưu mốc thời gian');
+        }
     };
 
     const handleScoreChange = (key, value) => {
@@ -520,7 +563,7 @@ const CustomModel = () => {
                 <div style={{ marginBottom: '2rem' }}>
                     <h1 style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
                         <Settings size={32} style={{ color: '#8b5cf6' }} />
-                        Custom Model Configuration
+                        Thiết Lập Mô Hình Tùy Chỉnh
                     </h1>
                     <p style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>
                         Tạo và quản lý các cấu trúc giảng dạy tùy chỉnh cho dự đoán điểm số
@@ -1208,28 +1251,49 @@ const CustomModel = () => {
                                 <label style={{ display: 'block', marginBottom: '0.75rem', fontWeight: '600', color: 'var(--text-primary)' }}>
                                     Mốc thời gian hiện tại của bạn:
                                 </label>
-                                <select
-                                    value={currentTimePoints[selectedStructureForScores.id] || ''}
-                                    onChange={(e) => setCurrentTimePoints(prev => ({
-                                        ...prev,
-                                        [selectedStructureForScores.id]: e.target.value
-                                    }))}
-                                    style={{
-                                        width: '100%',
-                                        padding: '0.75rem',
-                                        borderRadius: 'var(--radius-md)',
-                                        border: '2px solid #3b82f6',
-                                        fontSize: '1rem',
-                                        fontWeight: '500',
-                                        color: 'var(--text-primary)',
-                                        background: 'white'
-                                    }}
-                                >
-                                    <option value="">-- Chọn mốc thời gian --</option>
-                                    {selectedStructureForScores.time_point_labels.map((label, idx) => (
-                                        <option key={idx} value={label}>{label}</option>
-                                    ))}
-                                </select>
+                                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                                    <select
+                                        value={currentTimePoints[selectedStructureForScores.id] || ''}
+                                        onChange={async (e) => {
+                                            const newTimePoint = e.target.value;
+                                            // Update local state immediately
+                                            setCurrentTimePoints(prev => ({
+                                                ...prev,
+                                                [selectedStructureForScores.id]: newTimePoint
+                                            }));
+                                            // Auto-save to backend
+                                            if (newTimePoint) {
+                                                try {
+                                                    await axiosClient.post(`/custom-model/update-current-time-point/${selectedStructureForScores.id}`, {
+                                                        current_time_point: newTimePoint
+                                                    });
+                                                    console.log('Auto-saved current time point:', newTimePoint);
+                                                } catch (e) {
+                                                    console.error('Error auto-saving time point:', e);
+                                                }
+                                            }
+                                        }}
+                                        style={{
+                                            flex: 1,
+                                            padding: '0.75rem',
+                                            borderRadius: 'var(--radius-md)',
+                                            border: '2px solid #3b82f6',
+                                            fontSize: '1rem',
+                                            fontWeight: '500',
+                                            color: 'var(--text-primary)',
+                                            background: 'white'
+                                        }}
+                                    >
+                                        <option value="">-- Chọn mốc thời gian --</option>
+                                        {selectedStructureForScores.time_point_labels.map((label, idx) => (
+                                            <option key={idx} value={label}>{label}</option>
+                                        ))}
+                                    </select>
+                                    {/* Auto-save enabled - no manual save button needed */}
+                                </div>
+                                <p style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.5rem', marginBottom: 0 }}>
+                                    💡 Mốc thời gian được lưu tự động khi bạn chọn
+                                </p>
                                 <p style={{ fontSize: '0.85rem', color: '#6b7280', marginTop: '0.5rem', marginBottom: 0 }}>
                                     💡 Chỉ có thể nhập điểm cho các mốc thời gian từ đầu đến mốc hiện tại (Điểm số {'>'} 0 và {'<'} 10000)
                                 </p>

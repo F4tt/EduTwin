@@ -85,12 +85,12 @@ def detect_cancellation_intent(message: str) -> bool:
 
 GRADE_PATTERN = re.compile(
     r"(?:lớp|khối|lop|khoi)\s+"
-    r"(10|11|12|tn|mười\s+hai|muoi\s+hai|mười\s+một|muoi\s+mot|mười|muoi)",
+    r"(10|11|12|mười\s+hai|muoi\s+hai|mười\s+một|muoi\s+mot|mười|muoi)",
     re.IGNORECASE
 )
 SEMESTER_PATTERN = re.compile(
     r"(?:h[ôọoóòỏõọ]c\s*k[ỳýỵỷỹy]|hk|hoc\s*ky)\s+"
-    r"(1|2|tn|một|mot|hai)",
+    r"(1|2|một|mot|hai)",
     re.IGNORECASE
 )
 SCORE_SPAN_PATTERN = re.compile(
@@ -164,7 +164,7 @@ def _normalize_grade(found: Optional[str]) -> Optional[str]:
         return num
     
     value = found.upper()
-    return "TN" if value == "TN" else value
+    return value
 
 
 def _normalize_semester(found: Optional[str]) -> Optional[str]:
@@ -178,7 +178,7 @@ def _normalize_semester(found: Optional[str]) -> Optional[str]:
         return num
     
     value = found.upper()
-    return "TN" if value == "TN" else value
+    return value
 
 
 def _parse_score(text: str) -> Optional[float]:

@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint, DateTime, Text, JSON, Boolean, text
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint, DateTime, Text, JSON, Boolean, text, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from sqlalchemy.ext.hybrid import hybrid_property
 
 from .database import Base
 
@@ -13,9 +14,12 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
-    email = Column(String, nullable=True)
-    phone = Column(String, nullable=True)
-    address = Column(String, nullable=True)
+    
+    # Encrypted fields - stored as _encrypted_* columns
+    _encrypted_email = Column('email', String, nullable=True)
+    _encrypted_phone = Column('phone', String, nullable=True)
+    _encrypted_address = Column('address', String, nullable=True)
+    
     age = Column(String, nullable=True)
     preferences = Column('preferences', JSON, nullable=True)
     current_grade = Column(String, nullable=True)
@@ -24,6 +28,69 @@ class User(Base):
     
     # Track ML config version that user's predictions are based on
     ml_config_version = Column(Integer, nullable=True, default=0)
+
+    # Transparent encryption/decryption properties
+    @hybrid_property
+    def email(self):
+        """Decrypt email on access."""
+        if not self._encrypted_email:
+            return None
+        try:
+            from utils.encryption import decrypt_field
+            return decrypt_field(self._encrypted_email)
+        except Exception:
+            # If decryption fails, return None and log warning
+            # This can happen during migration or if key changed
+            return None
+    
+    @email.setter
+    def email(self, value):
+        """Encrypt email on assignment."""
+        if value is None:
+            self._encrypted_email = None
+        else:
+            from utils.encryption import encrypt_field
+            self._encrypted_email = encrypt_field(value)
+    
+    @hybrid_property
+    def phone(self):
+        """Decrypt phone on access."""
+        if not self._encrypted_phone:
+            return None
+        try:
+            from utils.encryption import decrypt_field
+            return decrypt_field(self._encrypted_phone)
+        except Exception:
+            return None
+    
+    @phone.setter
+    def phone(self, value):
+        """Encrypt phone on assignment."""
+        if value is None:
+            self._encrypted_phone = None
+        else:
+            from utils.encryption import encrypt_field
+            self._encrypted_phone = encrypt_field(value)
+    
+    @hybrid_property
+    def address(self):
+        """Decrypt address on access."""
+        if not self._encrypted_address:
+            return None
+        try:
+            from utils.encryption import decrypt_field
+            return decrypt_field(self._encrypted_address)
+        except Exception:
+            return None
+    
+    @address.setter
+    def address(self, value):
+        """Encrypt address on assignment."""
+        if value is None:
+            self._encrypted_address = None
+        else:
+            from utils.encryption import encrypt_field
+            self._encrypted_address = encrypt_field(value)
 
     study_scores = relationship(
         "StudyScore",
@@ -35,8 +102,8 @@ class User(Base):
         back_populates="uploader",
         cascade="all",
     )
-    learning_documents = relationship(
-        "LearningDocument",
+    ai_insights = relationship(
+        "AIInsight",
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -53,8 +120,8 @@ class StudyScore(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     subject = Column(String, nullable=False)
-    grade_level = Column(String, nullable=False)  # "10", "11", "12", "TN"
-    semester = Column(String, nullable=False)  # "1", "2", "TN"
+    grade_level = Column(String, nullable=False)  # "10", "11", "12"
+    semester = Column(String, nullable=False)  # "1", "2"
     actual_score = Column(Float, nullable=True)
     predicted_score = Column(Float, nullable=True)
     actual_source = Column(String, nullable=True)
@@ -74,7 +141,7 @@ class StudyScore(Base):
 
 
 class DataImportLog(Base):
-    __tablename__ = "data_import_logs"
+    __tablename__ = "dataset_import_logs"
 
     id = Column(Integer, primary_key=True, index=True)
     uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -89,26 +156,19 @@ class DataImportLog(Base):
     uploader = relationship("User", back_populates="data_imports")
 
 
-class LearningDocument(Base):
-    __tablename__ = "learning_documents"
+class AIInsight(Base):
+    __tablename__ = "ai_insights"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    source = Column(String, nullable=False)
-    reference_type = Column(String, nullable=True)
-    reference_id = Column(Integer, nullable=True)
-    title = Column(String, nullable=True)
-    content = Column(Text, nullable=False)
-    metadata_ = Column('metadata', JSON, nullable=True)
+    insight_type = Column(String, nullable=False)  # 'slide_comment', 'chat_response', 'subject_analysis', etc
+    context_key = Column(String, nullable=True)     # 'overview_chart', 'Math', 'A00', etc
+    content = Column(Text, nullable=False)          # Main AI-generated content
+    metadata_ = Column('metadata', JSON, nullable=True)  # Additional data like metrics, version, etc
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    user = relationship("User", back_populates="learning_documents")
-    embeddings = relationship(
-        "KnowledgeEmbedding",
-        back_populates="document",
-        cascade="all, delete-orphan",
-    )
+    user = relationship("User", back_populates="ai_insights")
 
 
 class ChatSession(Base):
@@ -142,20 +202,6 @@ class ChatMessage(Base):
     session = relationship("ChatSession", back_populates="messages")
 
 
-class KnowledgeEmbedding(Base):
-    __tablename__ = "knowledge_embeddings"
-
-    id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("learning_documents.id", ondelete="CASCADE"), nullable=False, index=True)
-    vector_id = Column(String, unique=True, nullable=False)
-    model = Column(String, nullable=False)
-    dimension = Column(Integer, nullable=False)
-    metadata_ = Column('metadata', JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    document = relationship("LearningDocument", back_populates="embeddings")
-
-
 class PendingUpdate(Base):
     __tablename__ = "pending_updates"
 
@@ -183,7 +229,7 @@ class MLModelConfig(Base):
 
 
 class ModelParameters(Base):
-    __tablename__ = "model_parameters"
+    __tablename__ = "ml_model_parameters"
 
     id = Column(Integer, primary_key=True, index=True)
     # KNN parameter: number of neighbors
@@ -200,7 +246,7 @@ class ModelParameters(Base):
 
 
 class KNNReferenceSample(Base):
-    __tablename__ = "knn_reference_samples"
+    __tablename__ = "reference_dataset"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -210,6 +256,64 @@ class KNNReferenceSample(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User")
+
+
+class CustomTeachingStructure(Base):
+    __tablename__ = "custom_teaching_structures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    structure_name = Column(String, nullable=False)  # User-defined name for the structure
+    num_time_points = Column(Integer, nullable=False)
+    num_subjects = Column(Integer, nullable=False)
+    time_point_labels = Column(JSON, nullable=False)  # List of time point names
+    subject_labels = Column(JSON, nullable=False)  # List of subject names
+    current_time_point = Column(String, nullable=True)  # Currently selected time point for score input
+    pipeline_enabled = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)  # Currently selected structure
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User")
+
+
+class CustomDatasetSample(Base):
+    __tablename__ = "custom_reference_dataset"
+
+    id = Column(Integer, primary_key=True, index=True)
+    structure_id = Column(Integer, ForeignKey("custom_teaching_structures.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    sample_name = Column(String, nullable=True)
+    score_data = Column(JSON, nullable=False)  # Dict of subject_timepoint: score
+    metadata_ = Column('metadata', JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User")
+    structure = relationship("CustomTeachingStructure")
+
+
+class CustomUserScore(Base):
+    __tablename__ = "custom_user_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    structure_id = Column(Integer, ForeignKey("custom_teaching_structures.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject = Column(String, nullable=False)
+    time_point = Column(String, nullable=False)
+    actual_score = Column(Float, nullable=True)
+    predicted_score = Column(Float, nullable=True)
+    predicted_source = Column(String, nullable=True)  # Model used: knn, kernel_regression, lwlr
+    predicted_status = Column(String, nullable=True)  # Status: active, replaced
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User")
+    structure = relationship("CustomTeachingStructure")
+
+    __table_args__ = (
+        # Unique constraint: one score per (user, structure, subject, time_point)
+        Index('ix_custom_user_score_unique', 'user_id', 'structure_id', 'subject', 'time_point', unique=True),
+    )
 
 
 class LearningGoal(Base):

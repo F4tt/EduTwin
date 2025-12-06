@@ -13,13 +13,15 @@ from db import models
 class ProactiveEngagement:
     """Generates contextual questions to engage users and collect preferences."""
     
-    # Câu hỏi mở đầu session mới
+    # Câu hỏi mở đầu session mới - không dùng time_of_day để tránh sai giờ
     GREETING_TEMPLATES = [
         "Chào {name}! Cùng bắt đầu một cuộc trò chuyện mới nào! Dạo này mọi chuyện có ổn không?",
         "Xin chào {name}! Hôm nay {name} thế nào rồi? Có điều gì muốn chia sẻ không?",
-        "Chào buổi {time_of_day} {name}! Tâm trạng hôm nay của {name} ra sao?",
-        "Hey {name}! Bắt đầu ngày mới thôi! {name} có kế hoạch gì thú vị không?",
+        "Chào {name}! Tâm trạng hôm nay của {name} ra sao?",
+        "Hey {name}! {name} có kế hoạch gì thú vị không?",
         "Chào {name}! Mình đây, sẵn sàng trò chuyện cùng {name} rồi! Hôm nay có gì đặc biệt không?",
+        "Xin chào {name}! Mình ở đây để lắng nghe {name} đây! Muốn nói gì không?",
+        "Chào {name}! Có điều gì {name} muốn chia sẻ với mình không?",
     ]
     
     # Câu hỏi sau khi response
@@ -56,7 +58,7 @@ class ProactiveEngagement:
         ],
     }
     
-    # Câu hỏi dựa trên context
+    # Câu hỏi dựa trên context - loại bỏ các câu hỏi dựa trên thời gian trong ngày
     CONTEXTUAL_QUESTIONS = {
         "study_stress": [
             "Áp lực học tập có làm {name} mệt mỏi không?",
@@ -70,28 +72,10 @@ class ProactiveEngagement:
             "Cuối tuần rồi! {name} có kế hoạch gì vui không?",
             "{name} thích dành cuối tuần ở nhà hay đi chơi hơn?",
         ],
-        "morning": [
-            "Buổi sáng năng lượng chứ? {name} thường làm gì để bắt đầu ngày mới?",
-            "{name} là người thức dậy sớm hay ngủ dậy muộn?",
-        ],
-        "evening": [
-            "Buổi tối rồi! {name} đã hoàn thành được bao nhiêu việc hôm nay?",
-            "Tối nay {name} có dự định gì không?",
-        ],
     }
     
     def __init__(self, db: Session):
         self.db = db
-    
-    def _get_time_of_day(self) -> str:
-        """Xác định thời gian trong ngày."""
-        hour = datetime.now().hour
-        if 5 <= hour < 12:
-            return "sáng"
-        elif 12 <= hour < 18:
-            return "chiều"
-        else:
-            return "tối"
     
     def _get_time_period(self) -> str:
         """Xác định giai đoạn thời gian."""
@@ -132,13 +116,6 @@ class ProactiveEngagement:
         exam_keywords = ["thi", "kiểm tra", "ôn"]
         if any(kw in msg_lower for kw in exam_keywords):
             contexts.append("exam_coming")
-        
-        # Check time of day
-        hour = datetime.now().hour
-        if 5 <= hour < 12:
-            contexts.append("morning")
-        elif 18 <= hour < 23:
-            contexts.append("evening")
         
         # Check weekend
         if datetime.now().weekday() >= 5:
@@ -223,7 +200,6 @@ class ProactiveEngagement:
         Tạo câu chào mở đầu cho session mới, cá nhân hóa dựa trên preferences.
         """
         name = self._get_user_name(user_id)
-        time_of_day = self._get_time_of_day()
         
         # Get learned preferences to personalize greeting
         learned_prefs = self._get_learned_preferences(user_id)
@@ -258,12 +234,9 @@ class ProactiveEngagement:
                 ]
                 return random.choice(greetings)
         
-        # Default greeting
+        # Default greeting - chỉ dùng name, không dùng time_of_day
         template = random.choice(self.GREETING_TEMPLATES)
-        greeting = template.format(
-            name=name,
-            time_of_day=time_of_day
-        )
+        greeting = template.format(name=name)
         
         return greeting
     

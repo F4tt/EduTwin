@@ -64,3 +64,6 @@ frontend_react/.vite/
 grafana/data/
 prometheus_data/
 loki_data/
+
+
+.md

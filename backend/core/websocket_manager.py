@@ -184,22 +184,10 @@ async def emit_chat_typing(chat_session_id: str, is_typing: bool):
     await sio.emit('chat_typing', {'is_typing': is_typing}, room=room_name)
 
 
-async def emit_notification(user_id: int, notification: dict):
-    """Send a notification to a specific user"""
-    await WebSocketManager.emit_to_user(user_id, 'notification', notification)
-    logger.info(f"Sent notification to user {user_id}")
-
-
 async def emit_study_update(user_id: int, update: dict):
     """Send a study update to a specific user"""
     await WebSocketManager.emit_to_user(user_id, 'study_update', update)
     logger.info(f"Sent study update to user {user_id}")
-
-
-async def emit_pending_confirmation(user_id: int, confirmation: dict):
-    """Send a pending confirmation request to a user"""
-    await WebSocketManager.emit_to_user(user_id, 'pending_confirmation', confirmation)
-    logger.info(f"Sent pending confirmation to user {user_id}")
 
 
 async def emit_prediction_update(user_id: int, predictions: dict):

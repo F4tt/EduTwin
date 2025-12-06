@@ -67,9 +67,13 @@ def import_knn_reference_dataset(
     summary = ExcelImportSummary(filename=filename)
 
     try:
-        df = pd.read_excel(BytesIO(file_bytes))
+        # Support both Excel and CSV files
+        if filename.lower().endswith('.csv'):
+            df = pd.read_csv(BytesIO(file_bytes))
+        else:
+            df = pd.read_excel(BytesIO(file_bytes))
     except Exception as exc:  # noqa: BLE001
-        summary.errors.append(f"Không thể đọc file Excel: {exc}")
+        summary.errors.append(f"Không thể đọc file: {exc}")
         return summary
 
     if df.empty:
@@ -79,7 +83,7 @@ def import_knn_reference_dataset(
     column_map, invalid_columns = _build_knn_column_map(list(df.columns))
     if not column_map:
         summary.errors.append(
-            "Không tìm thấy cột điểm hợp lệ (định dạng ví dụ: Toán_1_10, Văn_2_11, Toán_TN)."
+            "Không tìm thấy cột điểm hợp lệ (định dạng ví dụ: Toán_1_10, Văn_2_11)."
         )
         return summary
     if invalid_columns:

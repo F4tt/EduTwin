@@ -12,10 +12,10 @@ from sqlalchemy.orm import Session
 
 from db import database, models
 from ml import prediction_service
-# REMOVED: learning_documents, vector_store_provider, memory_manager imports (no longer used)
 from services.chatbot_service import generate_chat_response
 from utils.session_utils import get_current_user, require_auth
 from services.personalization_learner import PersonalizationLearner
+from services.proactive_engagement import ProactiveEngagement
 from core.websocket_manager import emit_chat_message, emit_chat_typing
 
 
@@ -119,7 +119,9 @@ class UpdateSessionPayload(BaseModel):
 
 
 class CommentRequest(BaseModel):
-    document_id: int
+    insight_type: str = 'slide_comment'  # Type of AI insight
+    context_key: Optional[str] = None     # Context identifier (e.g., 'overview_chart', 'Math')
+    prompt_context: Optional[str] = None  # Additional context for the prompt
     session_id: Optional[int] = None
     persist: bool = False
 
@@ -577,15 +579,34 @@ async def cancel_update(
 
 @router.post("/chatbot/sessions")
 @require_auth
-def create_chat_session(request: Request, payload: CreateSessionPayload, db: Session = Depends(get_db)):
+def create_chat_session(request: Request, payload: dict = Body(default={}), db: Session = Depends(get_db)):
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
 
-    session = models.ChatSession(user_id=current_user.get("user_id"), title=payload.title)
+    title = payload.get("title") if payload else None
+    session = models.ChatSession(user_id=current_user.get("user_id"), title=title)
     db.add(session)
     db.commit()
     db.refresh(session)
+
+    # Generate initial proactive greeting for new session
+    try:
+        engagement = ProactiveEngagement(db)
+        greeting = engagement.generate_greeting(user_id=current_user.get("user_id"))
+        
+        # Save greeting as assistant message
+        greeting_msg = models.ChatMessage(
+            session_id=session.id,
+            role="assistant",
+            content=greeting
+        )
+        db.add(greeting_msg)
+        db.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger("uvicorn.error").error(f"Failed to generate initial greeting: {e}")
+        db.rollback()
 
     # Enforce maximum persisted sessions per user (keep newest 20)
     try:
@@ -673,6 +694,36 @@ def delete_chat_session(request: Request, session_id: str, db: Session = Depends
     return {"message": "Đã xóa session."}
 
 
+@router.delete("/chatbot/cleanup-empty-sessions")
+@require_auth
+def cleanup_empty_sessions(request: Request, db: Session = Depends(get_db)):
+    """Xóa các session không có tin nhắn từ user (chỉ có greeting hoặc rỗng)"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
+    
+    user_id = current_user.get("user_id")
+    
+    # Get all sessions for user
+    sessions = (
+        db.query(models.ChatSession)
+        .filter(models.ChatSession.user_id == user_id)
+        .all()
+    )
+    
+    deleted_count = 0
+    for session in sessions:
+        # Check if session has any user messages
+        has_user_message = any(msg.role == "user" for msg in session.messages)
+        
+        if not has_user_message:
+            db.delete(session)
+            deleted_count += 1
+    
+    db.commit()
+    return {"message": f"Đã xóa {deleted_count} phiên trống.", "deleted_count": deleted_count}
+
+
 @router.get("/chatbot/sessions/{session_id}/messages")
 @require_auth
 def get_session_messages(request: Request, session_id: str, db: Session = Depends(get_db)):
@@ -700,33 +751,138 @@ def get_session_messages(request: Request, session_id: str, db: Session = Depend
 
 @router.post("/chatbot/comment")
 @require_auth
-async def comment_on_slide(request: Request, payload: CommentRequest, db: Session = Depends(get_db)):
+async def generate_ai_insight(request: Request, payload: CommentRequest, db: Session = Depends(get_db)):
+    """
+    Generate AI insight/comment for various contexts (slide, subject analysis, etc.)
+    Can optionally persist the result to database for cross-device sync.
+    """
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
 
-    document = (
-        db.query(models.LearningDocument)
-        .filter(models.LearningDocument.id == payload.document_id, models.LearningDocument.user_id == current_user.get("user_id"))
-        .first()
-    )
-    if not document:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu học tập.")
+    user_id = current_user.get("user_id")
 
-    prompt = (
-        "Bạn là một trợ lý giáo viên. Dựa trên nội dung sau, hãy viết một đoạn nhận xét ngắn (1-3 câu) bằng tiếng Việt, "
-        "tập trung vào kết quả học tập của học sinh và gợi ý cải thiện nếu cần:\n\n" + document.content
-    )
+    # Build prompt based on context
+    if payload.prompt_context:
+        prompt = payload.prompt_context
+    else:
+        prompt = (
+            "Bạn là một trợ lý giáo viên. Hãy viết một đoạn nhận xét ngắn (1-3 câu) bằng tiếng Việt, "
+            "tập trung vào kết quả học tập của học sinh và gợi ý cải thiện nếu cần."
+        )
 
+    # Generate AI response
     result = await generate_chat_response(db=db, user=current_user, message=prompt, session_id=payload.session_id)
     comment = result.get("answer")
 
+    # Persist to database if requested
     if payload.persist and comment:
-        meta = document.metadata_ or {}
-        meta["llm_comment"] = {"text": comment, "generated_at": datetime.utcnow().isoformat()}
-        document.metadata_ = meta
+        # Check if insight already exists for this context
+        existing = (
+            db.query(models.AIInsight)
+            .filter(
+                models.AIInsight.user_id == user_id,
+                models.AIInsight.insight_type == payload.insight_type,
+                models.AIInsight.context_key == payload.context_key
+            )
+            .first()
+        )
+
+        if existing:
+            # Update existing insight
+            existing.content = comment
+            existing.updated_at = datetime.utcnow()
+            existing.metadata_ = {
+                **(existing.metadata_ or {}),
+                "regenerated_at": datetime.utcnow().isoformat(),
+                "session_id": payload.session_id
+            }
+        else:
+            # Create new insight
+            new_insight = models.AIInsight(
+                user_id=user_id,
+                insight_type=payload.insight_type,
+                context_key=payload.context_key,
+                content=comment,
+                metadata_={
+                    "generated_at": datetime.utcnow().isoformat(),
+                    "session_id": payload.session_id
+                }
+            )
+            db.add(new_insight)
+        
         db.commit()
 
     return JSONResponse(content={"comment": comment})
+
+
+@router.get("/chatbot/insights")
+@require_auth
+async def get_user_insights(
+    request: Request, 
+    insight_type: Optional[str] = None,
+    context_key: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch AI insights for the current user.
+    Can filter by insight_type and/or context_key.
+    Returns insights sorted by most recent first.
+    """
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
+
+    user_id = current_user.get("user_id")
+    
+    query = db.query(models.AIInsight).filter(models.AIInsight.user_id == user_id)
+    
+    if insight_type:
+        query = query.filter(models.AIInsight.insight_type == insight_type)
+    if context_key:
+        query = query.filter(models.AIInsight.context_key == context_key)
+    
+    insights = query.order_by(models.AIInsight.updated_at.desc()).all()
+    
+    return JSONResponse(content={
+        "insights": [
+            {
+                "id": ins.id,
+                "insight_type": ins.insight_type,
+                "context_key": ins.context_key,
+                "content": ins.content,
+                "metadata": ins.metadata_,
+                "created_at": ins.created_at.isoformat() if ins.created_at else None,
+                "updated_at": ins.updated_at.isoformat() if ins.updated_at else None
+            }
+            for ins in insights
+        ]
+    })
+
+
+@router.delete("/chatbot/insights/{insight_id}")
+@require_auth
+async def delete_insight(request: Request, insight_id: int, db: Session = Depends(get_db)):
+    """Delete a specific AI insight."""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
+
+    user_id = current_user.get("user_id")
+    
+    insight = (
+        db.query(models.AIInsight)
+        .filter(models.AIInsight.id == insight_id, models.AIInsight.user_id == user_id)
+        .first()
+    )
+    
+    if not insight:
+        raise HTTPException(status_code=404, detail="Không tìm thấy insight.")
+    
+    db.delete(insight)
+    db.commit()
+    
+    return JSONResponse(content={"message": "Đã xóa insight thành công"})
+
 
 

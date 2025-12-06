@@ -10,7 +10,7 @@ from sqlalchemy import text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from db import models, database
-from api import auth, study, developer, chatbot, learning_goals
+from api import auth, study, developer, chatbot, learning_goals, custom_model
 from api import user
 # REMOVED: vector_store_provider import (no longer used)
 from core.logging_config import setup_logging, get_logger
@@ -107,9 +107,9 @@ async def startup_event():
                     ADD COLUMN IF NOT EXISTS actual_status VARCHAR,
                     ADD COLUMN IF NOT EXISTS predicted_status VARCHAR
                 """))
-                # Ensure model_parameters table is created (in case SQLAlchemy create_all doesn't catch it)
+                # Ensure ml_model_parameters table is created (in case SQLAlchemy create_all doesn't catch it)
                 conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS model_parameters (
+                    CREATE TABLE IF NOT EXISTS ml_model_parameters (
                         id SERIAL PRIMARY KEY,
                         knn_n INTEGER NOT NULL DEFAULT 15,
                         kr_bandwidth FLOAT NOT NULL DEFAULT 1.25,
@@ -139,13 +139,13 @@ async def startup_event():
                 conn.execute(text("""
                     CREATE INDEX IF NOT EXISTS ix_learning_goals_user_id ON learning_goals(user_id)
                 """))
-                # Add user_id to knn_reference_samples if not exists
+                # Add user_id to reference_dataset if not exists
                 conn.execute(text("""
-                    ALTER TABLE knn_reference_samples
+                    ALTER TABLE reference_dataset
                     ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
                 """))
                 conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_knn_reference_samples_user_id ON knn_reference_samples(user_id)
+                    CREATE INDEX IF NOT EXISTS ix_reference_dataset_user_id ON reference_dataset(user_id)
                 """))
             logger.info("Database tables created successfully")
             
@@ -175,9 +175,10 @@ app.include_router(developer.router)
 app.include_router(chatbot.router)
 app.include_router(user.router)
 app.include_router(learning_goals.router)
+app.include_router(custom_model.router)
 
-# Mount Socket.IO app
-app.mount('/ws', socket_app)
+# Mount Socket.IO app at /socket.io instead of /ws
+app.mount('/socket.io', socket_app)
 
 @app.get("/")
 def root():

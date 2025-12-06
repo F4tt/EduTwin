@@ -11,6 +11,7 @@ from db import models
 from services.intent_detection import ScoreUpdateIntent, detect_score_update_intent
 from services.intent_detection import detect_profile_update_intent, detect_personalization_intent
 from services.intent_detection import detect_confirmation_intent, detect_cancellation_intent
+from services.pii_redaction import redact_message_content, prepare_safe_llm_prompt, redact_user_for_llm
 # REMOVED: memory_manager import (service deleted, functions moved inline)
 # REMOVED: vector_store_provider import (no longer used)
 from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification
@@ -287,7 +288,8 @@ def _build_prompt(
         "Bạn là trợ lý học tập thông minh của nền tảng EduTwin. "
         "Luôn phản hồi bằng tiếng Việt, ngắn gọn, thân thiện và tập trung vào việc hỗ trợ học tập. "
         "Nếu có dữ liệu điểm số hoặc thông tin cá nhân liên quan, hãy ưu tiên sử dụng để cá nhân hóa câu trả lời. "
-        "Nếu cần cập nhật dữ liệu, hãy yêu cầu xác nhận rõ ràng."
+        "Nếu cần cập nhật dữ liệu, hãy yêu cầu xác nhận rõ ràng.\n\n"
+        "⚠️ LƯU Ý BẢO MẬT: Thông tin người dùng đã được ẩn danh hóa để bảo vệ quyền riêng tư."
     )
     
     # Add educational knowledge
@@ -303,12 +305,14 @@ def _build_prompt(
 
     context_block = "\n\n".join(context_texts) if context_texts else ""
 
-    # user profile block
+    # user profile block - REDACT PII before sending to LLM
     profile_block = ""
     if user_profile:
-        profile_pairs = [f"{key}: {value}" for key, value in user_profile.items() if value]
+        # Redact PII from user profile
+        safe_profile = redact_user_for_llm(user_profile)
+        profile_pairs = [f"{key}: {value}" for key, value in safe_profile.items() if value]
         if profile_pairs:
-            profile_block = "Thông tin người dùng:\n" + "\n".join(profile_pairs)
+            profile_block = "Thông tin người dùng (đã ẩn danh):\n" + "\n".join(profile_pairs)
 
     system_msg = instructions
     if profile_block:
@@ -457,54 +461,25 @@ async def generate_chat_response(
             if session:
                 for m in session.messages:
                     role = m.role if m.role in ("user", "assistant", "system") else "user"
-                    conversation_messages.append({"role": role, "content": m.content})
+                    # Redact PII from historical messages before sending to LLM
+                    safe_content = redact_message_content(m.content) if role == "user" else m.content
+                    conversation_messages.append({"role": role, "content": safe_content})
     
     # Build optimized prompt with conversation history
     system_messages = _build_prompt(message, contexts, user, db, user_id, conversation_messages)
 
-    # If no session_id supplied but we have an authenticated user, create a persisted ChatSession
-    # so the very first message is stored and accessible across logins.
-    if not session_id and user_id:
-        try:
-            import logging
-            logger = logging.getLogger("uvicorn.error")
-            logger.info(f"generate_chat_response: creating session for user_id={user_id}")
-            new_session = models.ChatSession(user_id=user_id, title=None)
-            db.add(new_session)
-            db.commit()
-            db.refresh(new_session)
-            session_id = str(new_session.id)
-            logger.info(f"generate_chat_response: created session id={session_id} for user_id={user_id}")
-            # enforce max 20 sessions per user
-            try:
-                max_sessions = 20
-                user_sessions = (
-                    db.query(models.ChatSession)
-                    .filter(models.ChatSession.user_id == user_id)
-                    .order_by(models.ChatSession.created_at.desc())
-                    .all()
-                )
-                if len(user_sessions) > max_sessions:
-                    to_delete = user_sessions[max_sessions:]
-                    for s in to_delete:
-                        db.delete(s)
-                    db.commit()
-            except Exception:
-                db.rollback()
-        except Exception as e:
-            import logging
-            logging.getLogger("uvicorn.error").exception(f"Error creating session in generate_chat_response: {e}")
-            try:
-                db.rollback()
-            except Exception:
-                pass
+    # REMOVED: session creation here - moved to after we save user message
+    # This ensures we only create sessions when user has sent at least one message
 
     # REMOVED: context_optimizer (service deleted)
     # Use last 5 messages from conversation history (simplified optimization)
     optimized_history = (conversation_messages[-5:] if len(conversation_messages) > 5 else conversation_messages)
     
+    # Redact PII from current user message before sending to LLM
+    safe_message = redact_message_content(message)
+    
     # Append current user message at end
-    optimized_history.append({"role": "user", "content": message})
+    optimized_history.append({"role": "user", "content": safe_message})
 
     # CHECK INTENT FIRST - before calling LLM
     intent = detect_score_update_intent(message)
@@ -749,19 +724,81 @@ async def generate_chat_response(
                             import logging
                             logging.getLogger("uvicorn.error").debug(f"Error generating follow-up: {e}")
                         
-                        try:
-                            db.commit()
-                            persisted_session_id = str(session.id)
-                            
-                            # Auto-learn personalization after every 5 messages
-                            if user_id:
-                                try:
-                                    from services.personalization_learner import update_user_personalization
-                                    update_user_personalization(db, user_id, min_messages=5)
-                                except Exception:
-                                    pass  # Don't fail if personalization learning fails
-                        except Exception:
-                            db.rollback()
+                        db.commit()
+                        persisted_session_id = str(session.id)
+        elif user_id:
+            # No session_id provided but user is authenticated
+            # Create new session and save messages
+            try:
+                import logging
+                logger = logging.getLogger("uvicorn.error")
+                logger.info(f"generate_chat_response: creating new session for user_id={user_id}")
+                new_session = models.ChatSession(user_id=user_id, title=None)
+                db.add(new_session)
+                db.flush()  # Get session ID without committing
+                
+                # Generate title from first user message
+                try:
+                    def _generate_session_title(text: str) -> str:
+                        if not text:
+                            return "Phiên trò chuyện"
+                        t = text.strip()
+                        for sep in (".", "?", "!", "\n"):
+                            if sep in t:
+                                t = t.split(sep)[0]
+                                break
+                        t = t.strip()
+                        if len(t) > 60:
+                            t = t[:57].rsplit(" ", 1)[0] + "..."
+                        return t or "Phiên trò chuyện"
+                    
+                    new_session.title = _generate_session_title(message)
+                except Exception:
+                    new_session.title = "Phiên trò chuyện"
+                
+                # Save user and assistant messages
+                user_msg = models.ChatMessage(session_id=new_session.id, role="user", content=message)
+                assistant_msg = models.ChatMessage(session_id=new_session.id, role="assistant", content=answer)
+                db.add(user_msg)
+                db.add(assistant_msg)
+                db.commit()
+                db.refresh(new_session)
+                
+                persisted_session_id = str(new_session.id)
+                logger.info(f"generate_chat_response: created session id={persisted_session_id}")
+                
+                # Enforce max 20 sessions per user
+                try:
+                    max_sessions = 20
+                    user_sessions = (
+                        db.query(models.ChatSession)
+                        .filter(models.ChatSession.user_id == user_id)
+                        .order_by(models.ChatSession.created_at.desc())
+                        .all()
+                    )
+                    if len(user_sessions) > max_sessions:
+                        to_delete = user_sessions[max_sessions:]
+                        for s in to_delete:
+                            db.delete(s)
+                        db.commit()
+                except Exception:
+                    db.rollback()
+            except Exception as e:
+                import logging
+                logging.getLogger("uvicorn.error").exception(f"Error creating session: {e}")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        
+        # Auto-learn personalization after every 5 messages (when session exists)
+        if user_id and persisted_session_id:
+            try:
+                from services.personalization_learner import update_user_personalization
+                update_user_personalization(db, user_id, min_messages=5)
+            except Exception:
+                pass  # Don't fail if personalization learning fails
+                        
     except Exception:
         # avoid failing the whole response if persistence fails
         pass

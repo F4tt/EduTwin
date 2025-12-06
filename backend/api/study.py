@@ -152,6 +152,7 @@ class ScoreDeletePayload(BaseModel):
 
 class GenerateCommentsRequest(BaseModel):
     active_tab: str | None = None  # Tab đang xem: "Chung", "Khối TN", "Khối XH", "Tổ Hợp", "Từng Môn"
+    persist: bool = False  # Có lưu vào database không (cho cross-device sync)
 
 
 def get_db():
@@ -445,9 +446,6 @@ def collect_visible_entries(
     entries: List[Dict[str, object]] = []
     fallback_index = len(TERM_ORDER)
     for row in score_rows:
-        # Skip graduation exam entries (TN_TN)
-        if row.semester == 'TN' or row.grade_level == 'TN':
-            continue
             
         source = "actual" if row.actual_score is not None else "predicted"
         value = row.actual_score if row.actual_score is not None else row.predicted_score
@@ -1617,4 +1615,90 @@ async def generate_slide_comments(
     }
     if warning is not None:
         resp["warning"] = warning
+    
+    # Persist to database if requested
+    if payload.persist:
+        try:
+            # Save overview insights
+            for tab_name in ["Chung", "Khối TN", "Khối XH"]:
+                tab_data = overview_llm.get(tab_name, {})
+                if tab_data.get("overview"):
+                    insight = (
+                        db.query(models.AIInsight)
+                        .filter(
+                            models.AIInsight.user_id == user_id,
+                            models.AIInsight.insight_type == "slide_comment",
+                            models.AIInsight.context_key == f"overview_{tab_name}"
+                        )
+                        .first()
+                    )
+                    if insight:
+                        insight.content = tab_data["overview"]
+                        insight.updated_at = datetime.utcnow()
+                    else:
+                        insight = models.AIInsight(
+                            user_id=user_id,
+                            insight_type="slide_comment",
+                            context_key=f"overview_{tab_name}",
+                            content=tab_data["overview"],
+                            metadata_={"tab": tab_name, "version": 3}
+                        )
+                        db.add(insight)
+            
+            # Save exam block insights
+            for block, block_data in exam_block_llm.items():
+                if block_data.get("comment"):
+                    insight = (
+                        db.query(models.AIInsight)
+                        .filter(
+                            models.AIInsight.user_id == user_id,
+                            models.AIInsight.insight_type == "slide_comment",
+                            models.AIInsight.context_key == f"exam_block_{block}"
+                        )
+                        .first()
+                    )
+                    if insight:
+                        insight.content = block_data["comment"]
+                        insight.updated_at = datetime.utcnow()
+                    else:
+                        insight = models.AIInsight(
+                            user_id=user_id,
+                            insight_type="slide_comment",
+                            context_key=f"exam_block_{block}",
+                            content=block_data["comment"],
+                            metadata_={"block": block, "version": 3}
+                        )
+                        db.add(insight)
+            
+            # Save subject insights
+            for subject, subject_data in subject_llm.items():
+                if subject_data.get("comment"):
+                    insight = (
+                        db.query(models.AIInsight)
+                        .filter(
+                            models.AIInsight.user_id == user_id,
+                            models.AIInsight.insight_type == "slide_comment",
+                            models.AIInsight.context_key == f"subject_{subject}"
+                        )
+                        .first()
+                    )
+                    if insight:
+                        insight.content = subject_data["comment"]
+                        insight.updated_at = datetime.utcnow()
+                    else:
+                        insight = models.AIInsight(
+                            user_id=user_id,
+                            insight_type="slide_comment",
+                            context_key=f"subject_{subject}",
+                            content=subject_data["comment"],
+                            metadata_={"subject": subject, "version": 3}
+                        )
+                        db.add(insight)
+            
+            db.commit()
+            logger.info(f"[AI_INSIGHTS] Persisted slide comments to database for user {user_id}")
+        except Exception as e:
+            logger.error(f"[AI_INSIGHTS] Failed to persist to database: {e}")
+            db.rollback()
+    
     return JSONResponse(content=resp)

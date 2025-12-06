@@ -94,15 +94,11 @@ def get_user_benchmark_summary(db: Session, user_id: int) -> Dict:
     if not user_scores:
         return {"has_data": False}
     
-    # Calculate user's average (exclude TN graduation exam)
+    # Calculate user's average
     user_values = []
     subject_scores = {}
     
     for score in user_scores:
-        # Skip graduation exam entries
-        if score.semester == 'TN' or score.grade_level == 'TN':
-            continue
-            
         val = score.actual_score if score.actual_score is not None else score.predicted_score
         if val is not None and 0 <= val <= 10:
             user_values.append(float(val))

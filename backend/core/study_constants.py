@@ -23,23 +23,21 @@ SUBJECT_DISPLAY = {
     "Giao duc cong dan": "Giáo dục công dân",
 }
 
-GRADE_ORDER = ["10", "11", "12", "TN"]
+GRADE_ORDER = ["10", "11", "12"]
 
 SEMESTER_ORDER = {
     "10": ["1", "2"],
     "11": ["1", "2"],
     "12": ["1", "2"],
-    "TN": ["TN"],
 }
 
 GRADE_DISPLAY = {
     "10": "Lớp 10",
     "11": "Lớp 11",
     "12": "Lớp 12",
-    "TN": "Tốt nghiệp",
 }
 
-SEMESTER_DISPLAY = {"1": "Học kỳ 1", "2": "Học kỳ 2", "TN": "Kỳ thi tốt nghiệp"}
+SEMESTER_DISPLAY = {"1": "Học kỳ 1", "2": "Học kỳ 2"}
 
 SUBJECT_ALIASES = {
     "toan": "Toan",

@@ -66,9 +66,6 @@ def parse_compound_header(header: object) -> Optional[Tuple[str, str, str]]:
     if len(tokens) == 3:
         semester_token = tokens[1]
         grade_token = tokens[2]
-    elif len(tokens) == 2:
-        semester_token = "TN"
-        grade_token = tokens[1]
     else:
         return None
 
