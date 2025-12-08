@@ -109,7 +109,6 @@ flowchart TB
 <img width="1919" height="991" alt="Ảnh chụp màn hình 2025-12-04 202511" src="https://github.com/user-attachments/assets/2af3126f-f506-4549-bf6e-3e55d48e8885" />
 <img width="1919" height="984" alt="Ảnh chụp màn hình 2025-12-04 202143" src="https://github.com/user-attachments/assets/135c1ee8-4381-405b-ae8c-f609b891cb1d" />
 <img width="1342" height="435" alt="Ảnh chụp màn hình 2025-12-04 203139" src="https://github.com/user-attachments/assets/48375ca3-5f54-4bf5-b444-328110b662a7" />
-<img width="1919" height="984" alt="Ảnh chụp màn hình 2025-12-04 202143" src="https://github.com/user-attachments/assets/c2866d8f-4ed6-4b5c-8642-16954e73dbdc" />
 <img width="1014" height="367" alt="Ảnh chụp màn hình 2025-12-04 203013" src="https://github.com/user-attachments/assets/1fdc32bc-2b7d-43fc-8549-4ae05dcfbb3a" />
 
 3. Vòng lặp liên tục giúp hệ thống tiến hóa trong quá trình sử dụng.
