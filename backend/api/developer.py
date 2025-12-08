@@ -1,39 +1,16 @@
 from __future__ import annotations
 
-import time
-from dataclasses import asdict
-from pydantic import BaseModel
-
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Body, BackgroundTasks
+from datetime import datetime
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from db import database, models
-from ml import prediction_service
-from services import excel_importer, model_evaluator
-# REMOVED: learning_documents and vector_store_provider imports (no longer used)
+from services import document_extractor
 from services.llm_provider import get_llm_provider
-from services.ml_version_manager import increment_ml_version, mark_all_users_for_update, get_current_ml_version
-from utils.session_utils import SessionManager, get_current_user, require_auth
+from utils.session_utils import get_current_user, require_auth
 
 router = APIRouter(prefix="/developer", tags=["Developer"])
-
-
-class SelectModelRequest(BaseModel):
-    model: str
-
-
-class UpdateParametersRequest(BaseModel):
-    knn_n: int
-    kr_bandwidth: float
-    lwlr_tau: float
-
-
-class ParametersResponse(BaseModel):
-    knn_n: int
-    kr_bandwidth: float
-    lwlr_tau: float
-    updated_at: str | None = None
 
 
 def get_db():
@@ -49,128 +26,65 @@ def _ensure_developer(user: dict | None) -> None:
         raise HTTPException(status_code=403, detail="Chỉ developer mới được phép truy cập tính năng này.")
 
 
-def _run_prediction_pipeline(db: Session) -> dict:
-    """Recompute predictions for every user (vector sync removed)."""
-    start = time.perf_counter()
-    user_ids = [row[0] for row in db.query(models.User.id).all()]
-    scores_to_sync = []
-
-    try:
-        for user_id in user_ids:
-            updates = prediction_service.update_predictions_for_user(db, user_id)
-            if updates:
-                scores_to_sync.extend(updates)
-
-        # REMOVED: Vector store sync (not needed for score analytics)
-        # if scores_to_sync:
-        #     db.flush()
-        #     learning_documents.sync_score_embeddings(db, vector_store, scores_to_sync)
-
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Lỗi pipeline ML: {exc}")
-
-    duration = round(time.perf_counter() - start, 2)
+def _retrigger_pipeline_for_all_users(db: Session) -> dict:
+    """Retrigger ML pipeline for all users with active structures after model/parameter changes."""
+    from api.custom_model import _trigger_prediction_for_structure
+    
+    # Get active structure
+    active_structure = db.query(models.CustomTeachingStructure).filter(
+        models.CustomTeachingStructure.is_active == True
+    ).first()
+    
+    if not active_structure:
+        return {"success": False, "message": "No active structure", "users_processed": 0}
+    
+    # Get all users with scores in this structure
+    user_ids = db.query(models.CustomUserScore.user_id).filter(
+        models.CustomUserScore.structure_id == active_structure.id,
+        models.CustomUserScore.actual_score.isnot(None)
+    ).distinct().all()
+    
+    users_processed = 0
+    users_failed = 0
+    
+    for (user_id,) in user_ids:
+        try:
+            result = _trigger_prediction_for_structure(db, user_id, active_structure.id)
+            if result["success"]:
+                users_processed += 1
+            else:
+                users_failed += 1
+        except Exception as e:
+            print(f"[RETRIGGER] Failed for user {user_id}: {str(e)}")
+            users_failed += 1
+    
     return {
-        "processed_users": len(user_ids),
-        "synced_scores": len(scores_to_sync),
-        "duration_seconds": duration,
+        "success": True,
+        "users_processed": users_processed,
+        "users_failed": users_failed,
+        "structure_id": active_structure.id
     }
-
-
-def _run_prediction_pipeline_background():
-    """Background task to run prediction pipeline for all users."""
-    db = database.SessionLocal()
-    try:
-        print("[PIPELINE] Starting background prediction pipeline for all users...")
-        start = time.perf_counter()
-        user_ids = [row[0] for row in db.query(models.User.id).all()]
-        scores_to_sync = []
-
-        for user_id in user_ids:
-            try:
-                updates = prediction_service.update_predictions_for_user(db, user_id)
-                if updates:
-                    scores_to_sync.extend(updates)
-            except Exception as e:
-                print(f"[PIPELINE] Error processing user {user_id}: {e}")
-                continue
-
-        # REMOVED: Vector store sync (not needed for score analytics)
-        # if scores_to_sync:
-        #     db.flush()
-        #     learning_documents.sync_score_embeddings(db, vector_store, scores_to_sync)
-
-        db.commit()
-        duration = round(time.perf_counter() - start, 2)
-        print(f"[PIPELINE] Completed: {len(user_ids)} users, {len(scores_to_sync)} scores synced in {duration}s")
-    except Exception as exc:
-        print(f"[PIPELINE] Error in background pipeline: {exc}")
-        db.rollback()
-    finally:
-        db.close()
-
-
-@router.post("/import-excel")
-@require_auth
-async def import_excel_data(
-    request: Request,
-    db: Session = Depends(get_db),
-    file = File(...),
-):
-    user = get_current_user(request)
-    _ensure_developer(user)
-
-    contents = await file.read()
-    if not contents:
-        raise HTTPException(status_code=400, detail="File rỗng.")
-
-    summary = excel_importer.import_knn_reference_dataset(
-        db,
-        file_bytes=contents,
-        filename=file.filename or "knn_reference.xlsx",
-        uploader_id=user.get("user_id"),
-    )
-
-    # Mark all users for update (dataset changed)
-    mark_all_users_for_update(db)
-    increment_ml_version(db, 'both')  # Dataset change affects both model and params
-    current_version = get_current_ml_version(db)
-
-    return JSONResponse(content={
-        "summary": asdict(summary),
-        "ml_version": current_version,
-        "note": "Dữ liệu đã được import. Predictions sẽ được cập nhật khi user truy cập."
-    })
-
-
-# REMOVED: /rebuild-embeddings endpoint (vector store no longer used)
 
 
 @router.post("/llm-test")
 async def llm_test(payload: dict = Body(...)):
-    """Temporary unauthenticated endpoint for quickly testing LLM connectivity.
-    WARNING: This endpoint is for local development only. It should be removed or guarded in production.
-    """
+    """Test LLM connectivity."""
     message = str(payload.get("message", "")).strip()
     if not message:
         raise HTTPException(status_code=400, detail="Missing 'message' in request body.")
 
     provider = get_llm_provider()
-
-    # build a minimal system + user message list
     system = {
         "role": "system",
-        "content": "Bạn là trợ lý. Trả lời ngắn gọn, bằng tiếng Việt. Đây là kiểm tra kết nối LLM."
+        "content": "Bạn là trợ lý. Trả lời ngắn gọn, bằng tiếng Việt."
     }
-    user = {"role": "user", "content": message}
+    user_msg = {"role": "user", "content": message}
+    
     try:
-        resp = await provider.chat(messages=[system, user], temperature=0.2)
+        resp = await provider.chat(messages=[system, user_msg], temperature=0.2)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}")
 
-    # best-effort extraction of first reasonable text
     def _scan(obj):
         if isinstance(obj, str) and len(obj) > 5:
             return obj
@@ -188,7 +102,6 @@ async def llm_test(payload: dict = Body(...)):
 
     answer = None
     if isinstance(resp, dict):
-        # try common places
         choices = resp.get("choices")
         if isinstance(choices, list) and choices:
             c0 = choices[0]
@@ -211,306 +124,368 @@ async def llm_test(payload: dict = Body(...)):
 @router.get("/dataset-status")
 @require_auth
 def get_dataset_status(request: Request, db: Session = Depends(get_db)):
-    """Get current dataset status: count, size, last import time. Only for developer/admin."""
-    try:
-        user = get_current_user(request)
-        _ensure_developer(user)
-
-        # Count reference samples (shared dataset for all users)
-        sample_count = db.query(models.KNNReferenceSample).count()
-        
-        # Get last import log for KNN reference dataset
-        # Try to find imports with dataset_type = 'knn_reference' in metadata
-        all_imports = (
-            db.query(models.DataImportLog)
-            .order_by(models.DataImportLog.created_at.desc())
-            .all()
-        )
-        
-        last_import = None
-        for imp in all_imports:
-            if imp.metadata_:
-                metadata = imp.metadata_ if isinstance(imp.metadata_, dict) else {}
-                if metadata.get('dataset_type') == 'knn_reference':
-                    last_import = imp
-                    break
-        
-        # If no specific KNN import found, use the most recent import
-        if not last_import and all_imports:
-            last_import = all_imports[0]
-        
-        # Calculate dataset size (approximate)
-        if sample_count > 0:
-            # Get a sample to estimate size per record
-            sample = db.query(models.KNNReferenceSample).first()
-            if sample and sample.feature_data:
-                avg_features = len(sample.feature_data)
-                # Rough estimate: each feature is ~8 bytes (float) + key overhead
-                estimated_bytes = sample_count * avg_features * 20  # rough estimate
-                size_mb = estimated_bytes / (1024 * 1024)
-            else:
-                size_mb = 0
-        else:
-            size_mb = 0
-
-        result = {
-            "has_dataset": sample_count > 0,
-            "sample_count": sample_count,
-            "size_mb": round(size_mb, 2),
-            "last_import": None
-        }
-
-        if last_import:
-            result["last_import"] = {
-                "filename": last_import.filename,
-                "imported_rows": last_import.imported_rows,
-                "total_rows": last_import.total_rows,
-                "skipped_rows": last_import.skipped_rows,
-                "created_at": last_import.created_at.isoformat() if last_import.created_at else None,
-                "uploaded_by": last_import.uploaded_by
-            }
-
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy trạng thái dataset: {str(e)}")
-
-
-@router.get("/model-parameters", response_model=ParametersResponse)
-@require_auth
-def get_model_parameters(request: Request, db: Session = Depends(get_db)):
-    """Get current model parameters (KNN n, KR bandwidth, LWLR tau). Only for developer/admin."""
-    try:
-        user = get_current_user(request)
-        _ensure_developer(user)
-
-        params = db.query(models.ModelParameters).first()
-        if not params:
-            try:
-                # Create with defaults
-                params = models.ModelParameters(knn_n=15, kr_bandwidth=1.25, lwlr_tau=3.0)
-                db.add(params)
-                db.commit()
-                db.refresh(params)
-            except Exception as e:
-                db.rollback()
-                params = db.query(models.ModelParameters).first()
-                if not params:
-                    raise HTTPException(status_code=500, detail=f"Không thể khởi tạo thông số mô hình: {str(e)}")
-
-        return ParametersResponse(
-            knn_n=params.knn_n,
-            kr_bandwidth=params.kr_bandwidth,
-            lwlr_tau=params.lwlr_tau,
-            updated_at=params.updated_at.isoformat() if params.updated_at else None
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy thông số mô hình: {str(e)}")
-
-
-@router.post("/model-parameters")
-async def update_model_parameters(background_tasks: BackgroundTasks, request: Request, db: Session = Depends(get_db)):
-    """Update model parameters. Only for developer/admin."""
-    # Handle auth manually
-    session_id = request.cookies.get('session_id')
-    if not session_id:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-    
-    user = SessionManager.get_session(session_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="Session không hợp lệ")
-    
+    """Get ML reference dataset status."""
+    user = get_current_user(request)
     _ensure_developer(user)
 
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Request body phải là JSON hợp lệ")
+    sample_count = db.query(models.MLReferenceDataset).count()
     
-    # Validate parameters exist
-    if not payload or not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Request body không hợp lệ")
+    all_imports = (
+        db.query(models.DataImportLog)
+        .order_by(models.DataImportLog.created_at.desc())
+        .all()
+    )
     
-    # Extract and validate each parameter
-    try:
-        knn_n = int(payload.get("knn_n", 15))
-        kr_bandwidth = float(payload.get("kr_bandwidth", 1.25))
-        lwlr_tau = float(payload.get("lwlr_tau", 3.0))
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Các thông số phải có kiểu dữ liệu hợp lệ")
+    last_import = None
+    for imp in all_imports:
+        if imp.metadata_:
+            metadata = imp.metadata_ if isinstance(imp.metadata_, dict) else {}
+            if metadata.get('dataset_type') == 'ml_reference':
+                last_import = imp
+                break
     
-    # Validate ranges
-    if knn_n < 1 or knn_n > 100:
-        raise HTTPException(status_code=400, detail="KNN n phải trong khoảng 1-100")
-    if kr_bandwidth < 0.1 or kr_bandwidth > 10.0:
-        raise HTTPException(status_code=400, detail="Kernel Regression bandwidth phải trong khoảng 0.1-10.0")
-    if lwlr_tau < 0.5 or lwlr_tau > 10.0:
-        raise HTTPException(status_code=400, detail="LWLR tau phải trong khoảng 0.5-10.0")
+    if not last_import and all_imports:
+        last_import = all_imports[0]
+    
+    if sample_count > 0:
+        sample = db.query(models.MLReferenceDataset).first()
+        if sample and sample.feature_data:
+            avg_features = len(sample.feature_data)
+            estimated_bytes = sample_count * avg_features * 20
+            size_mb = estimated_bytes / (1024 * 1024)
+        else:
+            size_mb = 0
+    else:
+        size_mb = 0
 
+    result = {
+        "has_dataset": sample_count > 0,
+        "sample_count": sample_count,
+        "size_mb": round(size_mb, 2),
+        "last_import": None
+    }
+
+    if last_import:
+        result["last_import"] = {
+            "filename": last_import.filename,
+            "imported_rows": last_import.imported_rows,
+            "total_rows": last_import.total_rows,
+            "skipped_rows": last_import.skipped_rows,
+            "created_at": last_import.created_at.isoformat() if last_import.created_at else None,
+            "uploaded_by": last_import.uploaded_by
+        }
+
+    return result
+
+
+# ===== CUSTOM STRUCTURE DOCUMENT MANAGEMENT =====
+
+@router.post("/structure-documents/upload")
+@require_auth
+async def upload_structure_document(
+    request: Request,
+    structure_id: int = Body(...),
+    file: bytes = File(...),
+    file_name: str = Body(...),
+    file_type: str = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Upload a reference document for a custom teaching structure."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    
+    _ensure_developer(user)
+    
+    structure = db.query(models.CustomTeachingStructure).filter(
+        models.CustomTeachingStructure.id == structure_id
+    ).first()
+    
+    if not structure:
+        raise HTTPException(status_code=404, detail="Không tìm thấy cấu trúc giảng dạy")
+    
+    allowed_types = ['pdf', 'docx', 'doc', 'txt']
+    clean_file_type = file_type.lower().replace('.', '')
+    if clean_file_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Định dạng file không hợp lệ. Chỉ hỗ trợ: {', '.join(allowed_types)}"
+        )
+    
     try:
-        params = db.query(models.ModelParameters).first()
-        if not params:
-            params = models.ModelParameters()
-            db.add(params)
-
-        params.knn_n = knn_n
-        params.kr_bandwidth = kr_bandwidth
-        params.lwlr_tau = lwlr_tau
-        params.updated_by = user.get("user_id")
-
+        original_content, extracted_summary, metadata = await document_extractor.process_uploaded_document(
+            file_bytes=file,
+            file_name=file_name,
+            file_type=clean_file_type,
+            structure_name=structure.structure_name
+        )
+        
+        new_doc = models.CustomStructureDocument(
+            structure_id=structure_id,
+            file_name=file_name,
+            file_type=clean_file_type,
+            file_size=len(file),
+            original_content=original_content,
+            extracted_summary=extracted_summary,
+            extraction_method=metadata.get('extraction_method', 'llm_summary'),
+            metadata_=metadata,
+            uploaded_by=user.get("user_id")
+        )
+        
+        db.add(new_doc)
         db.commit()
-        db.refresh(params)
-
-        # Increment version to mark that predictions need update
-        increment_ml_version(db, 'params')
-        current_version = get_current_ml_version(db)
-
+        db.refresh(new_doc)
+        
         return JSONResponse(content={
-            "message": "Đã cập nhật thông số mô hình thành công",
-            "knn_n": params.knn_n,
-            "kr_bandwidth": params.kr_bandwidth,
-            "lwlr_tau": params.lwlr_tau,
-            "ml_version": current_version,
-            "note": "Dự đoán sẽ được cập nhật khi user truy cập dữ liệu."
+            "message": "Tải tài liệu thành công",
+            "document": {
+                "id": new_doc.id,
+                "file_name": new_doc.file_name,
+                "file_type": new_doc.file_type,
+                "file_size": new_doc.file_size,
+                "summary_length": len(extracted_summary),
+                "compression_ratio": metadata.get('compression_ratio', 0),
+                "created_at": new_doc.created_at.isoformat() if new_doc.created_at else None
+            }
         })
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Lỗi cơ sở dữ liệu: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xử lý tài liệu: {str(e)}")
 
+
+@router.get("/structure-documents/{structure_id}")
+@require_auth
+async def get_structure_documents(
+    request: Request,
+    structure_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all reference documents for a structure."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    
+    _ensure_developer(user)
+    
+    documents = db.query(models.CustomStructureDocument).filter(
+        models.CustomStructureDocument.structure_id == structure_id
+    ).order_by(models.CustomStructureDocument.created_at.desc()).all()
+    
+    return JSONResponse(content={
+        "documents": [
+            {
+                "id": doc.id,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "file_size": doc.file_size,
+                "summary_length": len(doc.extracted_summary) if doc.extracted_summary else 0,
+                "compression_ratio": doc.metadata_.get('compression_ratio', 0) if doc.metadata_ else 0,
+                "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                "summary_preview": doc.extracted_summary[:200] + "..." if doc.extracted_summary and len(doc.extracted_summary) > 200 else doc.extracted_summary
+            }
+            for doc in documents
+        ]
+    })
+
+
+@router.delete("/structure-documents/{doc_id}")
+@require_auth
+async def delete_structure_document(
+    request: Request,
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete a reference document."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    
+    _ensure_developer(user)
+    
+    document = db.query(models.CustomStructureDocument).filter(
+        models.CustomStructureDocument.id == doc_id
+    ).first()
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    
+    try:
+        db.delete(document)
+        db.commit()
+        
+        return JSONResponse(content={"message": "Đã xóa tài liệu thành công"})
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tài liệu: {str(e)}")
+
+
+@router.get("/structure-documents/{doc_id}/full")
+@require_auth
+async def get_document_full_content(
+    request: Request,
+    doc_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get full content of a document."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    
+    _ensure_developer(user)
+    
+    document = db.query(models.CustomStructureDocument).filter(
+        models.CustomStructureDocument.id == doc_id
+    ).first()
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    
+    return JSONResponse(content={
+        "id": document.id,
+        "file_name": document.file_name,
+        "file_type": document.file_type,
+        "original_content": document.original_content,
+        "extracted_summary": document.extracted_summary,
+        "metadata": document.metadata_
+    })
+
+
+# ========== ML Model Management Endpoints ==========
+# Note: These manage global ML settings (not per-structure)
 
 @router.get("/model-status")
 @require_auth
 def get_model_status(request: Request, db: Session = Depends(get_db)):
-    """Get current active ML model and available options. Only for developer/admin."""
-    try:
-        user = get_current_user(request)
-        _ensure_developer(user)
-
-        config = db.query(models.MLModelConfig).first()
-        if not config:
-            try:
-                config = models.MLModelConfig(active_model="knn")
-                db.add(config)
-                db.commit()
-                db.refresh(config)
-            except Exception as e:
-                db.rollback()
-                # If insert fails, try to query again (might have been created by another request)
-                config = db.query(models.MLModelConfig).first()
-                if not config:
-                    raise HTTPException(status_code=500, detail=f"Không thể khởi tạo cấu hình mô hình: {str(e)}")
-
-        return {
-            "active_model": config.active_model,
-            "available_models": ["knn", "kernel_regression", "lwlr"],
-            "descriptions": {
-                "knn": "K-Nearest Neighbors (default, distance-weighted)",
-                "kernel_regression": "Kernel Regression (Nadaraya-Watson)",
-                "lwlr": "Locally Weighted Linear Regression"
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy trạng thái mô hình: {str(e)}")
+    """Get current ML model status and configuration."""
+    user = get_current_user(request)
+    _ensure_developer(user)
+    
+    # Get active model from database
+    config = db.query(models.MLModelConfig).first()
+    if not config:
+        # Create default config if not exists
+        config = models.MLModelConfig(id=1, active_model="knn")
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+    
+    return JSONResponse(content={
+        "active_model": config.active_model,
+        "available_models": ["knn", "kernel_regression", "lwlr"],
+        "message": f"Mô hình {config.active_model.upper()} đang được sử dụng"
+    })
 
 
-@router.post("/evaluate-models")
+@router.get("/model-parameters")
 @require_auth
-def evaluate_models(request: Request, db: Session = Depends(get_db)):
-    """
-    Evaluate all three ML models (KNN, Kernel Regression, LWLR) on two prediction tasks:
-    1. Predict grade 12 from grades 10-11
-    2. Predict grade 11 from grade 10
+def get_model_parameters(request: Request, db: Session = Depends(get_db)):
+    """Get ML model parameters."""
+    user = get_current_user(request)
+    _ensure_developer(user)
     
-    Returns metrics (MAE, MSE, RMSE, Accuracy) for each model-task combination
-    and a recommendation for the best model(s).
+    # Get parameters from database
+    params = db.query(models.ModelParameters).first()
+    if not params:
+        # Create default parameters if not exists
+        params = models.ModelParameters(id=1, knn_n=15, kr_bandwidth=1.25, lwlr_tau=3.0)
+        db.add(params)
+        db.commit()
+        db.refresh(params)
     
-    Only for developer/admin.
-    """
-    try:
-        user = get_current_user(request)
-        _ensure_developer(user)
+    return JSONResponse(content={
+        "knn_n": params.knn_n,
+        "kr_bandwidth": params.kr_bandwidth,
+        "lwlr_tau": params.lwlr_tau
+    })
 
-        # Run evaluation on shared dataset
-        results = model_evaluator.evaluate_all_models(db)
 
-        return results
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi đánh giá mô hình: {str(e)}")
+@router.post("/model-parameters")
+@require_auth
+async def update_model_parameters(
+    request: Request,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Update ML model parameters."""
+    user = get_current_user(request)
+    _ensure_developer(user)
+    
+    # Get or create parameters
+    params = db.query(models.ModelParameters).first()
+    if not params:
+        params = models.ModelParameters(id=1)
+        db.add(params)
+    
+    # Update parameters
+    if "knn_n" in payload:
+        params.knn_n = int(payload["knn_n"])
+    if "kr_bandwidth" in payload:
+        params.kr_bandwidth = float(payload["kr_bandwidth"])
+    if "lwlr_tau" in payload:
+        params.lwlr_tau = float(payload["lwlr_tau"])
+    
+    params.updated_by = user.id
+    params.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(params)
+    
+    # Retrigger pipeline for all users
+    retrigger_result = _retrigger_pipeline_for_all_users(db)
+    
+    return JSONResponse(content={
+        "message": "Thông số mô hình đã được cập nhật",
+        "knn_n": params.knn_n,
+        "kr_bandwidth": params.kr_bandwidth,
+        "lwlr_tau": params.lwlr_tau,
+        "pipeline_retrigger": retrigger_result
+    })
 
 
 @router.post("/select-model")
-async def select_model(background_tasks: BackgroundTasks, request: Request, db: Session = Depends(get_db)):
-    """Switch to a different ML prediction model. Only for developer/admin."""
-    # Handle auth manually
-    session_id = request.cookies.get('session_id')
-    if not session_id:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-    
-    user = SessionManager.get_session(session_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="Session không hợp lệ")
-    
+@require_auth
+async def select_model(
+    request: Request,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Select active ML model."""
+    user = get_current_user(request)
     _ensure_developer(user)
+    
+    model_name = payload.get("model", "").strip()
+    valid_models = ["knn", "kernel_regression", "lwlr"]
+    
+    if model_name not in valid_models:
+        raise HTTPException(status_code=400, detail=f"Mô hình không hợp lệ. Chọn từ: {', '.join(valid_models)}")
+    
+    # Get or create model config
+    config = db.query(models.MLModelConfig).first()
+    if not config:
+        config = models.MLModelConfig(id=1, active_model="knn")
+        db.add(config)
+    
+    # Update active model
+    config.active_model = model_name
+    config.updated_by = user.id
+    config.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(config)
+    
+    # Retrigger pipeline for all users
+    retrigger_result = _retrigger_pipeline_for_all_users(db)
+    
+    return JSONResponse(content={
+        "message": f"Đã chuyển sang mô hình {model_name.upper()}",
+        "active_model": config.active_model,
+        "pipeline_retrigger": retrigger_result
+    })
 
-    try:
 
-        # Parse request body manually to handle validation errors better
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(status_code=400, detail="Request body phải là JSON hợp lệ")
-        
-        if not body or not isinstance(body, dict) or 'model' not in body:
-            raise HTTPException(status_code=400, detail="Thiếu trường 'model' trong request body")
-        
-        model_name = str(body.get('model', '')).strip()
-        if not model_name:
-            raise HTTPException(status_code=400, detail="Trường 'model' không được để trống")
-
-        allowed_models = ["knn", "kernel_regression", "lwlr"]
-        if model_name not in allowed_models:
-            raise HTTPException(status_code=400, detail=f"Mô hình không hợp lệ. Cho phép: {', '.join(allowed_models)}")
-
-        config = db.query(models.MLModelConfig).first()
-        if not config:
-            try:
-                config = models.MLModelConfig(active_model=model_name, updated_by=user.get("user_id"))
-                db.add(config)
-                db.commit()
-                db.refresh(config)
-            except Exception as e:
-                db.rollback()
-                raise HTTPException(status_code=500, detail=f"Không thể tạo cấu hình mô hình: {str(e)}")
-        else:
-            try:
-                config.active_model = model_name
-                config.updated_by = user.get("user_id")
-                db.commit()
-                db.refresh(config)
-            except Exception as e:
-                db.rollback()
-                raise HTTPException(status_code=500, detail=f"Không thể cập nhật cấu hình mô hình: {str(e)}")
-
-        # Increment version to mark that predictions need update
-        increment_ml_version(db, 'model')
-        current_version = get_current_ml_version(db)
-
-        return JSONResponse(content={
-            "message": f"Đã chuyển sang mô hình: {model_name}",
-            "active_model": config.active_model,
-            "ml_version": current_version,
-            "note": "Dự đoán sẽ được cập nhật khi user truy cập dữ liệu."
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi chọn mô hình: {str(e)}")
 
 

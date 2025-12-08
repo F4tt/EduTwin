@@ -248,10 +248,16 @@ def detect_score_update_intent(message: str) -> Optional[ScoreUpdateIntent]:
     - Common typos (thanh → thành, duoc → được)
     - Flexible patterns
     """
+    import logging
+    logger = logging.getLogger("uvicorn.error")
+    
     text_lower = message.lower()
     
     # Normalize text for better matching (remove accents)
     text_normalized = _normalize_vietnamese(text_lower)
+    
+    logger.info(f"[INTENT_DEBUG] Message: '{message}'")
+    logger.info(f"[INTENT_DEBUG] Normalized: '{text_normalized}'")
     
     # Expanded keyword list for score updates
     update_keywords = [
@@ -259,15 +265,20 @@ def detect_score_update_intent(message: str) -> Optional[ScoreUpdateIntent]:
         "điểm", "diem", "điem",
         "update", "thay đổi", "thay doi", "thaydoi",
         "sửa", "sua", "chỉnh", "chinh",
-        "nhập", "nhap"
+        "nhập", "nhap",
+        "đổi", "doi",  # ADD: đổi điểm
+        "thay", "đổi thành", "doi thanh",  # ADD: thay/đổi thành
+        "score"
     ]
     
     has_update_keyword = any(kw in text_normalized for kw in update_keywords)
+    logger.info(f"[INTENT_DEBUG] has_update_keyword: {has_update_keyword}")
     
     if not has_update_keyword:
         return None
 
     subject = _find_subject(text_lower)
+    logger.info(f"[INTENT_DEBUG] subject: {subject}")
     
     # If no subject found, return None
     # (chatbot will ask for clarification)
@@ -290,22 +301,28 @@ def detect_score_update_intent(message: str) -> Optional[ScoreUpdateIntent]:
     if span_match:
         old_score = _parse_score(span_match.group("old"))
         new_score = _parse_score(span_match.group("new"))
+        logger.info(f"[INTENT_DEBUG] Span pattern matched: old={old_score}, new={new_score}")
     else:
         # Priority 2: Explicit score keywords (là 7, thành 7, được 8.5, dc 9)
         explicit_match = SCORE_EXPLICIT_PATTERN.search(message)
         if explicit_match:
             new_score = _parse_score(explicit_match.group(1))
+            logger.info(f"[INTENT_DEBUG] Explicit pattern matched: new={new_score}")
         else:
             # Priority 3: Score after "điểm" (điểm 7, điểm số 8, diem 9)
             score_match = SCORE_ONLY_PATTERN.search(message)
             if score_match:
                 new_score = _parse_score(score_match.group(1))
+                logger.info(f"[INTENT_DEBUG] Score-only pattern matched: new={new_score}")
 
+    logger.info(f"[INTENT_DEBUG] Final new_score: {new_score}")
+    
     if new_score is None:
         return None
 
     # Validate score range (0-10)
     if new_score < 0 or new_score > 10:
+        logger.info(f"[INTENT_DEBUG] Score out of range: {new_score}")
         return None
 
     # Calculate confidence based on available information

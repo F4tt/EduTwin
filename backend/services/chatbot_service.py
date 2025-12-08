@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from services.llm_provider import get_llm_provider
 import httpx
 from sqlalchemy.orm import Session
+import re
 
 from db import models
 from services.intent_detection import ScoreUpdateIntent, detect_score_update_intent
@@ -14,7 +15,7 @@ from services.intent_detection import detect_confirmation_intent, detect_cancell
 from services.pii_redaction import redact_message_content, prepare_safe_llm_prompt, redact_user_for_llm
 # REMOVED: memory_manager import (service deleted, functions moved inline)
 # REMOVED: vector_store_provider import (no longer used)
-from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification
+from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification, compare_with_benchmark
 
 
 # Helper functions moved from deleted memory_manager service
@@ -38,7 +39,7 @@ def list_pending_updates(db: Session, user_id: int):
 
 
 def apply_pending_update(db: Session, update_id: int, user_id: int):
-    """Apply a pending update and remove it."""
+    """Apply a pending update and remove it. Now uses CustomUserScore."""
     pu = db.query(models.PendingUpdate).filter(
         models.PendingUpdate.id == update_id,
         models.PendingUpdate.user_id == user_id
@@ -54,15 +55,14 @@ def apply_pending_update(db: Session, update_id: int, user_id: int):
     elif pu.update_type == "score":
         score_id = (pu.metadata_ or {}).get("score_id")
         if score_id:
-            score = db.query(models.StudyScore).filter(models.StudyScore.id == int(score_id)).first()
+            # Use CustomUserScore instead of StudyScore
+            score = db.query(models.CustomUserScore).filter(models.CustomUserScore.id == int(score_id)).first()
             if score:
                 from datetime import datetime
                 score.actual_score = float(pu.new_value)
-                score.actual_source = "chat_confirmation"
-                score.actual_status = "confirmed"
-                score.actual_updated_at = datetime.utcnow()
+                score.updated_at = datetime.utcnow()
                 db.commit()
-                # REMOVED: vector store sync
+                # Trigger prediction update
                 from ml import prediction_service
                 prediction_service.update_predictions_for_user(db, score.user_id)
     
@@ -114,6 +114,46 @@ def build_user_summary(user) -> str:
     if prefs:
         parts.append("Sở thích: " + ", ".join(f"{k}={v}" for k, v in prefs.items()))
     return "; ".join(parts)
+
+
+# Token counting utilities
+def estimate_tokens(text: str) -> int:
+    """Rough estimate: 1 token ≈ 4 characters for Vietnamese/English mix"""
+    return len(text) // 4
+
+
+def truncate_text(text: str, max_tokens: int = 500) -> str:
+    """Truncate text to approximate token limit"""
+    max_chars = max_tokens * 4
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...[đã rút gọn]"
+
+
+def extract_relevant_sections(document_content: str, keywords: List[str], max_tokens: int = 300) -> str:
+    """Extract sections from document that contain keywords"""
+    if not document_content or not keywords:
+        return truncate_text(document_content or "", max_tokens)
+    
+    # Split into paragraphs
+    paragraphs = [p.strip() for p in document_content.split('\n\n') if p.strip()]
+    if not paragraphs:
+        paragraphs = [document_content]
+    
+    # Score paragraphs by keyword matches
+    scored = []
+    for para in paragraphs:
+        para_lower = para.lower()
+        score = sum(1 for kw in keywords if kw.lower() in para_lower)
+        if score > 0:
+            scored.append((score, para))
+    
+    # Sort by score and take top sections
+    scored.sort(reverse=True, key=lambda x: x[0])
+    result_parts = [para for _, para in scored[:3]]  # Top 3 relevant paragraphs
+    
+    result = '\n\n'.join(result_parts) if result_parts else paragraphs[0] if paragraphs else ""
+    return truncate_text(result, max_tokens)
 
 
 LLM_API_URL = os.getenv("LLM_API_URL")
@@ -201,72 +241,175 @@ async def _call_remote_llm(messages: List[Dict[str, str]], temperature: float = 
     return _extract_text(resp)
 
 
+def _extract_subject_keywords(message: str) -> List[str]:
+    """Extract subject names mentioned in message for targeted score filtering"""
+    subject_map = {
+        'toán': 'Toán',
+        'lý': 'Vật Lý', 'vật lý': 'Vật Lý', 'ly': 'Vật Lý',
+        'hóa': 'Hóa Học', 'hoa': 'Hóa Học',
+        'văn': 'Ngữ Văn', 'van': 'Ngữ Văn',
+        'anh': 'Tiếng Anh', 'tiếng anh': 'Tiếng Anh',
+        'sinh': 'Sinh Học',
+        'sử': 'Lịch Sử', 'su': 'Lịch Sử', 'lịch sử': 'Lịch Sử',
+        'địa': 'Địa Lý', 'dia': 'Địa Lý', 'địa lý': 'Địa Lý',
+        'gdcd': 'GDCD', 'công dân': 'GDCD'
+    }
+    
+    message_lower = message.lower()
+    found_subjects = []
+    for keyword, subject_name in subject_map.items():
+        if keyword in message_lower:
+            found_subjects.append(subject_name)
+    
+    return list(set(found_subjects))  # Remove duplicates
+
+
+def _get_dataset_summary(db: Session, structure_id: int, user_scores: Optional[Dict[str, float]] = None) -> str:
+    """
+    Get aggregated dataset statistics (cached).
+    Returns only summary stats (avg, percentiles) NOT raw data to save tokens.
+    """
+    try:
+        # Check if dataset exists
+        dataset = db.query(models.ReferenceDataset).filter(
+            models.ReferenceDataset.structure_id == structure_id
+        ).first()
+        
+        if not dataset or not dataset.data_json:
+            return ""
+        
+        # Parse dataset
+        import json
+        dataset_records = json.loads(dataset.data_json) if isinstance(dataset.data_json, str) else dataset.data_json
+        
+        if not dataset_records or not isinstance(dataset_records, list):
+            return ""
+        
+        # Calculate aggregated stats
+        all_scores = []
+        for record in dataset_records[:100]:  # Limit to first 100 records for performance
+            if isinstance(record, dict):
+                scores = [v for v in record.values() if isinstance(v, (int, float)) and 0 <= v <= 10]
+                if scores:
+                    all_scores.extend(scores)
+        
+        if not all_scores:
+            return ""
+        
+        all_scores.sort()
+        n = len(all_scores)
+        avg = sum(all_scores) / n
+        median = all_scores[n // 2]
+        p75 = all_scores[int(n * 0.75)]
+        p90 = all_scores[int(n * 0.90)]
+        
+        summary = f"📊 Dataset: TB={avg:.1f}, Trung vị={median:.1f}, Top 25%≥{p75:.1f}, Top 10%≥{p90:.1f}"
+        
+        # Add user comparison if scores provided
+        if user_scores:
+            user_avg = sum(user_scores.values()) / len(user_scores) if user_scores else 0
+            benchmark = compare_with_benchmark(user_scores, dataset_records[:100])
+            if benchmark.get("percentile"):
+                summary += f" | Bạn: TB={user_avg:.1f} (top {100-benchmark['percentile']:.0f}%)"
+        
+        return summary
+        
+    except Exception as e:
+        import logging
+        logging.getLogger("uvicorn.error").warning(f"Dataset summary error: {e}")
+        return ""
+
+
 def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Session] = None) -> List[Dict[str, object]]:
     """
     Build context blocks using simple SQL queries instead of vector search.
-    This is more efficient for structured score data.
+    Optimized for token efficiency:
+    - Only includes relevant scores (filtered by subject keywords)
+    - Truncates chat history to last 3 messages
+    - Returns summarized format
     """
     contexts: List[Dict[str, object]] = []
     
     if user_id is None or db is None:
         return contexts
     
-    # Get recent chat messages for context (last 5) via ChatSession
+    # Get recent chat messages for context (last 3 to save tokens)
     recent_messages = db.query(models.ChatMessage)\
         .join(models.ChatSession, models.ChatMessage.session_id == models.ChatSession.id)\
         .filter(models.ChatSession.user_id == user_id)\
         .order_by(models.ChatMessage.created_at.desc())\
-        .limit(5)\
+        .limit(3)\
         .all()
     
-    for msg in reversed(recent_messages):  # Show oldest first
-        # ChatMessage has role and content, not message/response
-        if msg.role == 'user':
-            contexts.append({
-                "title": "Hội thoại gần đây",
-                "content": f"User: {msg.content}",
-                "score": 1.0,
-                "metadata": {
-                    "type": "chat_history",
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                }
-            })
-        elif msg.role == 'assistant':
-            contexts.append({
-                "title": "Hội thoại gần đây",
-                "content": f"Bot: {msg.content}",
-                "score": 1.0,
-                "metadata": {
-                    "type": "chat_history",
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                }
-            })
+    # Compress chat history into single context block
+    if recent_messages:
+        chat_summary = []
+        for msg in reversed(recent_messages):
+            prefix = "U" if msg.role == 'user' else "A"
+            # Truncate long messages
+            content = msg.content[:150] + "..." if len(msg.content) > 150 else msg.content
+            chat_summary.append(f"{prefix}: {content}")
+        
+        contexts.append({
+            "title": "Hội thoại gần đây",
+            "content": "\n".join(chat_summary),
+            "score": 1.0,
+            "metadata": {"type": "chat_history"}
+        })
     
-    # Get recent score updates if message mentions subjects/grades
-    score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp']
+    # Get scores only if message mentions subjects/grades
+    score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp', 'kết quả', 'thi', 'kiểm tra']
     if any(kw in message.lower() for kw in score_keywords):
-        recent_scores = db.query(models.StudyScore)\
-            .filter(models.StudyScore.user_id == user_id)\
-            .filter(models.StudyScore.actual_score.isnot(None))\
-            .order_by(models.StudyScore.actual_updated_at.desc())\
-            .limit(3)\
-            .all()
+        # Prefer active structure, but fallback to any user scores
+        active_structure = db.query(models.CustomTeachingStructure).filter(
+            models.CustomTeachingStructure.is_active == True
+        ).first()
+        
+        # Extract mentioned subjects for filtering
+        mentioned_subjects = _extract_subject_keywords(message)
+        
+        # Query scores - prioritize active structure
+        score_query = db.query(models.CustomUserScore)\
+            .filter(models.CustomUserScore.user_id == user_id)\
+            .filter(models.CustomUserScore.actual_score.isnot(None))
+        
+        # Filter by active structure if exists
+        if active_structure:
+            score_query = score_query.filter(models.CustomUserScore.structure_id == active_structure.id)
+        
+        # Filter by mentioned subjects if any
+        if mentioned_subjects:
+            score_query = score_query.filter(models.CustomUserScore.subject.in_(mentioned_subjects))
+            limit = 10  # More scores if specific subject mentioned
+        else:
+            limit = 8  # All subjects, limit to recent 8
+        
+        recent_scores = score_query.order_by(models.CustomUserScore.updated_at.desc()).limit(limit).all()
+        
+        # Group by subject for compact format
+        subject_scores = {}
+        structure_name = active_structure.structure_name if active_structure else "Tất cả cấu trúc"
         
         for score in recent_scores:
+            if score.subject not in subject_scores:
+                subject_scores[score.subject] = []
+            subject_scores[score.subject].append(f"{score.time_point}:{score.actual_score}")
+        
+        # Create compact score summary
+        if subject_scores:
+            score_lines = [f"{subj} ({', '.join(scores[:3])})" for subj, scores in subject_scores.items()]
             contexts.append({
-                "title": "Điểm gần đây",
-                "content": f"{score.subject} - {score.semester}/{score.grade_level}: {score.actual_score}",
-                "score": 0.8,
+                "title": "Điểm số hiện tại",
+                "content": "; ".join(score_lines),
+                "score": 0.95,
                 "metadata": {
-                    "type": "score_update",
-                    "subject": score.subject,
-                    "grade": score.grade_level,
-                    "semester": score.semester
+                    "type": "score_data",
+                    "structure": structure_name,
+                    "subject_count": len(subject_scores)
                 }
             })
     
     return contexts
-
 
 def _build_prompt(
     message: str, 
@@ -276,7 +419,7 @@ def _build_prompt(
     user_id: Optional[int] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None
 ) -> List[Dict[str, str]]:
-    """Build optimized system prompt with dynamic context selection."""
+    """Build optimized system prompt with dynamic context selection and custom structure adaptation."""
     
     # REMOVED: context_optimizer (service deleted, using simplified direct approach)
     
@@ -291,6 +434,79 @@ def _build_prompt(
         "Nếu cần cập nhật dữ liệu, hãy yêu cầu xác nhận rõ ràng.\n\n"
         "⚠️ LƯU Ý BẢO MẬT: Thông tin người dùng đã được ẩn danh hóa để bảo vệ quyền riêng tư."
     )
+    
+    # ADAPTIVE PROMPTING: Inject custom structure context if active
+    custom_structure_info = ""
+    if db:
+        try:
+            active_structure = db.query(models.CustomTeachingStructure).filter(
+                models.CustomTeachingStructure.is_active == True
+            ).first()
+            
+            if active_structure:
+                # Build structure-aware context
+                subjects_str = ", ".join(active_structure.subject_labels[:10])  # Limit to first 10
+                time_points_str = ", ".join(active_structure.time_point_labels[:10])
+                
+                custom_structure_info = (
+                    f"\n\n📚 HỆ THỐNG ĐÁNH GIÁ HIỆN TẠI:\n"
+                    f"- Tên: {active_structure.structure_name}\n"
+                    f"- Thang điểm: {active_structure.scale_type}\n"
+                    f"- Môn học ({active_structure.num_subjects}): {subjects_str}\n"
+                    f"- Thời điểm ({active_structure.num_time_points}): {time_points_str}\n"
+                )
+                
+                # Add structure documents if available (with smart extraction)
+                structure_docs = db.query(models.CustomStructureDocument).filter(
+                    models.CustomStructureDocument.structure_id == active_structure.id
+                ).limit(5).all()  # Get up to 5 docs but filter by relevance
+                
+                if structure_docs:
+                    # Extract keywords from user message for document filtering
+                    message_keywords = _extract_subject_keywords(message)
+                    if not message_keywords:
+                        # Use general keywords if no subject mentioned
+                        message_keywords = message.lower().split()[:5]  # First 5 words
+                    
+                    custom_structure_info += "\n📄 TÀI LIỆU THAM KHẢO:\n"
+                    docs_included = 0
+                    for doc in structure_docs:
+                        if docs_included >= 2:  # Limit to 2 most relevant docs
+                            break
+                        
+                        # Use extracted_summary (optimized) instead of full content
+                        if doc.extracted_summary:
+                            # Extract relevant sections based on keywords
+                            relevant_text = extract_relevant_sections(
+                                doc.extracted_summary, 
+                                message_keywords, 
+                                max_tokens=200
+                            )
+                            if relevant_text and relevant_text != "...[đã rút gọn]":
+                                custom_structure_info += f"- {doc.file_name}: {relevant_text}\n"
+                                docs_included += 1
+                
+                # Add dataset benchmark summary (only if comparing scores)
+                benchmark_keywords = ['so sánh', 'xếp hạng', 'top', 'trung bình', 'giỏi', 'yếu', 'khá', 'dataset', 'benchmark']
+                if any(kw in message.lower() for kw in benchmark_keywords) and user_id:
+                    # Get user's current scores for comparison
+                    user_score_records = db.query(models.CustomUserScore).filter(
+                        models.CustomUserScore.user_id == user_id,
+                        models.CustomUserScore.structure_id == active_structure.id,
+                        models.CustomUserScore.actual_score.isnot(None)
+                    ).all()
+                    
+                    if user_score_records:
+                        user_scores_dict = {s.subject: s.actual_score for s in user_score_records}
+                        dataset_summary = _get_dataset_summary(db, active_structure.id, user_scores_dict)
+                        if dataset_summary:
+                            custom_structure_info += f"\n{dataset_summary}\n"
+                
+                instructions += custom_structure_info
+        except Exception as e:
+            # Log but don't fail - fallback to default prompt
+            import logging
+            logging.getLogger("uvicorn.error").warning(f"Failed to load custom structure context: {e}")
     
     # Add educational knowledge
     if educational_ctx:
@@ -327,32 +543,155 @@ def _build_prompt(
     return messages
 
 
+def _build_chart_prompt(
+    chart_data: Dict[str, object],
+    chart_type: str,
+    user_id: int,
+    db: Session
+) -> List[Dict[str, str]]:
+    """
+    Build optimized prompt specifically for chart analysis.
+    Only includes:
+    - Scores visible in the chart (not all user scores)
+    - Relevant document excerpts based on chart context
+    - Aggregated dataset stats (no raw data)
+    
+    Args:
+        chart_data: Dict containing chart-specific data (subjects, time_points, scores)
+        chart_type: Type of chart ('overview', 'subject_detail', 'time_comparison', etc.)
+        user_id: User ID for personalization
+        db: Database session
+    """
+    # Extract chart scores
+    chart_scores = chart_data.get('scores', {})
+    subjects_in_chart = chart_data.get('subjects', [])
+    time_points_in_chart = chart_data.get('time_points', [])
+    
+    # Base instruction - concise for chart comments
+    instructions = (
+        "Bạn là trợ lý phân tích học tập. "
+        "Viết nhận xét ngắn gọn (2-3 câu) về biểu đồ điểm số. "
+        "Tập trung vào xu hướng, điểm mạnh/yếu, và gợi ý cải thiện cụ thể."
+    )
+    
+    # Add chart context
+    active_structure = db.query(models.CustomTeachingStructure).filter(
+        models.CustomTeachingStructure.is_active == True
+    ).first()
+    
+    if active_structure:
+        chart_context = f"\n\n📊 BIỂU ĐỒ: {chart_type}\n"
+        
+        # Format scores compactly
+        if chart_scores:
+            if chart_type == 'overview':
+                # Show all subjects summary
+                score_summary = [f"{subj}: {score:.1f}" for subj, score in chart_scores.items()]
+                chart_context += f"Điểm hiện tại: {', '.join(score_summary)}\n"
+            elif chart_type == 'subject_detail' and subjects_in_chart:
+                # Show specific subject across time points
+                subject = subjects_in_chart[0] if subjects_in_chart else "Unknown"
+                time_scores = [f"{tp}:{chart_scores.get(tp, 'N/A')}" for tp in time_points_in_chart]
+                chart_context += f"Môn {subject}: {', '.join(time_scores)}\n"
+            else:
+                # Generic format
+                chart_context += f"Dữ liệu: {chart_scores}\n"
+        
+        # Add targeted document excerpts (if any)
+        if subjects_in_chart:
+            doc_keywords = subjects_in_chart + [chart_type]
+            structure_docs = db.query(models.CustomStructureDocument).filter(
+                models.CustomStructureDocument.structure_id == active_structure.id
+            ).limit(3).all()
+            
+            if structure_docs:
+                for doc in structure_docs[:1]:  # Only 1 most relevant doc for charts
+                    if doc.extracted_summary:
+                        relevant_text = extract_relevant_sections(
+                            doc.extracted_summary,
+                            doc_keywords,
+                            max_tokens=150  # Very limited for charts
+                        )
+                        if relevant_text and len(relevant_text) > 20:
+                            chart_context += f"📄 {doc.file_name}: {relevant_text}\n"
+        
+        # Add dataset benchmark (only aggregated stats)
+        if chart_scores:
+            dataset_summary = _get_dataset_summary(db, active_structure.id, chart_scores)
+            if dataset_summary:
+                chart_context += f"{dataset_summary}\n"
+        
+        instructions += chart_context
+    
+    return [{"role": "system", "content": instructions}]
+
+
 def _derive_score_suggestion(
     db: Session,
     user_id: Optional[int],
     intent: Optional[ScoreUpdateIntent],
 ) -> Optional[Dict[str, object]]:
+    """
+    Derive score suggestion from intent detection.
+    Now uses CustomUserScore and supports multiple structures.
+    
+    Strategy:
+    1. Try active structure first
+    2. If no score found, search across all user's structures
+    3. Prefer most recently updated score
+    """
     if not user_id or not intent:
         return None
 
-    query = (
-        db.query(models.StudyScore)
-        .filter(models.StudyScore.user_id == user_id, models.StudyScore.subject == intent.subject)
-    )
-    if intent.grade_level:
-        query = query.filter(models.StudyScore.grade_level == intent.grade_level)
-    if intent.semester:
-        query = query.filter(models.StudyScore.semester == intent.semester)
-
-    score_entry = query.order_by(models.StudyScore.updated_at.desc()).first()
+    # Get active structure (preferred)
+    active_structure = db.query(models.CustomTeachingStructure).filter(
+        models.CustomTeachingStructure.is_active == True
+    ).first()
+    
+    score_entry = None
+    structure_used = None
+    
+    # Try active structure first
+    if active_structure:
+        score_entry = (
+            db.query(models.CustomUserScore)
+            .filter(
+                models.CustomUserScore.user_id == user_id,
+                models.CustomUserScore.structure_id == active_structure.id,
+                models.CustomUserScore.subject == intent.subject
+            )
+            .order_by(models.CustomUserScore.updated_at.desc())
+            .first()
+        )
+        if score_entry:
+            structure_used = active_structure
+    
+    # Fallback: Search across all user's structures
     if not score_entry:
+        score_entry = (
+            db.query(models.CustomUserScore)
+            .filter(
+                models.CustomUserScore.user_id == user_id,
+                models.CustomUserScore.subject == intent.subject
+            )
+            .order_by(models.CustomUserScore.updated_at.desc())
+            .first()
+        )
+        if score_entry:
+            # Get the structure for this score
+            structure_used = db.query(models.CustomTeachingStructure).filter(
+                models.CustomTeachingStructure.id == score_entry.structure_id
+            ).first()
+    
+    if not score_entry or not structure_used:
         return None
 
     suggestion = {
         "score_id": score_entry.id,
         "subject": score_entry.subject,
-        "grade_level": score_entry.grade_level,
-        "semester": score_entry.semester,
+        "time_point": score_entry.time_point,
+        "structure_id": structure_used.id,
+        "structure_name": structure_used.structure_name,
         "current_score": score_entry.actual_score,
         "suggested_score": round(intent.new_score, 2),
         "confidence": intent.confidence,
@@ -481,79 +820,45 @@ async def generate_chat_response(
     # Append current user message at end
     optimized_history.append({"role": "user", "content": safe_message})
 
-    # CHECK INTENT FIRST - before calling LLM
-    intent = detect_score_update_intent(message)
-    score_suggestion = _derive_score_suggestion(db, user_id, intent)
-    
-    # Validate that we have complete information BEFORE calling LLM
-    # Check INTENT not score_suggestion, because score_suggestion gets grade/semester from DB
-    missing_info = []
-    early_return_answer = None
-    if score_suggestion and user_id and intent:
-        if not intent.grade_level:
-            missing_info.append("khối lớp (10, 11, 12)")
-        if not intent.semester:
-            missing_info.append("học kỳ (1, 2)")
-        
-        # If missing critical info, return clarification immediately WITHOUT calling LLM
-        if missing_info:
-            from core.study_constants import SUBJECT_DISPLAY
-            subject_display = SUBJECT_DISPLAY.get(score_suggestion['subject'], score_suggestion['subject'])
-            
-            early_return_answer = (
-                f"⚠️ Mình hiểu bạn muốn cập nhật điểm môn **{subject_display}** thành **{score_suggestion['suggested_score']}**, "
-                f"nhưng bạn có thể cho mình biết rõ hơn về: **{', '.join(missing_info)}** không?\n\n"
-                f"Ví dụ: 'Cập nhật điểm {subject_display} học kỳ 1 lớp 10 là {score_suggestion['suggested_score']}'"
-            )
+    # REMOVED: Intent detection for score updates
+    # User will update scores manually via UI, not through chatbot auto-detection
 
     # Finalize message list: system messages first, then optimized history
     messages = []
     messages.extend(system_messages)
     messages.extend(optimized_history)
 
-    # Only call LLM if we don't have early return answer
-    if early_return_answer:
-        answer = early_return_answer
-    else:
-        try:
-            answer = await _call_remote_llm(messages) or "Hiện tại chưa có phản hồi từ mô hình. Bạn có thể thử lại sau nhé."
-        except Exception as exc:  # noqa: BLE001
+    # Call LLM
+    try:
+        answer = await _call_remote_llm(messages) or "Hiện tại chưa có phản hồi từ mô hình. Bạn có thể thử lại sau nhé."
+    except Exception as exc:  # noqa: BLE001
+        # Build a clean fallback message without exposing raw context format
+        fallback_parts = []
+        for ctx in contexts[:2]:
+            ctx_type = (ctx.get("metadata") or {}).get("type", "")
+            content = ctx.get("content", "")
+            # Skip chat history context to avoid "U: hello A: ..." format in response
+            if ctx_type == "chat_history" or not content:
+                continue
+            # Only include score-related context
+            if ctx_type == "score_data":
+                fallback_parts.append(f"📊 Điểm số của bạn: {content}")
+        
+        if fallback_parts:
             answer = (
-                "Xin lỗi, hệ thống không kết nối được với mô hình ngôn ngữ. "
-                "Mình sẽ cố gắng hỗ trợ dựa trên dữ liệu có sẵn.\n\n"
-                + "\n\n".join(ctx.get("content", "") for ctx in contexts[:2])
+                "Xin lỗi, hệ thống tạm thời không kết nối được với mô hình ngôn ngữ. "
+                "Dưới đây là thông tin có sẵn từ hồ sơ của bạn:\n\n"
+                + "\n\n".join(fallback_parts)
             )
-            contexts.append({"error": str(exc)})
+        else:
+            answer = (
+                "Xin lỗi, hệ thống tạm thời không kết nối được với mô hình ngôn ngữ. "
+                "Vui lòng thử lại sau hoặc liên hệ hỗ trợ nếu lỗi tiếp tục xảy ra."
+            )
+        contexts.append({"error": str(exc)})
 
-    # Create pending update only if we have complete info (missing_info is empty)
+    # No pending score updates - removed intent detection
     pending_score_update = None
-    if score_suggestion and user_id and not missing_info:
-        try:
-            pu = create_pending_update(
-                db,
-                user_id=user_id,
-                update_type="score",
-                field=f"{score_suggestion['subject']} {score_suggestion.get('grade_level', '')} {score_suggestion.get('semester', '')}".strip(),
-                old_value=str(score_suggestion.get("current_score")),
-                new_value=str(score_suggestion["suggested_score"]),
-                metadata={"score_id": score_suggestion["score_id"]}
-            )
-            db.commit()
-            # Return pending update info to frontend
-            from core.study_constants import SUBJECT_DISPLAY
-            subject_display = SUBJECT_DISPLAY.get(score_suggestion['subject'], score_suggestion['subject'])
-            pending_score_update = {
-                "id": pu.id,
-                "subject": subject_display,
-                "grade_level": score_suggestion.get('grade_level'),
-                "semester": score_suggestion.get('semester'),
-                "old_score": score_suggestion.get("current_score"),
-                "new_score": score_suggestion["suggested_score"],
-                "score_id": score_suggestion["score_id"]
-            }
-        except Exception:
-            db.rollback()
-            pass
 
     # Detect profile updates
     profile_candidate = detect_profile_update_intent(message)

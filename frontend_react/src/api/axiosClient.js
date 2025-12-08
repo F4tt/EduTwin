@@ -10,7 +10,7 @@ const axiosClient = axios.create({
         'Content-Type': 'application/json',
     },
     withCredentials: true,
-    timeout: 10000, // 10 seconds timeout
+    timeout: 120000, // 120 seconds timeout (increased for LLM requests)
 });
 
 axiosClient.interceptors.response.use(

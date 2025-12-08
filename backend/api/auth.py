@@ -8,7 +8,6 @@ from datetime import datetime
 
 from db import models, database
 from utils.session_utils import SessionManager, require_auth, get_current_user
-from services.ml_version_manager import ensure_user_predictions_updated
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -124,7 +123,6 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
         hashed_password=hashed_pw,
         first_name=user_data.first_name.strip(),
         last_name=user_data.last_name.strip(),
-        first_login_completed=False,
     )
     db.add(new_user)
     db.commit()
@@ -157,7 +155,6 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
         "name": full_name or None,
         "role": getattr(user, 'role', 'user')
     }
-    user_info["is_first_login"] = not bool(getattr(user, "first_login_completed", False))
     
     session_id = SessionManager.create_session(user_info)
     
@@ -198,29 +195,18 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
         logger.error(f"Error creating chat session on login: {e}")
         db.rollback()
     
-    # Ensure user has latest ML predictions (lazy evaluation on login)
-    # This runs in background thread to not slow down login
-    import threading
-    def background_update():
-        from db.database import SessionLocal
-        update_db = SessionLocal()
-        try:
-            ensure_user_predictions_updated(update_db, user.id)
-        except Exception as e:
-            logger.error(f"Error updating predictions on login for user {user.id}: {e}")
-        finally:
-            update_db.close()
+    # ML predictions are now handled per custom structure via /custom-model/user-scores API
+    # Old auto-update system removed - users trigger predictions via custom structure UI
     
-    thread = threading.Thread(target=background_update, daemon=True)
-    thread.start()
-    
-    # Set session cookie
+    # Set session cookie with proper settings for cross-origin requests
     response.set_cookie(
         key="session_id",
         value=session_id,
         httponly=True,  # Bảo mật: JavaScript không thể truy cập
-        secure=False,    # Để test local (sẽ là True trong production)
-        samesite="lax"  # Bảo vệ CSRF
+        secure=False,   # Để test local (sẽ là True trong production với HTTPS)
+        samesite="lax", # Bảo vệ CSRF, cho phép cookie gửi với navigation
+        max_age=24 * 60 * 60,  # 24 giờ - quan trọng để cookie persist qua refresh
+        path="/",       # Cookie available for all paths
     )
     
     return {
@@ -228,34 +214,6 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
         "user": user_info
     }
 
-
-@router.post("/complete-first-time")
-@require_auth
-def complete_first_time(request: Request, db: Session = Depends(get_db)):
-    """Mark current user's first-time flow as completed by updating session state."""
-    current = get_current_user(request)
-    if not current or not current.get("user_id"):
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-
-    user_id = current.get("user_id")
-
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
-
-    if not user.first_login_completed:
-        user.first_login_completed = True
-        db.commit()
-
-    # Update session value to reflect change (mainly for current session state)
-    session_id = request.cookies.get("session_id")
-    if session_id:
-        try:
-            SessionManager.update_session_fields(session_id, {"is_first_login": False})
-        except Exception:
-            pass
-
-    return {"message": "Marked first-time completed"}
 
 
 @router.post("/profile")

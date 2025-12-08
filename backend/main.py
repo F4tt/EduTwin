@@ -10,7 +10,7 @@ from sqlalchemy import text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from db import models, database
-from api import auth, study, developer, chatbot, learning_goals, custom_model
+from api import auth, developer, chatbot, custom_model
 from api import user
 # REMOVED: vector_store_provider import (no longer used)
 from core.logging_config import setup_logging, get_logger
@@ -56,7 +56,14 @@ app.add_middleware(PrometheusMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -102,50 +109,20 @@ async def startup_event():
                     ADD COLUMN IF NOT EXISTS role VARCHAR DEFAULT 'user',
                     ADD COLUMN IF NOT EXISTS preferences JSON
                 """))
+                # Old tables (study_scores, ml_model_parameters) removed - using custom structure instead
+                
+                # Rename reference_dataset to ml_reference_dataset if needed
                 conn.execute(text("""
-                    ALTER TABLE study_scores
-                    ADD COLUMN IF NOT EXISTS actual_status VARCHAR,
-                    ADD COLUMN IF NOT EXISTS predicted_status VARCHAR
+                    ALTER TABLE IF EXISTS reference_dataset RENAME TO ml_reference_dataset
                 """))
-                # Ensure ml_model_parameters table is created (in case SQLAlchemy create_all doesn't catch it)
+                
+                # Add user_id to ml_reference_dataset if not exists
                 conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS ml_model_parameters (
-                        id SERIAL PRIMARY KEY,
-                        knn_n INTEGER NOT NULL DEFAULT 15,
-                        kr_bandwidth FLOAT NOT NULL DEFAULT 1.25,
-                        lwlr_tau FLOAT NOT NULL DEFAULT 3.0,
-                        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                # Create learning_goals table
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS learning_goals (
-                        id SERIAL PRIMARY KEY,
-                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        target_average FLOAT NOT NULL,
-                        target_semester VARCHAR NOT NULL,
-                        target_grade_level VARCHAR NOT NULL,
-                        predicted_scores JSON,
-                        trajectory_data JSON,
-                        ai_analysis TEXT,
-                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_learning_goals_id ON learning_goals(id)
-                """))
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_learning_goals_user_id ON learning_goals(user_id)
-                """))
-                # Add user_id to reference_dataset if not exists
-                conn.execute(text("""
-                    ALTER TABLE reference_dataset
+                    ALTER TABLE ml_reference_dataset
                     ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
                 """))
                 conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_reference_dataset_user_id ON reference_dataset(user_id)
+                    CREATE INDEX IF NOT EXISTS ix_ml_reference_dataset_user_id ON ml_reference_dataset(user_id)
                 """))
             logger.info("Database tables created successfully")
             
@@ -170,11 +147,9 @@ async def startup_event():
     logger.info("Application startup complete")
 
 app.include_router(auth.router)
-app.include_router(study.router)
 app.include_router(developer.router)
 app.include_router(chatbot.router)
 app.include_router(user.router)
-app.include_router(learning_goals.router)
 app.include_router(custom_model.router)
 
 # Mount Socket.IO app at /socket.io instead of /ws

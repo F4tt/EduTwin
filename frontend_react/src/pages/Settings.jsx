@@ -145,10 +145,10 @@ const Settings = () => {
                     </div>
                     <div>
                         <label className="label">Email</label>
-                        <input 
-                            className="input-field" 
-                            name="email" 
-                            value={formData.email} 
+                        <input
+                            className="input-field"
+                            name="email"
+                            value={formData.email}
                             onChange={handleChange}
                             style={{
                                 borderColor: isFieldChanged('email') ? '#dc2626' : 'var(--border-color)',
@@ -160,10 +160,10 @@ const Settings = () => {
                     </div>
                     <div>
                         <label className="label">Số điện thoại</label>
-                        <input 
-                            className="input-field" 
-                            name="phone" 
-                            value={formData.phone} 
+                        <input
+                            className="input-field"
+                            name="phone"
+                            value={formData.phone}
                             onChange={handleChange}
                             style={{
                                 borderColor: isFieldChanged('phone') ? '#dc2626' : 'var(--border-color)',
@@ -175,10 +175,10 @@ const Settings = () => {
                     </div>
                     <div>
                         <label className="label">Địa chỉ</label>
-                        <input 
-                            className="input-field" 
-                            name="address" 
-                            value={formData.address} 
+                        <input
+                            className="input-field"
+                            name="address"
+                            value={formData.address}
                             onChange={handleChange}
                             style={{
                                 borderColor: isFieldChanged('address') ? '#dc2626' : 'var(--border-color)',
@@ -190,10 +190,10 @@ const Settings = () => {
                     </div>
                     <div>
                         <label className="label">Tuổi</label>
-                        <input 
-                            className="input-field" 
-                            name="age" 
-                            value={formData.age} 
+                        <input
+                            className="input-field"
+                            name="age"
+                            value={formData.age}
                             onChange={handleChange}
                             style={{
                                 borderColor: isFieldChanged('age') ? '#dc2626' : 'var(--border-color)',
@@ -277,7 +277,7 @@ const Settings = () => {
                         </ul>
                         <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)', marginTop: '1.5rem', fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <Sparkles size={14} />
-                            Các cá nhân hóa này được cập nhật tự động sau mỗi 5 tin nhắn để chatbot phục vụ bạn tốt hơn.
+                            Các cá nhân hóa này được cập nhật tự động để twin phục vụ bạn tốt hơn.
                         </p>
                     </>
                 ) : (

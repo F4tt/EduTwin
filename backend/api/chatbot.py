@@ -4,15 +4,17 @@ from datetime import datetime
 from typing import Optional
 import json
 import asyncio
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+logger = logging.getLogger("uvicorn.error")
+
 from db import database, models
-from ml import prediction_service
-from services.chatbot_service import generate_chat_response
+from services.chatbot_service import generate_chat_response, _build_chart_prompt
 from utils.session_utils import get_current_user, require_auth
 from services.personalization_learner import PersonalizationLearner
 from services.proactive_engagement import ProactiveEngagement
@@ -40,19 +42,7 @@ def apply_pending_update(db: Session, update_id: int, user_id: int):
             setattr(user, pu.field, pu.new_value)
             db.commit()
     
-    # Handle score updates
-    elif pu.update_type == "score":
-        score_id = (pu.metadata_ or {}).get("score_id")
-        if score_id:
-            score = db.query(models.StudyScore).filter(models.StudyScore.id == int(score_id)).first()
-            if score:
-                score.actual_score = float(pu.new_value)
-                score.actual_source = "chat_confirmation"
-                score.actual_status = "confirmed"
-                score.actual_updated_at = datetime.utcnow()
-                db.commit()
-                # REMOVED: vector store sync (no longer used)
-                prediction_service.update_predictions_for_user(db, score.user_id)
+    # Score updates removed - use custom structure API instead
     
     # Remove pending update after applying
     try:
@@ -118,12 +108,24 @@ class UpdateSessionPayload(BaseModel):
     title: Optional[str] = None
 
 
+from typing import List
+
+class SectionPrompt(BaseModel):
+    section: str
+    prompt: str
+
 class CommentRequest(BaseModel):
     insight_type: str = 'slide_comment'  # Type of AI insight
     context_key: Optional[str] = None     # Context identifier (e.g., 'overview_chart', 'Math')
     prompt_context: Optional[str] = None  # Additional context for the prompt
     session_id: Optional[int] = None
     persist: bool = False
+    chart_data: Optional[dict] = None     # Chart-specific data for optimized prompting
+    active_tab: Optional[str] = None      # Active tab in frontend (for optimized generation)
+    sections: Optional[List[SectionPrompt]] = None  # List of section+prompt for multi-section insight
+    score_data: Optional[dict] = None     # Comprehensive score data from frontend
+    document_context: Optional[dict] = None  # Document summaries from structure
+    structure_id: Optional[int] = None    # Structure ID for filtering insights by structure
 
 
 @router.post("/chatbot")
@@ -200,10 +202,8 @@ async def chatbot_endpoint(
             from utils.session_utils import SessionManager
 
             cookie_sid = request.cookies.get("session_id")
-            logger.info(f"chatbot_endpoint: cookie_sid={cookie_sid} sess_id_before={sess_id}")
             if cookie_sid:
                 sess_data = SessionManager.get_session(cookie_sid)
-                logger.info(f"chatbot_endpoint: SessionManager.get_session returned: {bool(sess_data)}")
                 if sess_data:
                     current_user = sess_data
             # If still not found, and the client included a user id hint, accept it as current_user
@@ -211,7 +211,6 @@ async def chatbot_endpoint(
                 try:
                     uid = int(client_user_id)
                     current_user = {"user_id": uid}
-                    logger.info(f"chatbot_endpoint: using client_user_id hint={uid}")
                 except Exception:
                     pass
         except Exception as e:
@@ -237,17 +236,14 @@ async def chatbot_endpoint(
                 ).first()
                 if existing_session:
                     sess_id = str(existing_session.id)
-                    logger.info(f"chatbot_endpoint: using current chat session id={sess_id} for user_id={user_id}")
             
             # If no current session found, create a new one
             if not sess_id:
-                logger.info(f"chatbot_endpoint: creating new session for user_id={user_id}")
                 new_session = models.ChatSession(user_id=user_id, title=None)
                 db.add(new_session)
                 db.commit()
                 db.refresh(new_session)
                 sess_id = str(new_session.id)
-                logger.info(f"chatbot_endpoint: created session id={sess_id} for user_id={user_id}")
 
                 # Enforce maximum persisted sessions per user (keep newest 20)
                 try:
@@ -306,7 +302,7 @@ async def chatbot_endpoint(
                     if msg_count % 5 == 0 and msg_count >= 5:
                         import logging
                         logger = logging.getLogger("uvicorn.error")
-                        logger.info(f"[Background] Auto-learning personalization for user {current_user.get('user_id')} after {msg_count} messages")
+                        logger.info(f"Background learning started for user {current_user.get('user_id')} after {msg_count} messages")
                         
                         learner = PersonalizationLearner()
                         learned = learner.analyze_session_preferences(session)
@@ -338,7 +334,6 @@ async def chatbot_endpoint(
                             flag_modified(user, "preferences")
                             
                             learning_db.commit()
-                            logger.info(f"[Background] Saved learned preferences: {user.preferences['learned']}")
             except Exception as e:
                 import logging
                 logging.getLogger("uvicorn.error").exception(f"Error in background auto-learning: {e}")
@@ -477,42 +472,6 @@ async def chatbot_stream_endpoint(
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
     )
-
-
-@router.post("/chatbot/confirm-score-update")
-@require_auth
-def confirm_score_update(
-    request: Request,
-    payload: ScoreUpdateConfirmation,
-    db: Session = Depends(get_db),
-):
-    current_user = get_current_user(request)
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
-
-    score = (
-        db.query(models.StudyScore)
-        .filter(
-            models.StudyScore.id == payload.score_id,
-            models.StudyScore.user_id == current_user.get("user_id"),
-        )
-        .first()
-    )
-    if not score:
-        raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi điểm phù hợp.")
-
-    new_score = round(float(payload.new_score), 2)
-    score.actual_score = new_score
-    score.actual_source = "chat_confirmation"
-    score.actual_status = "confirmed"
-    score.actual_updated_at = datetime.utcnow()
-
-    # REMOVED: vector_store embeddings sync (no longer used)
-
-    prediction_service.update_predictions_for_user(db, score.user_id)
-    db.commit()
-
-    return {"message": "Đã cập nhật điểm học tập.", "score_id": score.id, "new_score": new_score}
 
 
 @router.get("/chatbot/pending-updates")
@@ -749,35 +708,346 @@ def get_session_messages(request: Request, session_id: str, db: Session = Depend
     return {"id": session.id, "title": session.title, "messages": messages}
 
 
+
 @router.post("/chatbot/comment")
 @require_auth
 async def generate_ai_insight(request: Request, payload: CommentRequest, db: Session = Depends(get_db)):
     """
-    Generate AI insight/comment for various contexts (slide, subject analysis, etc.)
-    Can optionally persist the result to database for cross-device sync.
+    Generate AI insights for DataViz dashboard.
+    For insight_type='slide_comment', generates multiple insights for sections in a single request.
+    Returns structure compatible with frontend expectations.
     """
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
-
     user_id = current_user.get("user_id")
+    active_tab = payload.active_tab
+    context_key = payload.context_key
 
-    # Build prompt based on context
-    if payload.prompt_context:
-        prompt = payload.prompt_context
+    # Multi-section insight generation for DataViz
+    if payload.insight_type == 'slide_comment' and payload.sections:
+        from services.llm_provider import get_llm_provider
+        
+        # Use score_data from frontend if provided, otherwise fallback to database
+        score_summary = {}
+        structure_info = {}
+        
+        if payload.score_data:
+            # Use data sent from frontend
+            
+            # Get structure info
+            structure_info = payload.score_data.get('structure', {})
+            
+            # Build score summary from bySubject data
+            by_subject = payload.score_data.get('bySubject', {})
+            for subject, scores in by_subject.items():
+                for score_item in scores:
+                    key = f"{subject}_{score_item.get('timepoint', '')}"
+                    score_summary[key] = float(score_item.get('score', 0))
+        else:
+            # Fallback: query from database
+            active_structure = db.query(models.CustomTeachingStructure).filter(
+                models.CustomTeachingStructure.is_active == True
+            ).first()
+            if not active_structure:
+                return JSONResponse(content={
+                    "slide_comments": {},
+                    "comments_version": 3
+                })
+            user_scores = db.query(models.CustomUserScore).filter(
+                models.CustomUserScore.user_id == user_id,
+                models.CustomUserScore.structure_id == active_structure.id
+            ).all()
+            if not user_scores:
+                return JSONResponse(content={
+                    "slide_comments": {},
+                    "comments_version": 3
+                })
+            for score in user_scores:
+                key = f"{score.subject}_{score.time_point}"
+                val = score.actual_score if score.actual_score is not None else score.predicted_score
+                if val is not None:
+                    score_summary[key] = val
+        
+        # Build document context if provided
+        document_summary = ""
+        if payload.document_context:
+            doc_ctx = payload.document_context
+            summaries = doc_ctx.get('summaries', [])
+            if summaries:
+                doc_parts = []
+                for doc in summaries[:3]:  # Limit to 3 documents to avoid token limit
+                    doc_parts.append(f"- {doc.get('fileName', 'Tài liệu')}: {doc.get('summary', '')[:500]}")
+                document_summary = "\n".join(doc_parts)
+        
+        # Build comprehensive system prompt - Expert-level analysis style
+        system_prompt_parts = [
+            """Bạn là CHUYÊN GIA TƯ VẤN GIÁO DỤC với 20 năm kinh nghiệm phân tích dữ liệu học sinh.
+
+⚠️ QUY TẮC ĐỊNH DẠNG BẮT BUỘC:
+- TUYỆT ĐỐI KHÔNG sử dụng dấu ** hoặc __ để in đậm (ví dụ: **text** hoặc __text__)
+- KHÔNG dùng markdown formatting
+- Viết văn bản thuần (plain text) 
+- Có thể dùng emoji để nhấn mạnh (💡, ⚠️, 🔴, ✅, 📈, 📉)
+- Dùng dấu gạch ngang (-) hoặc số thứ tự (1. 2. 3.) nếu cần liệt kê
+
+NGUYÊN TẮC PHÂN TÍCH:
+1. KHÔNG bao giờ chỉ "đọc lại số liệu bằng chữ" (ví dụ: "Điểm Toán kỳ 1 là 7.5, kỳ 2 là 8.0")
+2. PHẢI tìm ra PATTERN ẨN, XU HƯỚNG, và ĐIỂM BẤT THƯỜNG mà người thường không nhận ra
+3. Phân tích như một chiến lược gia - xác định môn "chiến lược" có thể tạo đột phá
+4. Đưa ra NHẬN ĐỊNH SẮC BÉN, KHÁC BIỆT - không chung chung
+
+⚠️ QUAN TRỌNG - CẢNH BÁO SỤT GIẢM:
+- Khi phát hiện xu hướng GIẢM điểm, SỤT GIẢM, hay DẤU HIỆU ĐÁNG LO: PHẢI CẢNH BÁO RÕ RÀNG
+- Dùng ngôn ngữ mạnh: "cần chú ý ngay", "báo động", "đáng lo ngại", "cần can thiệp"
+- Không chỉ "gợi ý cải thiện" mà phải "cảnh tỉnh" về hậu quả nếu không hành động
+- Ví dụ: "⚠️ Điểm Toán đang trong đà rơi tự do - giảm 15% chỉ trong 2 kỳ. Nếu không can thiệp ngay, có nguy cơ mất khả năng cạnh tranh ở các tổ hợp khối A, B."
+
+PHONG CÁCH VIẾT:
+- Ngắn gọn, súc tích, đi thẳng vào insight
+- Dùng ngôn ngữ của chuyên gia nhưng dễ hiểu
+- Có thể dùng phép so sánh, ẩn dụ để sinh động
+- Kết thúc bằng gợi ý hành động cụ thể khi phù hợp
+- Khi có sụt giảm: dùng emoji ⚠️ hoặc 🔴 để nhấn mạnh
+
+VÍ DỤ PHÂN TÍCH TỐT:
+❌ SAI: "Điểm Toán tăng từ 7.0 lên 8.0, cho thấy sự tiến bộ."
+✅ ĐÚNG: "Toán đang là 'đầu tàu' kéo điểm tổng lên - mức tăng trưởng 14% cho thấy phương pháp học đang hiệu quả."
+
+❌ SAI: "Điểm Lý giảm từ 7.0 xuống 6.0, cần cố gắng hơn."
+✅ ĐÚNG: "⚠️ Tín hiệu CẢNH BÁO từ môn Lý - sụt giảm 14% liên tiếp 2 kỳ. Đây là dấu hiệu mất nền tảng, cần ưu tiên khắc phục NGAY trước khi ảnh hưởng đến các tổ hợp khối A, B."
+
+❌ SAI: "Học sinh có điểm Văn cao, điểm Lý thấp."  
+✅ ĐÚNG: "Profile rõ ràng thiên Xã hội - sự chênh lệch Văn-Lý tới 2.5 điểm gợi ý nên tập trung khối C, D thay vì ép sức vào A, B."
+
+Hãy phân tích dữ liệu học sinh như một chuyên gia thực thụ - vừa khích lệ khi tốt, vừa cảnh tỉnh khi có vấn đề."""
+        ]
+        
+        if structure_info:
+            structure_name = structure_info.get('name', 'Không xác định')
+            scale_type = structure_info.get('scaleType', '0-10')
+            current_grade = structure_info.get('currentGrade', '')
+            subjects = structure_info.get('subjects', [])
+            time_points = structure_info.get('timePoints', [])
+            
+            system_prompt_parts.append(f"\nThông tin cấu trúc học tập:")
+            system_prompt_parts.append(f"- Tên cấu trúc: {structure_name}")
+            system_prompt_parts.append(f"- Thang điểm: {scale_type}")
+            if current_grade:
+                system_prompt_parts.append(f"- Mốc thời gian hiện tại: {current_grade}")
+            if subjects:
+                system_prompt_parts.append(f"- Các môn học: {', '.join(subjects[:10])}")
+            if time_points:
+                system_prompt_parts.append(f"- Các mốc thời gian: {', '.join(time_points[:6])}")
+        
+        if document_summary:
+            system_prompt_parts.append(f"\nTài liệu tham khảo về cách đánh giá và phân tích:")
+            system_prompt_parts.append(document_summary)
+        
+        system_prompt = "\n".join(system_prompt_parts)
+        
+        provider = get_llm_provider()
+        results = {}
+        
+        # =============================================================
+        # OPTIMIZED: Single LLM call for ALL sections (saves tokens!)
+        # =============================================================
+        
+        # Build a combined prompt with all section requirements
+        section_prompts = []
+        section_keys = [s.section for s in payload.sections]
+        
+        for section in payload.sections:
+            section_name = section.section
+            prompt = section.prompt
+            
+            # Build section-specific data context
+            section_data = {}
+            if payload.score_data:
+                by_subject = payload.score_data.get('bySubject', {})
+                avg_by_timepoint = payload.score_data.get('averageByTimepoint', {})
+                
+                if section_name in by_subject:
+                    section_data[section_name] = by_subject[section_name]
+                elif section_name in ['summary', 'trend', 'subjects', 'radar']:
+                    section_data['averageByTimepoint'] = avg_by_timepoint
+                    subject_avgs = {}
+                    for subj, scores in by_subject.items():
+                        all_scores = [float(s.get('score', 0)) for s in scores if s.get('score')]
+                        if all_scores:
+                            subject_avgs[subj] = round(sum(all_scores) / len(all_scores), 2)
+                    section_data['subjectAverages'] = subject_avgs
+                else:
+                    section_data = {k: v for k, v in by_subject.items()}
+            
+            data_str = json.dumps(section_data, ensure_ascii=False) if section_data else json.dumps(score_summary, ensure_ascii=False)
+            section_prompts.append(f'"{section_name}": {prompt} [Dữ liệu: {data_str}]')
+        
+        # Combined user prompt requesting JSON output
+        combined_prompt = f"""Phân tích các phần sau và trả về KẾT QUẢ dưới dạng JSON với các key tương ứng.
+Mỗi value là một đoạn phân tích ngắn gọn (2-4 câu).
+
+CÁC PHẦN CẦN PHÂN TÍCH:
+{chr(10).join(section_prompts)}
+
+ĐỊNH DẠNG TRẢ VỀ (JSON thuần, không có markdown code block):
+{{
+  "{section_keys[0]}": "Nội dung phân tích cho {section_keys[0]}...",
+  ...
+}}
+
+CHÚ Ý: 
+- Chỉ trả về JSON object, không có text giải thích trước/sau
+- Mỗi phần tích tối đa 3-4 câu, ngắn gọn súc tích
+- KHÔNG dùng ** hoặc __ markdown"""
+
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": combined_prompt}
+            ]
+            
+            logger.info(f"[AI_INSIGHTS] Sending SINGLE request for {len(payload.sections)} sections")
+            response = await provider.chat(messages=messages, temperature=0.3)
+            
+            # Parse response
+            response_text = ""
+            if response and isinstance(response, dict):
+                candidates = response.get("candidates", [])
+                if candidates and isinstance(candidates[0], dict):
+                    content = candidates[0].get("content", {})
+                    parts = content.get("parts", [])
+                    if parts and isinstance(parts[0], dict):
+                        response_text = parts[0].get("text", "")
+            
+            # Try to parse JSON from response
+            parsed_results = {}
+            if response_text:
+                # Clean up response text (remove markdown code blocks if present)
+                clean_text = response_text.strip()
+                if clean_text.startswith("```"):
+                    # Remove markdown code block
+                    lines = clean_text.split("\n")
+                    clean_text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                
+                try:
+                    parsed_results = json.loads(clean_text)
+                    logger.info(f"[AI_INSIGHTS] Successfully parsed {len(parsed_results)} sections from single response")
+                except json.JSONDecodeError as je:
+                    logger.warning(f"[AI_INSIGHTS] Failed to parse JSON, trying line-by-line: {je}")
+                    # Fallback: try to extract key-value pairs
+                    for section_key in section_keys:
+                        if section_key in response_text:
+                            # Simple extraction - find text after the key
+                            parsed_results[section_key] = f"Phân tích cho {section_key}: Vui lòng thử lại."
+            
+            # Map parsed results to output format
+            for section in payload.sections:
+                section_name = section.section
+                comment = parsed_results.get(section_name, "Chưa có phân tích cho mục này.")
+                
+                # Clean up the comment (remove any markdown that slipped through)
+                if isinstance(comment, str):
+                    comment = comment.replace("**", "").replace("__", "")
+                
+                results[section_name] = {
+                    "comment": comment,
+                    "narrative": {"comment": comment}
+                }
+                
+                # Persist to database with structure_id
+                if payload.persist:
+                    context_key_db = f"{payload.active_tab}_{section_name}"
+                    # Filter by structure_id if provided
+                    query = db.query(models.AIInsight).filter(
+                        models.AIInsight.user_id == user_id,
+                        models.AIInsight.insight_type == 'slide_comment',
+                        models.AIInsight.context_key == context_key_db
+                    )
+                    if payload.structure_id:
+                        query = query.filter(models.AIInsight.structure_id == payload.structure_id)
+                    existing = query.first()
+                    
+                    if existing:
+                        existing.content = comment
+                        existing.updated_at = datetime.utcnow()
+                        if payload.structure_id:
+                            existing.structure_id = payload.structure_id
+                    else:
+                        new_insight = models.AIInsight(
+                            user_id=user_id,
+                            structure_id=payload.structure_id,  # Save structure_id
+                            insight_type='slide_comment',
+                            context_key=context_key_db,
+                            content=comment,
+                            metadata_={"generated_at": datetime.utcnow().isoformat()}
+                        )
+                        db.add(new_insight)
+                        
+        except Exception as e:
+            logger.error(f"[AI_INSIGHTS] Single-call generation failed: {e}")
+            # Fallback: return error for all sections
+            for section in payload.sections:
+                results[section.section] = {
+                    "comment": "Không thể tạo phân tích. Vui lòng thử lại.",
+                    "narrative": {"comment": "Không thể tạo phân tích. Vui lòng thử lại."}
+                }
+        
+        db.commit()
+        
+        # Return results in correct format for each tab
+        slide_comments = {}
+        if payload.active_tab == 'Chung':
+            slide_comments['overview'] = results
+        elif payload.active_tab == 'Tổ Hợp':
+            slide_comments['exam_blocks'] = {"blocks": results}
+        elif payload.active_tab == 'Từng Môn':
+            slide_comments['subjects'] = results
+        else:
+            slide_comments = results
+        return JSONResponse(content={"slide_comments": slide_comments, "comments_version": 3})
+
+    # For other insight types (legacy support)
+    # Detect if this is a chart-related insight
+    is_chart = payload.chart_data is not None or 'chart' in (payload.context_key or '').lower()
+    comment = None
+    if is_chart and payload.chart_data:
+        from services.llm_provider import get_llm_provider
+        chart_type = payload.context_key or 'overview'
+        messages = _build_chart_prompt(payload.chart_data, chart_type, user_id, db)
+        if payload.prompt_context:
+            messages.append({"role": "user", "content": payload.prompt_context})
+        else:
+            messages.append({"role": "user", "content": "Hãy phân tích biểu đồ điểm số này."})
+        provider = get_llm_provider()
+        response = await provider.chat(messages=messages, temperature=0.3)
+        if response and isinstance(response, dict):
+            candidates = response.get("candidates", [])
+            if candidates and isinstance(candidates[0], dict):
+                content = candidates[0].get("content", {})
+                parts = content.get("parts", [])
+                if parts and isinstance(parts[0], dict):
+                    comment = parts[0].get("text", "")
+                else:
+                    comment = "Không thể tạo nhận xét."
+            else:
+                comment = "Không thể tạo nhận xét."
+        else:
+            comment = "Không thể tạo nhận xét."
     else:
-        prompt = (
-            "Bạn là một trợ lý giáo viên. Hãy viết một đoạn nhận xét ngắn (1-3 câu) bằng tiếng Việt, "
-            "tập trung vào kết quả học tập của học sinh và gợi ý cải thiện nếu cần."
-        )
-
-    # Generate AI response
-    result = await generate_chat_response(db=db, user=current_user, message=prompt, session_id=payload.session_id)
-    comment = result.get("answer")
+        # Use standard chat prompt for non-chart insights
+        if payload.prompt_context:
+            prompt = payload.prompt_context
+        else:
+            prompt = (
+                "Bạn là một trợ lý giáo viên. Hãy viết một đoạn nhận xét ngắn (1-3 câu) bằng tiếng Việt, "
+                "tập trung vào kết quả học tập của học sinh và gợi ý cải thiện nếu cần."
+            )
+        result = await generate_chat_response(db=db, user=current_user, message=prompt, session_id=payload.session_id)
+        comment = result.get("answer")
 
     # Persist to database if requested
     if payload.persist and comment:
-        # Check if insight already exists for this context
         existing = (
             db.query(models.AIInsight)
             .filter(
@@ -787,9 +1057,7 @@ async def generate_ai_insight(request: Request, payload: CommentRequest, db: Ses
             )
             .first()
         )
-
         if existing:
-            # Update existing insight
             existing.content = comment
             existing.updated_at = datetime.utcnow()
             existing.metadata_ = {
@@ -798,7 +1066,6 @@ async def generate_ai_insight(request: Request, payload: CommentRequest, db: Ses
                 "session_id": payload.session_id
             }
         else:
-            # Create new insight
             new_insight = models.AIInsight(
                 user_id=user_id,
                 insight_type=payload.insight_type,
@@ -810,9 +1077,7 @@ async def generate_ai_insight(request: Request, payload: CommentRequest, db: Ses
                 }
             )
             db.add(new_insight)
-        
         db.commit()
-
     return JSONResponse(content={"comment": comment})
 
 
@@ -822,11 +1087,12 @@ async def get_user_insights(
     request: Request, 
     insight_type: Optional[str] = None,
     context_key: Optional[str] = None,
+    structure_id: Optional[int] = None,
     db: Session = Depends(get_db)
 ):
     """
     Fetch AI insights for the current user.
-    Can filter by insight_type and/or context_key.
+    Can filter by insight_type, context_key, and/or structure_id.
     Returns insights sorted by most recent first.
     """
     current_user = get_current_user(request)
@@ -841,6 +1107,8 @@ async def get_user_insights(
         query = query.filter(models.AIInsight.insight_type == insight_type)
     if context_key:
         query = query.filter(models.AIInsight.context_key == context_key)
+    if structure_id:
+        query = query.filter(models.AIInsight.structure_id == structure_id)
     
     insights = query.order_by(models.AIInsight.updated_at.desc()).all()
     
@@ -851,6 +1119,7 @@ async def get_user_insights(
                 "insight_type": ins.insight_type,
                 "context_key": ins.context_key,
                 "content": ins.content,
+                "structure_id": ins.structure_id,
                 "metadata": ins.metadata_,
                 "created_at": ins.created_at.isoformat() if ins.created_at else None,
                 "updated_at": ins.updated_at.isoformat() if ins.updated_at else None

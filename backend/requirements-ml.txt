@@ -1,6 +1,0 @@
-# ML/AI dependencies (heavy, rarely change)
-pandas
-openpyxl
-scikit-learn
-scipy
-numpy

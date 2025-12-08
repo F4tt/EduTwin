@@ -1,105 +1,361 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
-import { useAuth } from '../context/AuthContext';
+import { Settings, Save, FileText, Upload, Database, Trash2, ChevronDown, ChevronUp, X, Brain, Zap, CheckCircle, Lightbulb, File, FileUp } from 'lucide-react';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import axiosClient from '../api/axiosClient';
-import { Upload, RefreshCw, AlertCircle, Brain, Database, Clock, FileText, Zap, CheckCircle, Settings, Lightbulb, Save, Download } from 'lucide-react';
-import {
-    emitMlModelChanged,
-    emitMlParametersChanged,
-    emitReferenceDatasetChanged,
-    emitMlPipelineProcessing,
-    emitMlPipelineCompleted,
-} from '../utils/eventBus';
+import { uploadStructureDocument, getStructureDocuments, deleteStructureDocument } from '../api/documentApi';
+import { useAuth } from '../context/AuthContext';
 
 const Developer = () => {
     const { user } = useAuth();
-    const [file, setFile] = useState(null);
-    const [uploading, setUploading] = useState(false);
-    const [message, setMessage] = useState({ type: '', text: '' });
-    const [summary, setSummary] = useState(null);
+    // Form states for creating new structure
+    const [structureName, setStructureName] = useState('');
+    const [numTimePoints, setNumTimePoints] = useState('');
+    const [numSubjects, setNumSubjects] = useState('');
+    const [timePointLabels, setTimePointLabels] = useState([]);
+    const [subjectLabels, setSubjectLabels] = useState([]);
+    const [scaleType, setScaleType] = useState('0-10'); // Default scale type
+    const [structureConfirmed, setStructureConfirmed] = useState(false);
+    const [savingStructure, setSavingStructure] = useState(false);
+    const [structureMessage, setStructureMessage] = useState('');
 
-    // Model evaluation state
+    // Structure list and active structure
+    const [allStructures, setAllStructures] = useState([]);
+    const [expandedStructureId, setExpandedStructureId] = useState(null);
+
+    // Per-structure data (keyed by structure_id)
+    const [structureDatasets, setStructureDatasets] = useState({}); // Stats for each structure
+    const [uploadingFiles, setUploadingFiles] = useState({}); // Upload states
+    const [activeStructureId, setActiveStructureId] = useState(null); // Currently active structure for all users
+
+    // Document management states (keyed by structure_id)
+    const [structureDocuments, setStructureDocuments] = useState({}); // Documents for each structure
+    const [uploadingDocuments, setUploadingDocuments] = useState({}); // Document upload states
+    const [documentMessages, setDocumentMessages] = useState({}); // Messages per structure
+
+    // ML Model Management States
     const [evaluating, setEvaluating] = useState(false);
     const [evaluationResults, setEvaluationResults] = useState(null);
     const [evaluationMessage, setEvaluationMessage] = useState('');
-
-    // Model parameters state
     const [parameters, setParameters] = useState({ knn_n: 15, kr_bandwidth: 1.25, lwlr_tau: 3.0 });
     const [originalParameters, setOriginalParameters] = useState({ knn_n: 15, kr_bandwidth: 1.25, lwlr_tau: 3.0 });
     const [loadingParams, setLoadingParams] = useState(false);
     const [savingParams, setSavingParams] = useState(false);
     const [paramMessage, setParamMessage] = useState('');
-
-    // ML Model selection state
     const [modelStatus, setModelStatus] = useState(null);
     const [selectedModel, setSelectedModel] = useState('');
     const [modelMsg, setModelMsg] = useState('');
     const [loadingModels, setLoadingModels] = useState(false);
 
-    // Dataset status state
-    const [datasetStatus, setDatasetStatus] = useState(null);
-    const [loadingDataset, setLoadingDataset] = useState(false);
+    // Model evaluation - multi-select arrays
+    const [evalInputTimepoints, setEvalInputTimepoints] = useState([]);
+    const [evalOutputTimepoints, setEvalOutputTimepoints] = useState([]);
 
-    // Pipeline status banner
-    const [pipelineBanner, setPipelineBanner] = useState({ type: '', text: '' });
-    const pipelineTimeoutRef = useRef(null);
-
-    const clearPipelineTimer = () => {
-        if (pipelineTimeoutRef.current) {
-            clearTimeout(pipelineTimeoutRef.current);
-            pipelineTimeoutRef.current = null;
-        }
-    };
-
-    const notifyPipelineProcessing = (detail = {}) => {
-        clearPipelineTimer();
-        const text = detail.message || 'Đang cập nhật pipeline...';
-        setPipelineBanner({ type: 'info', text });
-        emitMlPipelineProcessing({ ...detail, message: text });
-    };
-
-    const notifyPipelineCompleted = (detail = {}) => {
-        clearPipelineTimer();
-        if (detail.error) {
-            const errorText = detail.error;
-            setPipelineBanner({ type: 'error', text: errorText });
-            emitMlPipelineCompleted({ ...detail, message: errorText });
-        } else {
-            const stats = detail.stats || detail.pipeline || {};
-            const processed = stats.processed_users ? ` (${stats.processed_users} người dùng)` : '';
-            const successText = detail.message || `Pipeline đã hoàn tất${processed}.`;
-            setPipelineBanner({ type: 'success', text: successText });
-            emitMlPipelineCompleted({ ...detail, stats, message: successText });
-        }
-        pipelineTimeoutRef.current = setTimeout(() => setPipelineBanner({ type: '', text: '' }), 5000);
-    };
-
+    // Reset evaluation selections when active structure changes
     useEffect(() => {
-        return () => clearPipelineTimer();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        setEvalInputTimepoints([]);
+        setEvalOutputTimepoints([]);
+        setEvaluationResults(null);
+        setEvaluationMessage('');
+    }, [activeStructureId]);
 
-    // Check permissions
+    // Check permissions first
     if (!user || (user.role !== 'developer' && user.role !== 'admin')) {
         return (
-            <div className="container" style={{ maxWidth: '600px', padding: '4rem 2rem' }}>
-                <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-                    <div style={{ display: 'inline-flex', padding: '1rem', borderRadius: '50%', background: '#fef2f2', marginBottom: '1.5rem' }}>
-                        <AlertCircle size={48} style={{ color: 'var(--danger-color)' }} />
-                    </div>
-                    <h2 style={{ color: 'var(--danger-color)', marginBottom: '1rem', fontSize: '1.5rem' }}>Truy cập bị từ chối</h2>
-                    <p style={{ color: 'var(--text-secondary)' }}>Bạn không có quyền truy cập vào trang này.</p>
-                </div>
+            <div style={{ padding: '4rem 2rem', textAlign: 'center' }}>
+                <h2 style={{ color: 'var(--danger-color)' }}>Truy cập bị từ chối</h2>
+                <p>Bạn không có quyền truy cập vào trang này.</p>
             </div>
         );
     }
 
-    // Fetch model status and dataset status on mount
     useEffect(() => {
+        fetchAllStructures();
         fetchModelStatus();
-        fetchDatasetStatus();
         fetchModelParameters();
     }, []);
+
+    const fetchAllStructures = async () => {
+        try {
+            console.log('Fetching all structures...');
+            const res = await axiosClient.get('/custom-model/teaching-structures');
+            console.log('API Response:', res.data);
+            const structures = res.data.structures || [];
+            console.log('Structures found:', structures.length, structures);
+            setAllStructures(structures);
+
+            // Set active structure from API or first structure
+            const activeStruct = structures.find(s => s.is_active);
+            if (activeStruct) {
+                setActiveStructureId(activeStruct.id);
+            }
+
+            // Load dataset stats for each structure
+            for (const struct of structures) {
+                loadDatasetStats(struct.id);
+            }
+        } catch (e) {
+            console.error('Error fetching structures:', e);
+            console.error('Error details:', e.response?.data);
+        }
+    };
+
+    const loadDatasetStats = async (structureId) => {
+        try {
+            const res = await axiosClient.get(`/custom-model/dataset-stats/${structureId}`);
+            setStructureDatasets(prev => ({
+                ...prev,
+                [structureId]: {
+                    reference_count: res.data.reference_count || 0,
+                    last_upload: res.data.last_upload || null
+                }
+            }));
+        } catch (e) {
+            console.error('Error loading dataset stats:', e);
+        }
+    };
+
+    const handleSetActiveStructure = async (structureId) => {
+        try {
+            const res = await axiosClient.post(`/custom-model/teaching-structure/activate/${structureId}`);
+            setActiveStructureId(structureId);
+            setStructureMessage('✓ Đã kích hoạt cấu trúc cho toàn bộ hệ thống!');
+            setTimeout(() => setStructureMessage(''), 3000);
+            await fetchAllStructures();
+        } catch (e) {
+            setStructureMessage('Lỗi: ' + (e.response?.data?.detail || e.message));
+        }
+    };
+
+    const handleConfirmStructure = () => {
+        const numTP = parseInt(numTimePoints);
+        const numSub = parseInt(numSubjects);
+
+        if (isNaN(numTP) || numTP < 2) {
+            alert('Vui lòng nhập số lượng mốc thời gian từ 2 trở lên');
+            return;
+        }
+
+        if (isNaN(numSub) || numSub < 1) {
+            alert('Vui lòng nhập số lượng môn học từ 1 trở lên');
+            return;
+        }
+
+        // Initialize labels arrays
+        const newTimeLabels = Array(numTP).fill('');
+        const newSubjectLabels = Array(numSub).fill('');
+
+        setTimePointLabels(newTimeLabels);
+        setSubjectLabels(newSubjectLabels);
+        setStructureConfirmed(true);
+    };
+
+    const handleSaveStructure = async () => {
+        if (!structureName.trim()) {
+            alert('Vui lòng nhập tên cấu trúc');
+            return;
+        }
+
+        if (timePointLabels.some(l => !l.trim()) || subjectLabels.some(l => !l.trim())) {
+            alert('Vui lòng nhập tên cho tất cả mốc thời gian và môn học');
+            return;
+        }
+
+        setSavingStructure(true);
+        setStructureMessage('');
+
+        try {
+            console.log('Saving structure:', {
+                structure_name: structureName,
+                num_time_points: parseInt(numTimePoints),
+                num_subjects: parseInt(numSubjects),
+                time_point_labels: timePointLabels,
+                subject_labels: subjectLabels,
+                scale_type: scaleType
+            });
+
+            const res = await axiosClient.post('/custom-model/teaching-structure', {
+                structure_name: structureName,
+                num_time_points: parseInt(numTimePoints),
+                num_subjects: parseInt(numSubjects),
+                time_point_labels: timePointLabels,
+                subject_labels: subjectLabels,
+                scale_type: scaleType
+            });
+
+            console.log('Save response:', res.data);
+            setStructureMessage('✓ ' + res.data.message);
+            setTimeout(() => setStructureMessage(''), 3000);
+
+            // Reset form
+            setStructureName('');
+            setNumTimePoints('');
+            setNumSubjects('');
+            setTimePointLabels([]);
+            setSubjectLabels([]);
+            setScaleType('0-10');
+            setStructureConfirmed(false);
+
+            console.log('Fetching updated structures...');
+            await fetchAllStructures();
+            console.log('Fetch completed');
+        } catch (e) {
+            console.error('Error saving structure:', e);
+            console.error('Error response:', e.response?.data);
+            setStructureMessage('Lỗi: ' + (e.response?.data?.detail || e.message));
+        } finally {
+            setSavingStructure(false);
+        }
+    };
+
+    const handleDeleteStructure = async (structureId, structureName) => {
+        if (!window.confirm(`Bạn có chắc muốn xóa cấu trúc "${structureName}"?`)) return;
+
+        try {
+            const res = await axiosClient.delete(`/custom-model/teaching-structure/${structureId}`);
+            setStructureMessage('✓ ' + res.data.message);
+            setTimeout(() => setStructureMessage(''), 3000);
+            if (expandedStructureId === structureId) {
+                setExpandedStructureId(null);
+            }
+            await fetchAllStructures();
+        } catch (e) {
+            setStructureMessage('Lỗi: ' + (e.response?.data?.detail || e.message));
+        }
+    };
+
+    const handleDownloadTemplate = (struct) => {
+        const headers = [];
+        struct.time_point_labels.forEach(timePoint => {
+            struct.subject_labels.forEach(subject => {
+                headers.push(`${subject}_${timePoint}`);
+            });
+        });
+
+        // Create Excel file using xlsx library
+        const ws = XLSX.utils.aoa_to_sheet([headers]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Data');
+        XLSX.writeFile(wb, `${struct.structure_name}_template.xlsx`);
+    };
+
+    const handleFileUpload = async (event, structureId) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        setUploadingFiles(prev => ({ ...prev, [structureId]: true }));
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await axiosClient.post(`/custom-model/upload-dataset/${structureId}`, formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+            setStructureMessage('✓ ' + res.data.message);
+            setTimeout(() => setStructureMessage(''), 5000);
+
+            // Reload dataset stats from backend
+            loadDatasetStats(structureId);
+        } catch (e) {
+            setStructureMessage('Lỗi: ' + (e.response?.data?.detail || e.message));
+        } finally {
+            setUploadingFiles(prev => ({ ...prev, [structureId]: false }));
+        }
+    };
+
+    const toggleExpand = (structureId) => {
+        const newExpandedId = expandedStructureId === structureId ? null : structureId;
+        setExpandedStructureId(newExpandedId);
+
+        // Load documents when expanding
+        if (newExpandedId === structureId) {
+            loadStructureDocuments(structureId);
+        }
+    };
+
+    // ========== Document Management Functions ==========
+
+    const loadStructureDocuments = async (structureId) => {
+        try {
+            const response = await getStructureDocuments(structureId);
+            setStructureDocuments(prev => ({
+                ...prev,
+                [structureId]: response.documents || []
+            }));
+        } catch (e) {
+            console.error('Failed to load documents:', e);
+        }
+    };
+
+    const handleDocumentUpload = async (structureId, file) => {
+        // Validate file type
+        const allowedTypes = ['pdf', 'docx', 'doc', 'txt'];
+        const fileExt = file.name.split('.').pop().toLowerCase();
+
+        if (!allowedTypes.includes(fileExt)) {
+            setDocumentMessages(prev => ({
+                ...prev,
+                [structureId]: 'Chỉ hỗ trợ file PDF, DOCX, TXT'
+            }));
+            return;
+        }
+
+        // Check file size (max 10MB)
+        if (file.size > 10 * 1024 * 1024) {
+            setDocumentMessages(prev => ({
+                ...prev,
+                [structureId]: 'File quá lớn (tối đa 10MB)'
+            }));
+            return;
+        }
+
+        setUploadingDocuments(prev => ({ ...prev, [structureId]: true }));
+        setDocumentMessages(prev => ({ ...prev, [structureId]: '' }));
+
+        try {
+            const response = await uploadStructureDocument(structureId, file);
+            setDocumentMessages(prev => ({
+                ...prev,
+                [structureId]: `✓ ${response.message} (Nén: ${response.document.compression_ratio}x)`
+            }));
+
+            // Reload documents
+            await loadStructureDocuments(structureId);
+        } catch (e) {
+            setDocumentMessages(prev => ({
+                ...prev,
+                [structureId]: 'Lỗi: ' + (e.response?.data?.detail || e.message)
+            }));
+        } finally {
+            setUploadingDocuments(prev => ({ ...prev, [structureId]: false }));
+        }
+    };
+
+    const handleDeleteDocument = async (structureId, docId, fileName) => {
+        if (!confirm(`Xóa tài liệu "${fileName}"?`)) return;
+
+        try {
+            await deleteStructureDocument(docId);
+            setDocumentMessages(prev => ({
+                ...prev,
+                [structureId]: '✓ Đã xóa tài liệu'
+            }));
+
+            // Reload documents
+            await loadStructureDocuments(structureId);
+        } catch (e) {
+            setDocumentMessages(prev => ({
+                ...prev,
+                [structureId]: 'Lỗi: ' + (e.response?.data?.detail || e.message)
+            }));
+        }
+    };
+
+    // ========== ML Model Management Functions ==========
 
     const fetchModelStatus = async () => {
         setLoadingModels(true);
@@ -114,24 +370,12 @@ const Developer = () => {
         }
     };
 
-    const fetchDatasetStatus = async () => {
-        setLoadingDataset(true);
-        try {
-            const res = await axiosClient.get('/developer/dataset-status');
-            setDatasetStatus(res.data);
-        } catch (e) {
-            console.error('Error fetching dataset status:', e);
-        } finally {
-            setLoadingDataset(false);
-        }
-    };
-
     const fetchModelParameters = async () => {
         setLoadingParams(true);
         try {
             const res = await axiosClient.get('/developer/model-parameters');
             setParameters(res.data);
-            setOriginalParameters(res.data); // Save original values
+            setOriginalParameters(res.data);
         } catch (e) {
             console.error('Error fetching model parameters:', e);
         } finally {
@@ -142,37 +386,16 @@ const Developer = () => {
     const handleSaveParameters = async () => {
         setSavingParams(true);
         setParamMessage('');
-        notifyPipelineProcessing({ reason: 'model-parameters', message: 'Đang áp dụng thông số mới và cập nhật pipeline...' });
 
         try {
-            console.log('Saving parameters:', parameters);
             const res = await axiosClient.post('/developer/model-parameters', parameters);
-            console.log('Save response:', res.data);
             setParamMessage('✓ ' + (res.data.message || 'Đã cập nhật thông số thành công'));
-            setOriginalParameters(parameters); // Update original values after successful save
-            emitMlParametersChanged({ parameters: { ...parameters } });
+            setOriginalParameters(parameters);
             setTimeout(() => setParamMessage(''), 3000);
-            // Backend uses lazy evaluation - predictions updated when user accesses data
-            if (res.data.ml_version) {
-                notifyPipelineCompleted({
-                    reason: 'model-parameters',
-                    message: res.data.note || 'Thông số đã cập nhật. Dự đoán sẽ được làm mới khi user truy cập dữ liệu.'
-                });
-            } else if (res.data.pipeline_status === 'running_in_background') {
-                notifyPipelineCompleted({
-                    reason: 'model-parameters',
-                    message: res.data.note || 'Pipeline đang chạy background, dự đoán sẽ được cập nhật trong giây lát.'
-                });
-            } else if (res.data.pipeline) {
-                notifyPipelineCompleted({ reason: 'model-parameters', stats: res.data.pipeline, message: 'Pipeline đã cập nhật theo thông số mới.' });
-            }
         } catch (e) {
-            console.error('Full error object:', e);
-            console.error('Error response:', e.response);
             const errorMsg = e.response?.data?.detail || e.message || 'Lỗi không xác định';
             setParamMessage('Lỗi: ' + errorMsg);
             console.error('Error saving parameters:', e);
-            notifyPipelineCompleted({ reason: 'model-parameters', error: 'Pipeline lỗi: ' + errorMsg });
         } finally {
             setSavingParams(false);
         }
@@ -180,527 +403,874 @@ const Developer = () => {
 
     const handleSelectModel = async (modelName) => {
         setModelMsg('');
-        notifyPipelineProcessing({ reason: 'model-selection', message: 'Đang chuyển mô hình và chạy lại pipeline...' });
         try {
             const res = await axiosClient.post('/developer/select-model', { model: modelName });
             setSelectedModel(modelName);
             setModelMsg('✓ ' + (res.data.message || 'Đã cập nhật mô hình dự đoán.'));
-            emitMlModelChanged({ model: modelName });
             setTimeout(() => setModelMsg(''), 3000);
-            // Backend uses lazy evaluation - predictions updated when user accesses data
-            if (res.data.ml_version) {
-                notifyPipelineCompleted({
-                    reason: 'model-selection',
-                    message: res.data.note || 'Mô hình đã chuyển. Dự đoán sẽ được làm mới khi user truy cập dữ liệu.'
-                });
-            } else if (res.data.pipeline_status === 'running_in_background') {
-                notifyPipelineCompleted({
-                    reason: 'model-selection',
-                    message: res.data.note || 'Pipeline đang chạy background, dự đoán sẽ được cập nhật trong giây lát.'
-                });
-            } else if (res.data.pipeline) {
-                notifyPipelineCompleted({ reason: 'model-selection', stats: res.data.pipeline, message: 'Pipeline đã áp dụng mô hình mới.' });
-            }
             await fetchModelStatus();
         } catch (e) {
             const errorMsg = e.response?.data?.detail || e.message || 'Lỗi không xác định';
             setModelMsg('Lỗi: ' + errorMsg);
             console.error('Error selecting model:', e);
-            notifyPipelineCompleted({ reason: 'model-selection', error: 'Pipeline lỗi: ' + errorMsg });
-        }
-    };
-
-    const handleFileChange = (e) => {
-        const selectedFile = e.target.files[0];
-        if (selectedFile) {
-            const ext = selectedFile.name.split('.').pop().toLowerCase();
-            if (ext !== 'xlsx' && ext !== 'xls') {
-                setMessage({ type: 'error', text: 'Chỉ chấp nhận file Excel (.xlsx, .xls)' });
-                return;
-            }
-            setFile(selectedFile);
-            setMessage({ type: '', text: '' });
-        }
-    };
-
-    const handleDownloadTemplate = () => {
-        // Template columns
-        const columns = [
-            'Maths_1_10', 'Literature_1_10', 'Physics_1_10', 'Chemistry_1_10', 'Biology_1_10', 'History_1_10', 'Geography_1_10', 'English_1_10', 'Civic Education_1_10',
-            'Maths_2_10', 'Literature_2_10', 'Physics_2_10', 'Chemistry_2_10', 'Biology_2_10', 'History_2_10', 'Geography_2_10', 'English_2_10', 'Civic Education_2_10',
-            'Maths_1_11', 'Literature_1_11', 'Physics_1_11', 'Chemistry_1_11', 'Biology_1_11', 'History_1_11', 'Geography_1_11', 'English_1_11', 'Civic Education_1_11',
-            'Maths_2_11', 'Literature_2_11', 'Physics_2_11', 'Chemistry_2_11', 'Biology_2_11', 'History_2_11', 'Geography_2_11', 'English_2_11', 'Civic Education_2_11',
-            'Maths_1_12', 'Literature_1_12', 'Physics_1_12', 'Chemistry_1_12', 'Biology_1_12', 'History_1_12', 'Geography_1_12', 'English_1_12', 'Civic Education_1_12',
-            'Maths_2_12', 'Literature_2_12', 'Physics_2_12', 'Chemistry_2_12', 'Biology_2_12', 'History_2_12', 'Geography_2_12', 'English_2_12', 'Civic Education_2_12'
-        ];
-
-        // Create Excel file using xlsx library
-        const exampleRow = columns.map(() => '8.5');
-        const ws = XLSX.utils.aoa_to_sheet([columns, exampleRow]);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, 'Scores');
-        XLSX.writeFile(wb, 'edutwin_template.xlsx');
-    };
-
-    const handleUpload = async () => {
-        if (!file) {
-            setMessage({ type: 'error', text: 'Vui lòng chọn file trước khi upload.' });
-            return;
-        }
-
-        setUploading(true);
-        setMessage({ type: '', text: '' });
-        setSummary(null);
-        notifyPipelineProcessing({ reason: 'dataset-import', message: 'Đang import dataset và cập nhật pipeline...' });
-
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-            const res = await axiosClient.post('/developer/import-excel', formData, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-                timeout: 90000
-            });
-            setSummary(res.data.summary || {});
-            setMessage({ type: 'success', text: 'Import thành công!' });
-            setFile(null);
-            notifyPipelineCompleted({ reason: 'dataset-import', stats: res.data.pipeline, message: 'Pipeline đã đồng bộ dataset mới.' });
-            emitReferenceDatasetChanged({ summary: res.data.summary || {} });
-            // Refresh dataset status after import
-            await fetchDatasetStatus();
-        } catch (e) {
-            setMessage({ type: 'error', text: 'Lỗi import: ' + (e.response?.data?.detail || e.message) });
-            notifyPipelineCompleted({ reason: 'dataset-import', error: 'Pipeline lỗi: ' + (e.response?.data?.detail || e.message) });
-        } finally {
-            setUploading(false);
         }
     };
 
     const handleEvaluateModels = async () => {
+        // Check if there's an active structure
+        if (!activeStructureId) {
+            setEvaluationMessage('Vui lòng kích hoạt một cấu trúc trước khi đánh giá mô hình');
+            return;
+        }
+
+        // Validate selection
+        if (evalInputTimepoints.length === 0) {
+            setEvaluationMessage('Vui lòng chọn ít nhất 1 mốc thời gian đầu vào');
+            return;
+        }
+        if (evalOutputTimepoints.length === 0) {
+            setEvaluationMessage('Vui lòng chọn ít nhất 1 mốc thời gian dự đoán');
+            return;
+        }
+
+        // Get active structure to convert indices to labels
+        const activeStruct = allStructures.find(s => s.id === activeStructureId);
+        if (!activeStruct) {
+            setEvaluationMessage('Không tìm thấy cấu trúc đang kích hoạt');
+            return;
+        }
+
+        // Convert indices to timepoint labels
+        const inputLabels = evalInputTimepoints.map(idx => activeStruct.time_point_labels[idx]);
+        const outputLabels = evalOutputTimepoints.map(idx => activeStruct.time_point_labels[idx]);
+
+        // Validate timepoint order
+        const maxInputIdx = Math.max(...evalInputTimepoints);
+        const minOutputIdx = Math.min(...evalOutputTimepoints);
+        if (minOutputIdx <= maxInputIdx) {
+            setEvaluationMessage('Tất cả mốc dự đoán phải sau mốc đầu vào lớn nhất');
+            return;
+        }
+
         setEvaluating(true);
-        setEvaluationMessage('');
+        setEvaluationMessage('Đang khởi tạo đánh giá...');
         setEvaluationResults(null);
 
         try {
-            const res = await axiosClient.post('/developer/evaluate-models', {}, { timeout: 120000 });
-            setEvaluationResults(res.data);
-            if (res.data.error) {
-                setEvaluationMessage('Cảnh báo: ' + res.data.error);
-            } else {
-                setEvaluationMessage('✓ Đánh giá mô hình hoàn tất!');
+            const payload = {
+                structure_id: activeStructureId,
+                input_timepoints: inputLabels,
+                output_timepoints: outputLabels
+            };
+
+            console.log('[Evaluate] Sending payload:', payload);
+
+            // Start background evaluation
+            const startRes = await axiosClient.post('/custom-model/evaluate-models', payload);
+
+            if (startRes.data.error) {
+                setEvaluationMessage('Lỗi: ' + startRes.data.error);
+                setEvaluating(false);
+                return;
             }
+
+            const evaluationId = startRes.data.evaluation_id;
+            if (!evaluationId) {
+                // Backwards compatibility: if no evaluation_id, results are immediate
+                setEvaluationResults(startRes.data);
+                setEvaluationMessage('✓ Đánh giá hoàn tất!');
+                setEvaluating(false);
+                return;
+            }
+
+            setEvaluationMessage(`Đang đánh giá ${startRes.data.reference_count} mẫu dữ liệu... (chạy nền)`);
+
+            // Poll for status every 2 seconds
+            const pollInterval = setInterval(async () => {
+                try {
+                    const statusRes = await axiosClient.get(`/custom-model/evaluate-status/${evaluationId}`);
+                    const status = statusRes.data;
+
+                    if (status.status === 'completed') {
+                        clearInterval(pollInterval);
+                        setEvaluationResults(status.results);
+                        setEvaluationMessage('✓ Đánh giá hoàn tất!');
+                        setEvaluating(false);
+                    } else if (status.status === 'failed') {
+                        clearInterval(pollInterval);
+                        setEvaluationMessage('Lỗi: ' + (status.error || 'Đánh giá thất bại'));
+                        setEvaluating(false);
+                    } else {
+                        // Still running, update message
+                        setEvaluationMessage(status.message || 'Đang xử lý...');
+                    }
+                } catch (pollError) {
+                    console.error('[Evaluate] Poll error:', pollError);
+                    // Don't stop polling on temporary errors, but log them
+                }
+            }, 2000);
+
+            // Timeout after 10 minutes
+            setTimeout(() => {
+                clearInterval(pollInterval);
+                if (evaluating) {
+                    setEvaluationMessage('Đánh giá đã timeout. Vui lòng thử lại với ít dữ liệu hơn.');
+                    setEvaluating(false);
+                }
+            }, 600000);
+
         } catch (e) {
+            console.error('[Evaluate] Error:', e);
             setEvaluationMessage('Lỗi: ' + (e.response?.data?.detail || e.message));
-        } finally {
             setEvaluating(false);
         }
     };
 
     return (
-        <div className="container" style={{ maxWidth: '1000px', paddingBottom: '3rem' }}>
-
-            {message.text && (
-                <div style={{
-                    padding: '1rem',
-                    borderRadius: 'var(--radius-md)',
-                    marginBottom: '1.5rem',
-                    background: message.type === 'error' ? '#fef2f2' : message.type === 'success' ? '#f0fdf4' : 'var(--primary-light)',
-                    color: message.type === 'error' ? 'var(--danger-color)' : message.type === 'success' ? '#166534' : 'var(--primary-color)',
-                    border: `1px solid ${message.type === 'error' ? '#fecaca' : message.type === 'success' ? '#bbf7d0' : 'var(--primary-light)'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.75rem'
-                }}>
-                    {message.type === 'error' ? <AlertCircle size={20} /> : <Zap size={20} />}
-                    {message.text}
-                </div>
-            )}
-
-            {pipelineBanner.text && (
-                <div style={{
-                    padding: '1rem',
-                    borderRadius: 'var(--radius-md)',
-                    marginBottom: '1.5rem',
-                    background: pipelineBanner.type === 'error' ? '#fef2f2' : pipelineBanner.type === 'success' ? '#f0fdf4' : '#fefce8',
-                    color: pipelineBanner.type === 'error' ? 'var(--danger-color)' : pipelineBanner.type === 'success' ? '#166534' : '#854d0e',
-                    border: `1px solid ${pipelineBanner.type === 'error' ? '#fecaca' : pipelineBanner.type === 'success' ? '#bbf7d0' : '#fef08a'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.75rem'
-                }}>
-                    <RefreshCw size={20} className={pipelineBanner.type === 'info' ? 'spin' : ''} />
-                    {pipelineBanner.text}
-                </div>
-            )}
-
-            {/* Dataset Status Section */}
-            <div className="card" style={{ marginBottom: '2rem' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
-                    <Database size={24} style={{ color: 'var(--primary-color)' }} />
-                    Trạng Thái Bộ Dữ Liệu Tham Chiếu
-                </h3>
-                {loadingDataset ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-                        <span className="spinner"></span> Đang tải...
-                    </div>
-                ) : datasetStatus ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                        <div style={{
-                            padding: '1.5rem',
-                            background: datasetStatus.has_dataset ? '#f0fdf4' : '#fff7ed',
-                            borderRadius: 'var(--radius-md)',
-                            border: `1px solid ${datasetStatus.has_dataset ? '#bbf7d0' : '#fed7aa'}`
-                        }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-                                <strong style={{ fontSize: '1.1rem', color: datasetStatus.has_dataset ? '#166534' : '#9a3412' }}>
-                                    {datasetStatus.has_dataset ? '✓ Đã có bộ dữ liệu' : '⚠ Chưa có bộ dữ liệu'}
-                                </strong>
-                            </div>
-                            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
-                                <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                                        <FileText size={16} style={{ color: 'var(--text-tertiary)' }} />
-                                        <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Số mẫu tham chiếu:</span>
-                                    </div>
-                                    <strong style={{ fontSize: '1.5rem', color: 'var(--text-primary)' }}>
-                                        {datasetStatus.sample_count.toLocaleString('vi-VN')}
-                                    </strong>
-                                </div>
-                                <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                                        <Database size={16} style={{ color: 'var(--text-tertiary)' }} />
-                                        <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Kích thước (ước tính):</span>
-                                    </div>
-                                    <strong style={{ fontSize: '1.5rem', color: 'var(--text-primary)' }}>
-                                        {datasetStatus.size_mb} MB
-                                    </strong>
-                                </div>
-                            </div>
-                        </div>
-
-                        {datasetStatus.last_import && (
-                            <div style={{
-                                padding: '1.25rem',
-                                background: 'var(--bg-body)',
-                                borderRadius: 'var(--radius-md)',
-                                border: '1px solid var(--border-color)'
-                            }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                                    <Clock size={18} style={{ color: 'var(--text-tertiary)' }} />
-                                    <strong style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>Lần import gần nhất:</strong>
-                                </div>
-                                <div style={{ fontSize: '0.95rem', color: 'var(--text-primary)', lineHeight: '1.8' }}>
-                                    <div><span style={{ color: 'var(--text-secondary)' }}>File:</span> <strong>{datasetStatus.last_import.filename}</strong></div>
-                                    <div><span style={{ color: 'var(--text-secondary)' }}>Thời gian:</span> {new Date(datasetStatus.last_import.created_at).toLocaleString('vi-VN')}</div>
-                                    <div><span style={{ color: 'var(--text-secondary)' }}>Đã import:</span> {datasetStatus.last_import.imported_rows.toLocaleString('vi-VN')} / {datasetStatus.last_import.total_rows.toLocaleString('vi-VN')} dòng</div>
-                                    {datasetStatus.last_import.skipped_rows > 0 && (
-                                        <div style={{ color: 'var(--warning-color)', marginTop: '0.5rem' }}>
-                                            <strong>⚠ Đã bỏ qua:</strong> {datasetStatus.last_import.skipped_rows.toLocaleString('vi-VN')} dòng
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-
-                        {!datasetStatus.has_dataset && (
-                            <div style={{
-                                padding: '1rem',
-                                background: '#fff7ed',
-                                borderRadius: 'var(--radius-md)',
-                                color: '#9a3412',
-                                fontSize: '0.95rem',
-                                border: '1px solid #fed7aa',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '0.5rem'
-                            }}>
-                                <AlertCircle size={18} />
-                                Chưa có bộ dữ liệu tham chiếu. Vui lòng import file Excel để sử dụng tính năng dự đoán.
-                            </div>
-                        )}
-                    </div>
-                ) : (
-                    <p style={{ color: 'var(--danger-color)' }}>Không thể tải trạng thái dataset.</p>
-                )}
-            </div>
-
-            {/* Import Excel Section */}
-            <div className="card" style={{
-                marginBottom: '2rem',
-                background: 'white',
-                border: '1px solid var(--border-color)',
-                boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
-                overflow: 'hidden',
-                padding: 0
-            }}>
-                <div style={{
-                    padding: '1.25rem 1.5rem',
-                    borderBottom: '1px solid var(--border-color)',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    background: 'var(--bg-surface)'
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <div style={{
-                            background: 'var(--primary-light)',
-                            padding: '0.5rem',
-                            borderRadius: '8px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: 'var(--primary-color)'
-                        }}>
-                            <Upload size={20} />
-                        </div>
-                        <div>
-                            <h3 style={{ fontSize: '1rem', fontWeight: '600', margin: 0, color: 'var(--text-primary)' }}>
-                                Tải Lên Tập Dữ Liệu Tham Chiếu
-                            </h3>
-                            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                                Tải lên file Excel theo định dạng mẫu được cung cấp
-                            </p>
-                        </div>
-                    </div>
-                    <button
-                        className="btn btn-ghost"
-                        onClick={handleDownloadTemplate}
-                        style={{
-                            fontSize: '0.85rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.5rem',
-                            color: 'var(--primary-color)',
-                            fontWeight: '500'
-                        }}
-                    >
-                        <Download size={16} />
-                        Tải file định dạng mẫu
-                    </button>
+        <div style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+            >
+                {/* Page Header */}
+                <div style={{ marginBottom: '2rem' }}>
+                    <h1 style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <Settings size={32} style={{ color: '#8b5cf6' }} />
+                        Quản Lý Hệ Thống (Developer/Admin)
+                    </h1>
+                    <p style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>
+                        Quản lý cấu trúc giảng dạy, tập dữ liệu, cấu hình mô hình ML và đánh giá hiệu suất
+                    </p>
                 </div>
 
-                <div style={{ padding: '2rem' }}>
-                    {!file ? (
-                        <>
-                            <input
-                                type="file"
-                                accept=".xlsx,.xls"
-                                onChange={handleFileChange}
-                                className="input-field"
-                                id="dataset-upload-input"
-                                style={{ display: 'none' }}
-                            />
-                            <label
-                                htmlFor="dataset-upload-input"
-                                style={{
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    padding: '3rem',
-                                    border: '2px dashed var(--border-color)',
-                                    borderRadius: 'var(--radius-lg)',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.2s',
-                                    background: 'var(--bg-body)',
-                                    gap: '1rem'
-                                }}
-                                onMouseOver={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--primary-color)';
-                                    e.currentTarget.style.background = 'var(--primary-light)';
-                                }}
-                                onMouseOut={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-color)';
-                                    e.currentTarget.style.background = 'var(--bg-body)';
-                                }}
-                            >
-                                <div style={{
-                                    background: 'white',
-                                    padding: '1rem',
-                                    borderRadius: '50%',
-                                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
-                                    color: 'var(--text-secondary)'
-                                }}>
-                                    <Database size={24} />
-                                </div>
-                                <div style={{ textAlign: 'center' }}>
-                                    <span style={{ display: 'block', fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
-                                        Click để tải lên tập dữ liệu
-                                    </span>
-                                    <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
-                                        Hỗ trợ .xlsx, .xls
-                                    </span>
-                                </div>
-                            </label>
-                        </>
-                    ) : (
-                        <div style={{
-                            padding: '1.5rem',
-                            border: '1px solid var(--primary-color)',
-                            borderRadius: 'var(--radius-lg)',
-                            background: 'var(--primary-light)',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            animation: 'fadeIn 0.3s ease'
-                        }}>
-                            <div style={{
-                                background: 'var(--primary-color)',
-                                color: 'white',
-                                width: '48px',
-                                height: '48px',
-                                borderRadius: '12px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                marginBottom: '1rem',
-                                boxShadow: '0 4px 6px -1px rgba(var(--primary-rgb), 0.3)'
-                            }}>
-                                <FileText size={24} />
-                            </div>
-                            <h4 style={{ margin: '0 0 0.25rem 0', color: 'var(--text-primary)', fontWeight: '600' }}>{file.name}</h4>
-                            <p style={{ margin: '0 0 1.5rem 0', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                                {(file.size / 1024).toFixed(1)} KB
-                            </p>
-                            <div style={{ display: 'flex', gap: '0.75rem' }}>
-                                <button
-                                    onClick={() => setFile(null)}
-                                    className="btn"
-                                    style={{
-                                        background: 'white',
-                                        border: '1px solid var(--border-color)',
-                                        color: 'var(--text-secondary)',
-                                        padding: '0.5rem 1rem'
-                                    }}
-                                >
-                                    Hủy bỏ
-                                </button>
-                                <button
-                                    onClick={handleUpload}
-                                    disabled={uploading}
-                                    className="btn btn-primary"
-                                    style={{ padding: '0.5rem 1.5rem' }}
-                                >
-                                    {uploading ? <RefreshCw size={18} className="spin" /> : <Upload size={18} />}
-                                    <span style={{ marginLeft: '0.5rem' }}>{uploading ? 'Đang upload...' : 'Upload Dataset'}</span>
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {summary && (
-                        <div style={{ marginTop: '1.5rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                            <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>📊 Kết quả Import:</h4>
-                            <ul style={{ margin: 0, paddingLeft: '1.5rem', fontSize: '0.95rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                                <li>Tổng số dòng hợp lệ: <strong>{summary.total_rows || 0}</strong></li>
-                                <li>Số mẫu tham chiếu: <strong>{summary.reference_samples || 0}</strong></li>
-                                {summary.cleared_existing && <li style={{ color: 'var(--warning-color)' }}>⚠ Đã thay thế dữ liệu cũ</li>}
-                            </ul>
-                            {summary.warnings && summary.warnings.length > 0 && (
-                                <details style={{ marginTop: '1rem' }}>
-                                    <summary style={{ cursor: 'pointer', color: 'var(--warning-color)', fontWeight: '600' }}>
-                                        ⚠️ Cảnh báo ({summary.warnings.length})
-                                    </summary>
-                                    <ul style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--text-secondary)', paddingLeft: '1.5rem' }}>
-                                        {summary.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                                    </ul>
-                                </details>
-                            )}
-                            {summary.errors && summary.errors.length > 0 && (
-                                <details style={{ marginTop: '1rem' }}>
-                                    <summary style={{ cursor: 'pointer', color: 'var(--danger-color)', fontWeight: '600' }}>
-                                        ❗ Lỗi ({summary.errors.length})
-                                    </summary>
-                                    <ul style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--danger-color)', paddingLeft: '1.5rem' }}>
-                                        {summary.errors.map((e, i) => <li key={i}>{e}</li>)}
-                                    </ul>
-                                </details>
-                            )}
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Model Parameters Section */}
-            <div className="card" style={{ marginBottom: '2rem', borderLeft: '4px solid var(--warning-color)' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
-                    <Settings size={24} style={{ color: 'var(--warning-color)' }} />
-                    Cấu Hình Thông Số Mô Hình ML
-                </h3>
-                <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Tùy chỉnh các thông số cho các mô hình KNN, Kernel Regression, và LWLR. Những thay đổi sẽ được áp dụng cho cả tính năng đánh giá và dự đoán.
-                </p>
-
-                {paramMessage && (
+                {/* Message Display */}
+                {structureMessage && (
                     <div style={{
                         padding: '1rem',
-                        borderRadius: 'var(--radius-md)',
                         marginBottom: '1.5rem',
-                        background: paramMessage.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
-                        color: paramMessage.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
-                        border: `1px solid ${paramMessage.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
+                        borderRadius: 'var(--radius-md)',
+                        background: structureMessage.startsWith('✓') ? '#d1fae5' : '#fee2e2',
+                        color: structureMessage.startsWith('✓') ? '#065f46' : '#991b1b',
+                        fontWeight: '500'
                     }}>
-                        {paramMessage}
+                        {structureMessage}
                     </div>
                 )}
 
-                {loadingParams ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-                        <span className="spinner"></span> Đang tải thông số...
-                    </div>
-                ) : (
-                    <div>
-                        {/* KNN Parameter */}
+                {/* Create New Structure Section */}
+                <div style={{ background: 'var(--bg-surface)', padding: '2rem', borderRadius: 'var(--radius-lg)', marginBottom: '2rem', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1.5rem', color: 'var(--text-primary)' }}>
+                        Thiết lập cấu trúc giảng dạy mới
+                    </h3>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', marginBottom: '2rem' }}>
+                        {/* Left Column - Form Inputs */}
+                        <div>
+                            <div style={{ marginBottom: '1.5rem' }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                                    Tên cấu trúc:
+                                </label>
+                                <input
+                                    type="text"
+                                    value={structureName}
+                                    onChange={(e) => setStructureName(e.target.value)}
+                                    placeholder="VD: THPT 3 năm, TOEIC 4 khóa..."
+                                    className="input-field"
+                                    style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                />
+                            </div>
+
+                            <div style={{ marginBottom: '1.5rem' }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                                    Số lượng mốc thời gian:
+                                </label>
+                                <input
+                                    type="number"
+                                    min="2"
+                                    value={numTimePoints}
+                                    onChange={(e) => setNumTimePoints(e.target.value)}
+                                    placeholder="VD: 3 (Lớp 10, 11, 12)"
+                                    className="input-field"
+                                    style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                />
+                            </div>
+
+                            <div style={{ marginBottom: '1.5rem' }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                                    Số lượng môn học:
+                                </label>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    value={numSubjects}
+                                    onChange={(e) => setNumSubjects(e.target.value)}
+                                    placeholder="VD: 9 (Toán, Lý, Hóa...)"
+                                    className="input-field"
+                                    style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                />
+                            </div>
+
+                            <div style={{ marginBottom: '1.5rem' }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: 'var(--text-primary)' }}>
+                                    Thang điểm:
+                                </label>
+                                <select
+                                    value={scaleType}
+                                    onChange={(e) => setScaleType(e.target.value)}
+                                    className="input-field"
+                                    style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                >
+                                    <option value="0-10">Thang 0.0 - 10.0</option>
+                                    <option value="0-100">Thang 0.0 - 100.0</option>
+                                    <option value="0-10000">Thang 0 - 10000</option>
+                                    <option value="A-F">Thang A - F</option>
+                                    <option value="GPA">Thang GPA 0.0 - 4.0</option>
+                                </select>
+                            </div>
+
+                            <button
+                                onClick={handleConfirmStructure}
+                                disabled={!numTimePoints || !numSubjects}
+                                className="button-secondary"
+                                style={{
+                                    width: '100%',
+                                    padding: '0.75rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    background: (!numTimePoints || !numSubjects) ? '#9ca3af' : '#8b5cf6',
+                                    color: 'white',
+                                    border: 'none',
+                                    cursor: (!numTimePoints || !numSubjects) ? 'not-allowed' : 'pointer',
+                                    fontWeight: '600'
+                                }}
+                            >
+                                Xác nhận và nhập chi tiết
+                            </button>
+                        </div>
+
+                        {/* Right Column - Instructions */}
                         <div style={{
-                            marginBottom: '1.25rem',
-                            padding: '1.25rem',
+                            background: '#dbeafe',
+                            padding: '1.5rem',
+                            borderRadius: 'var(--radius-md)'
+                        }}>
+                            <p style={{ fontWeight: '600', color: '#1e40af', marginBottom: '0.75rem' }}>
+                                💡 Hướng dẫn:
+                            </p>
+                            <ul style={{ fontSize: '0.9rem', color: '#1e40af', lineHeight: '1.8', paddingLeft: '1.5rem' }}>
+                                <li>Ví dụ 1: Giám sát điểm số học sinh THPT với 3 năm học, 9 môn: Số lượng mốc thời gian là 3 (Lớp 10, Lớp 11, Lớp 12). Số lượng môn học: 9.</li>
+                                <li>Ví dụ 2: Giám sát điểm học viên luyện thi TOEIC với 4 khóa học, 4 kỹ năng: Số lượng mốc thời gian là 4 (Khóa 1, Khóa 2, Khóa 3, Khóa 4). Số lượng môn học: 4 (Reading, Listening, Speaking, Writing).</li>
+                                <li>Tên các môn học và mốc thời gian nhập thủ công. Nhập mốc thời gian tăng dần từ trái sang phải.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    {/* Label Inputs (shown after confirm) */}
+                    {structureConfirmed && (
+                        <>
+                            <div style={{ marginBottom: '2rem' }}>
+                                <h4 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                                    Nhập tên các mốc thời gian:
+                                </h4>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+                                    {timePointLabels.map((label, idx) => (
+                                        <input
+                                            key={idx}
+                                            type="text"
+                                            value={label}
+                                            onChange={(e) => {
+                                                const newLabels = [...timePointLabels];
+                                                newLabels[idx] = e.target.value;
+                                                setTimePointLabels(newLabels);
+                                            }}
+                                            placeholder={`Mốc ${idx + 1}`}
+                                            className="input-field"
+                                            style={{ padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div style={{ marginBottom: '2rem' }}>
+                                <h4 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                                    Nhập tên các môn học:
+                                </h4>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+                                    {subjectLabels.map((label, idx) => (
+                                        <input
+                                            key={idx}
+                                            type="text"
+                                            value={label}
+                                            onChange={(e) => {
+                                                const newLabels = [...subjectLabels];
+                                                newLabels[idx] = e.target.value;
+                                                setSubjectLabels(newLabels);
+                                            }}
+                                            placeholder={`Môn ${idx + 1}`}
+                                            className="input-field"
+                                            style={{ padding: '0.75rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
+                                <button
+                                    onClick={handleSaveStructure}
+                                    disabled={!structureName.trim() || timePointLabels.some(l => !l.trim()) || subjectLabels.some(l => !l.trim()) || savingStructure}
+                                    className="button-primary"
+                                    style={{
+                                        padding: '1rem 2rem',
+                                        borderRadius: 'var(--radius-md)',
+                                        background: (!structureName.trim() || timePointLabels.some(l => !l.trim()) || subjectLabels.some(l => !l.trim()) || savingStructure) ? '#9ca3af' : '#3b82f6',
+                                        color: 'white',
+                                        border: 'none',
+                                        cursor: (!structureName.trim() || timePointLabels.some(l => !l.trim()) || subjectLabels.some(l => !l.trim()) || savingStructure) ? 'not-allowed' : 'pointer',
+                                        fontWeight: '600',
+                                        fontSize: '1rem',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem'
+                                    }}
+                                >
+                                    <Save size={18} />
+                                    {savingStructure ? 'Đang lưu...' : 'Lưu cấu trúc'}
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+
+                {/* Structures List */}
+                <div style={{ background: 'var(--bg-surface)', padding: '2rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
+                        <Database size={24} style={{ color: '#8b5cf6' }} />
+                        Các cấu trúc đã tạo ({allStructures.length}/5)
+                    </h3>
+
+                    {allStructures.length > 0 ? (
+                        <div style={{ display: 'grid', gap: '1rem' }}>
+                            {allStructures.map((struct) => {
+                                const isExpanded = expandedStructureId === struct.id;
+                                return (
+                                    <div
+                                        key={struct.id}
+                                        style={{
+                                            border: '2px solid var(--border-color)',
+                                            borderRadius: 'var(--radius-md)',
+                                            background: 'var(--bg-body)',
+                                            overflow: 'hidden',
+                                            transition: 'all 0.2s'
+                                        }}
+                                    >
+                                        {/* Structure Header (Always visible) */}
+                                        <div
+                                            style={{
+                                                padding: '1.5rem',
+                                                cursor: 'pointer',
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center'
+                                            }}
+                                            onClick={() => toggleExpand(struct.id)}
+                                        >
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                                                    <h4 style={{ fontSize: '1.1rem', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>
+                                                        {struct.structure_name}
+                                                    </h4>
+                                                </div>
+                                                <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                                                    <span>📊 {struct.num_time_points} mốc thời gian</span>
+                                                    <span>📚 {struct.num_subjects} môn học</span>
+                                                </div>
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleDeleteStructure(struct.id, struct.structure_name);
+                                                    }}
+                                                    style={{
+                                                        padding: '0.5rem',
+                                                        background: '#fee2e2',
+                                                        color: '#dc2626',
+                                                        border: 'none',
+                                                        borderRadius: 'var(--radius-md)',
+                                                        cursor: 'pointer',
+                                                        display: 'flex',
+                                                        alignItems: 'center'
+                                                    }}
+                                                    title="Xóa cấu trúc"
+                                                >
+                                                    <Trash2 size={18} />
+                                                </button>
+                                                {isExpanded ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+                                            </div>
+                                        </div>
+
+                                        {/* Expanded Content */}
+                                        <AnimatePresence>
+                                            {isExpanded && (
+                                                <motion.div
+                                                    initial={{ height: 0, opacity: 0 }}
+                                                    animate={{ height: 'auto', opacity: 1 }}
+                                                    exit={{ height: 0, opacity: 0 }}
+                                                    transition={{ duration: 0.3 }}
+                                                    style={{ borderTop: '1px solid var(--border-color)' }}
+                                                >
+                                                    <div style={{ padding: '1.5rem', background: 'white' }}>
+                                                        {/* Structure Details */}
+                                                        <div style={{ marginBottom: '2rem' }}>
+                                                            <h5 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                                                                Chi tiết cấu trúc:
+                                                            </h5>
+                                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                                                <div>
+                                                                    <p style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                                                                        Mốc thời gian:
+                                                                    </p>
+                                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                                        {struct.time_point_labels.map((label, idx) => (
+                                                                            <span key={idx} style={{
+                                                                                padding: '0.25rem 0.75rem',
+                                                                                background: '#dbeafe',
+                                                                                color: '#1e40af',
+                                                                                borderRadius: 'var(--radius-sm)',
+                                                                                fontSize: '0.85rem'
+                                                                            }}>
+                                                                                {label}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <p style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                                                                        Môn học:
+                                                                    </p>
+                                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                                                        {struct.subject_labels.map((label, idx) => (
+                                                                            <span key={idx} style={{
+                                                                                padding: '0.25rem 0.75rem',
+                                                                                background: '#fef3c7',
+                                                                                color: '#92400e',
+                                                                                borderRadius: 'var(--radius-sm)',
+                                                                                fontSize: '0.85rem'
+                                                                            }}>
+                                                                                {label}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Scale Type Section - Read Only */}
+                                                            <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e5e7eb' }}>
+                                                                <p style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                                                                    Thang điểm:
+                                                                </p>
+                                                                <span style={{
+                                                                    padding: '0.25rem 0.75rem',
+                                                                    background: '#f0fdf4',
+                                                                    color: '#166534',
+                                                                    borderRadius: 'var(--radius-sm)',
+                                                                    fontSize: '0.85rem',
+                                                                    fontWeight: '600'
+                                                                }}>
+                                                                    {(() => {
+                                                                        const scaleMap = {
+                                                                            '0-10': 'Thang 0.0 - 10.0',
+                                                                            '0-100': 'Thang 0.0 - 100.0',
+                                                                            '0-10000': 'Thang 0 - 10000',
+                                                                            'A-F': 'Thang A - F',
+                                                                            'GPA': 'Thang GPA 0.0 - 4.0'
+                                                                        };
+                                                                        return scaleMap[struct.scale_type] || 'Thang 0.0 - 10.0';
+                                                                    })()}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Actions Grid */}
+                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', marginBottom: '2rem' }}>
+                                                            {/* Download Template */}
+                                                            <div style={{
+                                                                padding: '1.5rem',
+                                                                background: '#f0fdf4',
+                                                                borderRadius: 'var(--radius-md)',
+                                                                border: '1px solid #86efac'
+                                                            }}>
+                                                                <FileText size={24} style={{ color: '#16a34a', marginBottom: '0.75rem' }} />
+                                                                <h6 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                                                                    File định dạng mẫu
+                                                                </h6>
+                                                                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                                                                    Tải xuống file định dạng mẫu
+                                                                </p>
+                                                                <button
+                                                                    onClick={() => handleDownloadTemplate(struct)}
+                                                                    style={{
+                                                                        width: '100%',
+                                                                        padding: '0.5rem',
+                                                                        background: '#16a34a',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: 'var(--radius-md)',
+                                                                        cursor: 'pointer',
+                                                                        fontWeight: '600',
+                                                                        fontSize: '0.85rem'
+                                                                    }}
+                                                                >
+                                                                    Tải xuống
+                                                                </button>
+                                                            </div>
+
+                                                            {/* Upload Dataset */}
+                                                            <div style={{
+                                                                padding: '1.5rem',
+                                                                background: '#fef3c7',
+                                                                borderRadius: 'var(--radius-md)',
+                                                                border: '1px solid #fde047'
+                                                            }}>
+                                                                <Upload size={24} style={{ color: '#ca8a04', marginBottom: '0.75rem' }} />
+                                                                <h6 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                                                                    Tập dữ liệu tham chiếu
+                                                                </h6>
+                                                                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                                                                    Upload file Excel (.xlsx)
+                                                                </p>
+                                                                <input
+                                                                    type="file"
+                                                                    accept=".csv,.xlsx,.xls"
+                                                                    onChange={(e) => handleFileUpload(e, struct.id)}
+                                                                    disabled={uploadingFiles[struct.id]}
+                                                                    style={{ display: 'none' }}
+                                                                    id={`file-upload-${struct.id}`}
+                                                                />
+                                                                <label
+                                                                    htmlFor={`file-upload-${struct.id}`}
+                                                                    style={{
+                                                                        display: 'block',
+                                                                        width: '100%',
+                                                                        padding: '0.5rem',
+                                                                        background: uploadingFiles[struct.id] ? '#9ca3af' : '#ca8a04',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: 'var(--radius-md)',
+                                                                        cursor: uploadingFiles[struct.id] ? 'not-allowed' : 'pointer',
+                                                                        fontWeight: '600',
+                                                                        fontSize: '0.85rem',
+                                                                        textAlign: 'center'
+                                                                    }}
+                                                                >
+                                                                    {uploadingFiles[struct.id] ? 'Đang tải...' : 'Chọn file'}
+                                                                </label>
+                                                            </div>
+
+                                                            {/* Set Active Structure */}
+                                                            <div style={{
+                                                                padding: '1.5rem',
+                                                                background: activeStructureId === struct.id ? '#dbeafe' : '#f3f4f6',
+                                                                borderRadius: 'var(--radius-md)',
+                                                                border: `2px solid ${activeStructureId === struct.id ? '#3b82f6' : '#d1d5db'}`
+                                                            }}>
+                                                                <CheckCircle size={24} style={{ color: activeStructureId === struct.id ? '#3b82f6' : '#6b7280', marginBottom: '0.75rem' }} />
+                                                                <h6 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                                                                    {activeStructureId === struct.id ? 'Đang kích hoạt' : 'Kích hoạt cấu trúc'}
+                                                                </h6>
+                                                                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                                                                    {activeStructureId === struct.id ? 'Áp dụng cho toàn bộ user' : 'Áp dụng cho toàn hệ thống'}
+                                                                </p>
+                                                                <button
+                                                                    onClick={() => handleSetActiveStructure(struct.id)}
+                                                                    disabled={activeStructureId === struct.id}
+                                                                    style={{
+                                                                        width: '100%',
+                                                                        padding: '0.5rem',
+                                                                        background: activeStructureId === struct.id ? '#9ca3af' : '#3b82f6',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: 'var(--radius-md)',
+                                                                        cursor: activeStructureId === struct.id ? 'not-allowed' : 'pointer',
+                                                                        fontWeight: '600',
+                                                                        fontSize: '0.85rem'
+                                                                    }}
+                                                                >
+                                                                    {activeStructureId === struct.id ? '✓ Đã kích hoạt' : 'Kích hoạt'}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Dataset Status - Simplified */}
+                                                        <div style={{ marginBottom: '2rem' }}>
+                                                            <h5 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                                                                Trạng thái tập dữ liệu:
+                                                            </h5>
+                                                            {(() => {
+                                                                const structId = struct.id;
+                                                                const stats = structureDatasets[structId];
+                                                                const hasData = stats && stats.reference_count > 0;
+
+                                                                return (
+                                                                    <div style={{
+                                                                        padding: '1.25rem',
+                                                                        background: hasData ? '#ecfdf5' : '#fef3c7',
+                                                                        borderRadius: 'var(--radius-md)',
+                                                                        border: `2px solid ${hasData ? '#10b981' : '#f59e0b'}`
+                                                                    }}>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                                                                            <Database size={20} style={{ color: hasData ? '#10b981' : '#f59e0b' }} />
+                                                                            <h6 style={{ fontSize: '0.95rem', fontWeight: '600', margin: 0, color: 'var(--text-primary)' }}>
+                                                                                Tập dữ liệu tham chiếu
+                                                                            </h6>
+                                                                        </div>
+                                                                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+                                                                            {hasData
+                                                                                ? `✓ Đã tải ${stats.reference_count} mẫu dữ liệu`
+                                                                                : '⚠ Chưa có dữ liệu tham chiếu'}
+                                                                        </p>
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+
+                                                        {/* Reference Documents Section */}
+                                                        <div style={{ marginBottom: '2rem' }}>
+                                                            <h5 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                                                                Tài liệu tham khảo:
+                                                            </h5>
+
+                                                            {/* Upload Document */}
+                                                            <div style={{
+                                                                padding: '1.5rem',
+                                                                background: '#eff6ff',
+                                                                borderRadius: 'var(--radius-md)',
+                                                                border: '1px solid #3b82f6',
+                                                                marginBottom: '1rem'
+                                                            }}>
+                                                                <FileUp size={24} style={{ color: '#3b82f6', marginBottom: '0.75rem' }} />
+                                                                <h6 style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                                                                    Upload tài liệu (.pdf, .docx, .txt)
+                                                                </h6>
+                                                                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                                                                    AI sẽ trích xuất kiến thức quan trọng
+                                                                </p>
+                                                                <input
+                                                                    type="file"
+                                                                    accept=".pdf,.docx,.doc,.txt"
+                                                                    onChange={(e) => {
+                                                                        if (e.target.files && e.target.files[0]) {
+                                                                            handleDocumentUpload(struct.id, e.target.files[0]);
+                                                                            e.target.value = '';
+                                                                        }
+                                                                    }}
+                                                                    disabled={uploadingDocuments[struct.id]}
+                                                                    style={{ display: 'none' }}
+                                                                    id={`doc-upload-${struct.id}`}
+                                                                />
+                                                                <label
+                                                                    htmlFor={`doc-upload-${struct.id}`}
+                                                                    style={{
+                                                                        display: 'block',
+                                                                        width: '100%',
+                                                                        padding: '0.5rem',
+                                                                        background: uploadingDocuments[struct.id] ? '#9ca3af' : '#3b82f6',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: 'var(--radius-md)',
+                                                                        cursor: uploadingDocuments[struct.id] ? 'not-allowed' : 'pointer',
+                                                                        fontWeight: '600',
+                                                                        fontSize: '0.85rem',
+                                                                        textAlign: 'center'
+                                                                    }}
+                                                                >
+                                                                    {uploadingDocuments[struct.id] ? 'Đang xử lý...' : 'Chọn file (tối đa 10MB)'}
+                                                                </label>
+                                                                {documentMessages[struct.id] && (
+                                                                    <p style={{
+                                                                        fontSize: '0.8rem',
+                                                                        color: documentMessages[struct.id].startsWith('✓') ? '#10b981' : '#dc2626',
+                                                                        marginTop: '0.5rem',
+                                                                        marginBottom: 0
+                                                                    }}>
+                                                                        {documentMessages[struct.id]}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+
+                                                            {/* Document List */}
+                                                            {structureDocuments[struct.id] && structureDocuments[struct.id].length > 0 ? (
+                                                                <div style={{
+                                                                    background: 'var(--bg-surface)',
+                                                                    borderRadius: 'var(--radius-md)',
+                                                                    border: '1px solid var(--border-color)',
+                                                                    overflow: 'hidden'
+                                                                }}>
+                                                                    {structureDocuments[struct.id].map((doc, idx) => (
+                                                                        <div
+                                                                            key={doc.id}
+                                                                            style={{
+                                                                                padding: '1rem',
+                                                                                borderBottom: idx < structureDocuments[struct.id].length - 1 ? '1px solid var(--border-color)' : 'none',
+                                                                                display: 'flex',
+                                                                                alignItems: 'flex-start',
+                                                                                gap: '1rem'
+                                                                            }}
+                                                                        >
+                                                                            <File size={20} style={{ color: '#3b82f6', flexShrink: 0, marginTop: '0.25rem' }} />
+                                                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                                                <h6 style={{
+                                                                                    fontSize: '0.85rem',
+                                                                                    fontWeight: '600',
+                                                                                    marginBottom: '0.25rem',
+                                                                                    color: 'var(--text-primary)',
+                                                                                    overflow: 'hidden',
+                                                                                    textOverflow: 'ellipsis',
+                                                                                    whiteSpace: 'nowrap'
+                                                                                }}>
+                                                                                    {doc.file_name}
+                                                                                </h6>
+                                                                                <p style={{
+                                                                                    fontSize: '0.75rem',
+                                                                                    color: 'var(--text-secondary)',
+                                                                                    marginBottom: '0.5rem'
+                                                                                }}>
+                                                                                    {(doc.file_size / 1024).toFixed(1)} KB •
+                                                                                    Nén: {doc.compression_ratio}x •
+                                                                                    {doc.summary_length} chars
+                                                                                </p>
+                                                                                {doc.summary_preview && (
+                                                                                    <p style={{
+                                                                                        fontSize: '0.75rem',
+                                                                                        color: 'var(--text-tertiary)',
+                                                                                        marginTop: '0.5rem',
+                                                                                        fontStyle: 'italic',
+                                                                                        overflow: 'hidden',
+                                                                                        textOverflow: 'ellipsis',
+                                                                                        display: '-webkit-box',
+                                                                                        WebkitLineClamp: 2,
+                                                                                        WebkitBoxOrient: 'vertical'
+                                                                                    }}>
+                                                                                        {doc.summary_preview}
+                                                                                    </p>
+                                                                                )}
+                                                                            </div>
+                                                                            <button
+                                                                                onClick={() => handleDeleteDocument(struct.id, doc.id, doc.file_name)}
+                                                                                style={{
+                                                                                    padding: '0.5rem',
+                                                                                    background: '#fee2e2',
+                                                                                    color: '#dc2626',
+                                                                                    border: 'none',
+                                                                                    borderRadius: 'var(--radius-md)',
+                                                                                    cursor: 'pointer',
+                                                                                    flexShrink: 0
+                                                                                }}
+                                                                                title="Xóa tài liệu"
+                                                                            >
+                                                                                <Trash2 size={16} />
+                                                                            </button>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <div style={{
+                                                                    padding: '2rem',
+                                                                    textAlign: 'center',
+                                                                    background: 'var(--bg-body)',
+                                                                    borderRadius: 'var(--radius-md)',
+                                                                    border: '2px dashed var(--border-color)'
+                                                                }}>
+                                                                    <FileText size={32} style={{ color: 'var(--text-secondary)', opacity: 0.5, marginBottom: '0.5rem' }} />
+                                                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
+                                                                        Chưa có tài liệu nào
+                                                                    </p>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div style={{
+                            padding: '3rem 2rem',
+                            textAlign: 'center',
                             background: 'var(--bg-body)',
                             borderRadius: 'var(--radius-md)',
-                            border: '1px solid var(--border-color)'
+                            border: '2px dashed var(--border-color)'
                         }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                                <div>
-                                    <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>KNN - Số lân cận (n)</strong>
-                                    <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0 }}>Số mẫu tham chiếu gần nhất được sử dụng. Phạm vi: 1-100</p>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <Database size={48} style={{ color: 'var(--text-secondary)', opacity: 0.5, marginBottom: '1rem' }} />
+                            <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', margin: 0 }}>
+                                Chưa có cấu trúc nào. Bạn có thể tạo tối đa 5 cấu trúc khác nhau.
+                            </p>
+                        </div>
+                    )}
+                </div>
+
+                {/* ML Model Parameters Section */}
+                <div style={{ background: 'var(--bg-surface)', padding: '2rem', borderRadius: 'var(--radius-lg)', marginBottom: '2rem', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <Settings size={24} style={{ color: '#8b5cf6' }} />
+                        Thông Số Mô Hình ML
+                    </h3>
+
+                    {paramMessage && (
+                        <div style={{
+                            padding: '1rem',
+                            borderRadius: 'var(--radius-md)',
+                            marginBottom: '1.5rem',
+                            background: paramMessage.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
+                            color: paramMessage.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
+                            border: `1px solid ${paramMessage.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
+                        }}>
+                            {paramMessage}
+                        </div>
+                    )}
+
+                    {loadingParams ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
+                            <span className="spinner"></span> Đang tải...
+                        </div>
+                    ) : (
+                        <div>
+                            <div style={{ marginBottom: '1.25rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                                    <div>
+                                        <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>KNN - K Neighbors</strong>
+                                        <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0 }}>Số lượng hàng xóm gần nhất. Phạm vi: 1-50</p>
+                                    </div>
                                     <input
                                         type="number"
                                         min="1"
-                                        max="100"
+                                        max="50"
                                         value={parameters.knn_n}
                                         onChange={(e) => setParameters({ ...parameters, knn_n: parseInt(e.target.value) || 15 })}
-                                        className="input-field"
                                         style={{
                                             width: '100px',
+                                            padding: '0.5rem',
                                             textAlign: 'center',
-                                            borderColor: parameters.knn_n !== originalParameters.knn_n ? '#dc2626' : 'var(--border-color)',
-                                            borderWidth: parameters.knn_n !== originalParameters.knn_n ? '2px' : '1px',
-                                            backgroundColor: parameters.knn_n !== originalParameters.knn_n ? '#fef2f2' : 'transparent',
-                                            boxShadow: parameters.knn_n !== originalParameters.knn_n ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                            borderRadius: 'var(--radius-md)',
+                                            border: parameters.knn_n !== originalParameters.knn_n ? '2px solid #dc2626' : '1px solid var(--border-color)',
+                                            background: parameters.knn_n !== originalParameters.knn_n ? '#fef2f2' : 'white'
                                         }}
                                     />
                                 </div>
-                            </div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--warning-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <Lightbulb size={14} /> Giá trị mặc định: 15. Giá trị cao hơn = xem xét nhiều lân cận hơn.
-                            </div>
-                        </div>
-
-                        {/* Kernel Regression Parameter */}
-                        <div style={{
-                            marginBottom: '1.25rem',
-                            padding: '1.25rem',
-                            background: 'var(--bg-body)',
-                            borderRadius: 'var(--radius-md)',
-                            border: '1px solid var(--border-color)'
-                        }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                                <div>
-                                    <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>Kernel Regression - Bandwidth (σ)</strong>
-                                    <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0 }}>Bề rộng hạt nhân Gaussian. Phạm vi: 0.1-10.0</p>
+                                <div style={{ fontSize: '0.85rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <Lightbulb size={14} /> Giá trị mặc định: 15
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            </div>
+
+                            <div style={{ marginBottom: '1.25rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                                    <div>
+                                        <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>Kernel Regression - Bandwidth</strong>
+                                        <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0 }}>Bề rộng hạt nhân. Phạm vi: 0.1-10.0</p>
+                                    </div>
                                     <input
                                         type="number"
                                         min="0.1"
@@ -708,37 +1278,27 @@ const Developer = () => {
                                         step="0.05"
                                         value={parameters.kr_bandwidth}
                                         onChange={(e) => setParameters({ ...parameters, kr_bandwidth: parseFloat(e.target.value) || 1.25 })}
-                                        className="input-field"
                                         style={{
                                             width: '100px',
+                                            padding: '0.5rem',
                                             textAlign: 'center',
-                                            borderColor: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '#dc2626' : 'var(--border-color)',
-                                            borderWidth: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '2px' : '1px',
-                                            backgroundColor: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '#fef2f2' : 'transparent',
-                                            boxShadow: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                            borderRadius: 'var(--radius-md)',
+                                            border: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '2px solid #dc2626' : '1px solid var(--border-color)',
+                                            background: parameters.kr_bandwidth !== originalParameters.kr_bandwidth ? '#fef2f2' : 'white'
                                         }}
                                     />
                                 </div>
-                            </div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--warning-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <Lightbulb size={14} /> Giá trị mặc định: 1.25. Giá trị cao hơn = nhân cục gần nhất được tính nhiều hơn.
-                            </div>
-                        </div>
-
-                        {/* LWLR Parameter */}
-                        <div style={{
-                            marginBottom: '1.5rem',
-                            padding: '1.25rem',
-                            background: 'var(--bg-body)',
-                            borderRadius: 'var(--radius-md)',
-                            border: '1px solid var(--border-color)'
-                        }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                                <div>
-                                    <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>LWLR - Tham số cửa sổ (τ)</strong>
-                                    <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0 }}>Điều khiển kích thước cửa sổ bộ lọc. Phạm vi: 0.5-10.0</p>
+                                <div style={{ fontSize: '0.85rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <Lightbulb size={14} /> Giá trị mặc định: 1.25
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            </div>
+
+                            <div style={{ marginBottom: '1.5rem', padding: '1.25rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                                    <div>
+                                        <strong style={{ display: 'block', fontSize: '1rem', marginBottom: '0.25rem', color: 'var(--text-primary)' }}>LWLR - Tau</strong>
+                                        <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0 }}>Tham số cửa sổ. Phạm vi: 0.5-10.0</p>
+                                    </div>
                                     <input
                                         type="number"
                                         min="0.5"
@@ -746,143 +1306,436 @@ const Developer = () => {
                                         step="0.1"
                                         value={parameters.lwlr_tau}
                                         onChange={(e) => setParameters({ ...parameters, lwlr_tau: parseFloat(e.target.value) || 3.0 })}
-                                        className="input-field"
                                         style={{
                                             width: '100px',
+                                            padding: '0.5rem',
                                             textAlign: 'center',
-                                            borderColor: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '#dc2626' : 'var(--border-color)',
-                                            borderWidth: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '2px' : '1px',
-                                            backgroundColor: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '#fef2f2' : 'transparent',
-                                            boxShadow: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '0 0 0 3px rgba(220, 38, 38, 0.1)' : 'none'
+                                            borderRadius: 'var(--radius-md)',
+                                            border: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '2px solid #dc2626' : '1px solid var(--border-color)',
+                                            background: parameters.lwlr_tau !== originalParameters.lwlr_tau ? '#fef2f2' : 'white'
                                         }}
                                     />
                                 </div>
+                                <div style={{ fontSize: '0.85rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <Lightbulb size={14} /> Giá trị mặc định: 3.0
+                                </div>
                             </div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--warning-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <Lightbulb size={14} /> Giá trị mặc định: 3.0. Giá trị cao hơn = cửa sổ rộng hơn, mịn hơn.
-                            </div>
+
+                            <button
+                                onClick={handleSaveParameters}
+                                disabled={savingParams}
+                                style={{
+                                    padding: '0.75rem 1.5rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    background: savingParams ? '#9ca3af' : '#3b82f6',
+                                    color: 'white',
+                                    border: 'none',
+                                    cursor: savingParams ? 'not-allowed' : 'pointer',
+                                    fontWeight: '600',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem'
+                                }}
+                            >
+                                <Save size={18} />
+                                {savingParams ? 'Đang lưu...' : 'Lưu Thông Số'}
+                            </button>
                         </div>
+                    )}
+                </div>
 
-                        <button
-                            className="btn btn-primary"
-                            onClick={handleSaveParameters}
-                            disabled={savingParams}
-                        >
-                            <Save size={18} />
-                            {savingParams ? 'Đang lưu...' : 'Lưu Thông Số'}
-                        </button>
-                    </div>
-                )}
-            </div>
+                {/* ML Model Selection Section */}
+                <div style={{ background: 'var(--bg-surface)', padding: '2rem', borderRadius: 'var(--radius-lg)', marginBottom: '2rem', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
+                        <Brain size={24} style={{ color: '#8b5cf6' }} />
+                        Lựa Chọn Mô Hình ML
+                    </h3>
 
-            {/* Model Evaluation Section */}
-            <div className="card" style={{ marginBottom: '2rem', borderLeft: '4px solid var(--accent-color)' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
-                    <Zap size={24} style={{ color: 'var(--accent-color)' }} />
-                    Đánh Giá Mô Hình ML
-                </h3>
-                <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Đánh giá và so sánh 3 mô hình (KNN, Kernel Regression, LWLR) trên 2 nhiệm vụ dự đoán:
-                </p>
-                <ul style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
-                    <li>Dữ liệu lớp 10+11 - dự đoán lớp 12</li>
-                    <li>Dữ liệu lớp 10 - dự đoán lớp 11</li>
-                </ul>
+                    {modelMsg && (
+                        <div style={{
+                            padding: '1rem',
+                            borderRadius: 'var(--radius-md)',
+                            marginBottom: '1.5rem',
+                            background: modelMsg.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
+                            color: modelMsg.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
+                            border: `1px solid ${modelMsg.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
+                        }}>
+                            {modelMsg}
+                        </div>
+                    )}
 
-                <button
-                    className="btn btn-primary"
-                    onClick={handleEvaluateModels}
-                    disabled={evaluating || !datasetStatus?.has_dataset}
-                >
-                    <Zap size={18} className={evaluating ? 'spin' : ''} />
-                    {evaluating ? 'Đang đánh giá...' : 'Đánh Giá Mô Hình'}
-                </button>
+                    {loadingModels ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
+                            <span className="spinner"></span> Đang tải...
+                        </div>
+                    ) : modelStatus ? (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem' }}>
+                            {modelStatus.available_models.map((model) => (
+                                <div
+                                    key={model}
+                                    style={{
+                                        padding: '1.25rem',
+                                        background: selectedModel === model ? '#dbeafe' : 'white',
+                                        borderRadius: 'var(--radius-md)',
+                                        border: '2px solid ' + (selectedModel === model ? '#3b82f6' : 'var(--border-color)'),
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s',
+                                        position: 'relative'
+                                    }}
+                                    onClick={() => handleSelectModel(model)}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                                        <input
+                                            type="radio"
+                                            checked={selectedModel === model}
+                                            onChange={() => { }}
+                                            style={{ cursor: 'pointer' }}
+                                        />
+                                        <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>
+                                            {model === 'knn' ? 'KNN' : model === 'kernel_regression' ? 'Kernel Regression' : 'LWLR'}
+                                        </strong>
+                                    </div>
+                                    {modelStatus.descriptions && modelStatus.descriptions[model] && (
+                                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.5', paddingLeft: '2rem' }}>
+                                            {modelStatus.descriptions[model]}
+                                        </p>
+                                    )}
+                                    {selectedModel === model && (
+                                        <div style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', color: '#3b82f6' }}>
+                                            <CheckCircle size={18} />
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p style={{ color: 'var(--danger-color)' }}>Không thể tải trạng thái mô hình.</p>
+                    )}
+                </div>
 
-                {evaluationMessage && (
-                    <div style={{
-                        padding: '1rem',
-                        borderRadius: 'var(--radius-md)',
-                        marginTop: '1.5rem',
-                        background: evaluationMessage.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
-                        color: evaluationMessage.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
-                        border: `1px solid ${evaluationMessage.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
-                    }}>
-                        {evaluationMessage}
-                    </div>
-                )}
+                {/* Model Evaluation Section */}
+                <div style={{ background: 'var(--bg-surface)', padding: '2rem', borderRadius: 'var(--radius-lg)', marginBottom: '2rem', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
+                        <Zap size={24} style={{ color: '#8b5cf6' }} />
+                        Đánh Giá Mô Hình ML
+                    </h3>
+                    <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+                        Chọn mốc thời gian để đánh giá và so sánh các mô hình
+                    </p>
 
-                {evaluationResults && !evaluationResults.error && (
-                    <div style={{ marginTop: '2rem' }}>
-                        {/* Recommendation Box */}
-                        {evaluationResults.recommendation && (
-                            <div style={{
-                                padding: '1.5rem',
-                                background: 'var(--bg-surface)',
-                                border: '2px solid var(--primary-color)',
-                                borderRadius: 'var(--radius-md)',
-                                marginBottom: '2rem',
-                                boxShadow: 'var(--shadow-sm)'
-                            }}>
+                    {/* Check if active structure has dataset */}
+                    {(() => {
+                        const activeStruct = allStructures.find(s => s.id === activeStructureId);
+                        const hasDataset = activeStructureId && structureDatasets[activeStructureId]?.reference_count > 0;
+
+                        if (!activeStructureId || !activeStruct) {
+                            return (
+                                <div style={{
+                                    padding: '1.5rem',
+                                    background: '#fef3c7',
+                                    border: '1px solid #fbbf24',
+                                    borderRadius: 'var(--radius-md)',
+                                    color: '#92400e',
+                                    marginBottom: '1rem'
+                                }}>
+                                    <p style={{ margin: 0, fontWeight: '500' }}>
+                                        ⚠️ Vui lòng chọn cấu trúc giảng dạy active trước
+                                    </p>
+                                </div>
+                            );
+                        }
+
+                        if (!hasDataset) {
+                            return (
+                                <div style={{
+                                    padding: '1.5rem',
+                                    background: '#fef3c7',
+                                    border: '1px solid #fbbf24',
+                                    borderRadius: 'var(--radius-md)',
+                                    color: '#92400e',
+                                    marginBottom: '1rem'
+                                }}>
+                                    <p style={{ margin: 0, fontWeight: '500' }}>
+                                        📊 Hãy cập nhật tập dữ liệu cho cấu trúc <strong>{activeStruct.structure_name}</strong> để đánh giá mô hình
+                                    </p>
+                                </div>
+                            );
+                        }
+
+                        return null;
+                    })()}
+
+                    {/* Dropdown Selection */}
+                    {activeStructureId && structureDatasets[activeStructureId]?.reference_count > 0 && (() => {
+                        const activeStruct = allStructures.find(s => s.id === activeStructureId);
+                        if (!activeStruct?.time_point_labels) return null;
+
+                        const timepoints = activeStruct.time_point_labels;
+
+                        return (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', marginBottom: '1.5rem' }}>
+                                {/* Input Timepoints - Checkbox List */}
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '1rem', fontWeight: '600', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>
+                                        📊 Đầu vào (chọn nhiều):
+                                    </label>
+                                    <div style={{
+                                        maxHeight: '200px',
+                                        overflowY: 'auto',
+                                        padding: '0.75rem',
+                                        background: 'var(--bg-primary)',
+                                        border: '2px solid #8b5cf6',
+                                        borderRadius: 'var(--radius-md)'
+                                    }}>
+                                        {timepoints.map((label, idx) => (
+                                            <label
+                                                key={idx}
+                                                style={{
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    padding: '0.5rem',
+                                                    marginBottom: '0.25rem',
+                                                    borderRadius: 'var(--radius-sm)',
+                                                    cursor: 'pointer',
+                                                    background: evalInputTimepoints.includes(idx) ? '#f3e8ff' : 'transparent',
+                                                    transition: 'all 0.2s'
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    if (!evalInputTimepoints.includes(idx)) {
+                                                        e.currentTarget.style.background = '#f9fafb';
+                                                    }
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    if (!evalInputTimepoints.includes(idx)) {
+                                                        e.currentTarget.style.background = 'transparent';
+                                                    }
+                                                }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={evalInputTimepoints.includes(idx)}
+                                                    onChange={(e) => {
+                                                        if (e.target.checked) {
+                                                            setEvalInputTimepoints(prev => [...prev, idx].sort((a, b) => a - b));
+                                                        } else {
+                                                            setEvalInputTimepoints(prev => prev.filter(i => i !== idx));
+                                                        }
+
+                                                        // Auto-clean invalid outputs
+                                                        const newInputs = e.target.checked
+                                                            ? [...evalInputTimepoints, idx]
+                                                            : evalInputTimepoints.filter(i => i !== idx);
+                                                        if (newInputs.length > 0) {
+                                                            const maxInput = Math.max(...newInputs);
+                                                            setEvalOutputTimepoints(prev => prev.filter(i => i > maxInput));
+                                                        }
+                                                    }}
+                                                    style={{
+                                                        marginRight: '0.75rem',
+                                                        width: '18px',
+                                                        height: '18px',
+                                                        cursor: 'pointer',
+                                                        accentColor: '#8b5cf6'
+                                                    }}
+                                                />
+                                                <span style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                                                    {label}
+                                                </span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <p style={{ fontSize: '0.85rem', color: '#8b5cf6', marginTop: '0.5rem', fontWeight: '500' }}>
+                                        ✓ Đã chọn: {evalInputTimepoints.length} mốc
+                                    </p>
+                                </div>
+
+                                {/* Output Timepoints - Checkbox List */}
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '1rem', fontWeight: '600', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>
+                                        🎯 Mục tiêu dự đoán (chọn nhiều):
+                                    </label>
+                                    <div style={{
+                                        maxHeight: '200px',
+                                        overflowY: 'auto',
+                                        padding: '0.75rem',
+                                        background: evalInputTimepoints.length === 0 ? '#f3f4f6' : 'var(--bg-primary)',
+                                        border: evalInputTimepoints.length === 0 ? '2px dashed #d1d5db' : '2px solid #10b981',
+                                        borderRadius: 'var(--radius-md)',
+                                        opacity: evalInputTimepoints.length === 0 ? 0.6 : 1
+                                    }}>
+                                        {timepoints.map((label, idx) => {
+                                            const maxInput = evalInputTimepoints.length > 0 ? Math.max(...evalInputTimepoints) : -1;
+                                            const disabled = evalInputTimepoints.length === 0 || idx <= maxInput;
+
+                                            return (
+                                                <label
+                                                    key={idx}
+                                                    style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        padding: '0.5rem',
+                                                        marginBottom: '0.25rem',
+                                                        borderRadius: 'var(--radius-sm)',
+                                                        cursor: disabled ? 'not-allowed' : 'pointer',
+                                                        background: evalOutputTimepoints.includes(idx) ? '#d1fae5' : 'transparent',
+                                                        opacity: disabled ? 0.4 : 1,
+                                                        transition: 'all 0.2s'
+                                                    }}
+                                                    onMouseEnter={(e) => {
+                                                        if (!disabled && !evalOutputTimepoints.includes(idx)) {
+                                                            e.currentTarget.style.background = '#f9fafb';
+                                                        }
+                                                    }}
+                                                    onMouseLeave={(e) => {
+                                                        if (!disabled && !evalOutputTimepoints.includes(idx)) {
+                                                            e.currentTarget.style.background = 'transparent';
+                                                        }
+                                                    }}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={evalOutputTimepoints.includes(idx)}
+                                                        disabled={disabled}
+                                                        onChange={(e) => {
+                                                            if (e.target.checked) {
+                                                                setEvalOutputTimepoints(prev => [...prev, idx].sort((a, b) => a - b));
+                                                            } else {
+                                                                setEvalOutputTimepoints(prev => prev.filter(i => i !== idx));
+                                                            }
+                                                        }}
+                                                        style={{
+                                                            marginRight: '0.75rem',
+                                                            width: '18px',
+                                                            height: '18px',
+                                                            cursor: disabled ? 'not-allowed' : 'pointer',
+                                                            accentColor: '#10b981'
+                                                        }}
+                                                    />
+                                                    <span style={{ fontSize: '0.95rem', color: disabled ? 'var(--text-muted)' : 'var(--text-primary)' }}>
+                                                        {label} {disabled && idx > -1 && '(⛔ không hợp lệ)'}
+                                                    </span>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                    <p style={{ fontSize: '0.85rem', color: '#10b981', marginTop: '0.5rem', fontWeight: '500' }}>
+                                        ✓ Đã chọn: {evalOutputTimepoints.length} mốc
+                                    </p>
+                                </div>
+                            </div>
+                        );
+                    })()}
+
+                    <button
+                        onClick={handleEvaluateModels}
+                        disabled={
+                            evaluating ||
+                            evalInputTimepoints.length === 0 ||
+                            evalOutputTimepoints.length === 0 ||
+                            !activeStructureId ||
+                            !structureDatasets[activeStructureId]?.reference_count
+                        }
+                        style={{
+                            padding: '0.75rem 1.5rem',
+                            borderRadius: 'var(--radius-md)',
+                            background: (
+                                evaluating ||
+                                evalInputTimepoints.length === 0 ||
+                                evalOutputTimepoints.length === 0 ||
+                                !activeStructureId ||
+                                !structureDatasets[activeStructureId]?.reference_count
+                            ) ? '#9ca3af' : '#8b5cf6',
+                            color: 'white',
+                            border: 'none',
+                            cursor: (
+                                evaluating ||
+                                evalInputTimepoints.length === 0 ||
+                                evalOutputTimepoints.length === 0 ||
+                                !activeStructureId ||
+                                !structureDatasets[activeStructureId]?.reference_count
+                            ) ? 'not-allowed' : 'pointer',
+                            fontWeight: '600',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
+                        }}
+                    >
+                        <Zap size={18} />
+                        {evaluating ? 'Đang đánh giá...' : 'Đánh Giá Mô Hình'}
+                    </button>
+
+                    {evaluationMessage && (
+                        <div style={{
+                            padding: '1rem',
+                            borderRadius: 'var(--radius-md)',
+                            marginTop: '1.5rem',
+                            background: evaluationMessage.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
+                            color: evaluationMessage.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
+                            border: `1px solid ${evaluationMessage.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
+                        }}>
+                            {evaluationMessage}
+                        </div>
+                    )}
+
+                    {evaluationResults && !evaluationResults.error && evaluationResults.recommendation && (
+                        <div style={{ marginTop: '2rem' }}>
+                            {/* Evaluation Configuration Info */}
+                            {evaluationResults.structure_name && (
+                                <div style={{ marginBottom: '1rem', padding: '1rem', background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+                                    <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                                        <strong>Cấu trúc:</strong> {evaluationResults.structure_name}
+                                    </div>
+
+                                    <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                                        <strong>Dataset:</strong> {evaluationResults.dataset_size} mẫu
+                                        (Train: {evaluationResults.train_samples}, Test: {evaluationResults.test_samples})
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Recommendation Box */}
+                            <div style={{ padding: '1.5rem', background: '#dbeafe', border: '2px solid #3b82f6', borderRadius: 'var(--radius-md)' }}>
                                 <div style={{ fontSize: '1rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
                                     <strong>🎯 Mô hình được đề xuất:</strong>
                                 </div>
-                                <div style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--primary-color)' }}>
+                                <div style={{ fontSize: '1.25rem', fontWeight: '700', color: '#3b82f6' }}>
                                     {evaluationResults.recommendation}
                                 </div>
                                 <div style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
                                     Độ chính xác: <strong>{evaluationResults.best_accuracy}%</strong>
                                 </div>
                             </div>
-                        )}
 
-                        {/* Task 1 Results Table */}
-                        {evaluationResults.task_1 && Object.keys(evaluationResults.task_1).length > 0 && (
-                            <div style={{ marginBottom: '2rem' }}>
-                                <h4 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
-                                    Nhiệm vụ 1: Dữ liệu lớp 10+11 - dự đoán lớp 12
-                                </h4>
-                                <div style={{ overflowX: 'auto', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                                    <table style={{
-                                        width: '100%',
-                                        borderCollapse: 'collapse',
-                                        fontSize: '0.95rem'
-                                    }}>
-                                        <thead style={{ background: 'var(--bg-body)' }}>
-                                            <tr>
-                                                <th style={{ padding: '1rem', textAlign: 'left', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>Mô hình</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>MAE</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>MSE</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>RMSE</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--primary-color)', fontWeight: '700' }}>Accuracy</th>
+                            {/* Detailed Metrics Table */}
+                            {evaluationResults.models && (evaluationResults.models.knn || evaluationResults.models.kernel_regression || evaluationResults.models.lwlr) && (
+                                <div style={{ marginTop: '1.5rem', overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                                        <thead>
+                                            <tr style={{ background: 'var(--bg-primary)', borderBottom: '2px solid var(--border-color)' }}>
+                                                <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600' }}>Mô hình</th>
+                                                <th style={{ padding: '0.75rem', textAlign: 'center', fontWeight: '600' }}>MAE</th>
+                                                <th style={{ padding: '0.75rem', textAlign: 'center', fontWeight: '600' }}>MSE</th>
+                                                <th style={{ padding: '0.75rem', textAlign: 'center', fontWeight: '600' }}>RMSE</th>
+                                                <th style={{ padding: '0.75rem', textAlign: 'center', fontWeight: '600' }}>Độ chính xác</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {[
-                                                { key: 'knn', label: 'KNN' },
-                                                { key: 'kernel_regression', label: 'Kernel Regression' },
-                                                { key: 'lwlr', label: 'LWLR' }
-                                            ].map(model => {
-                                                const metrics = evaluationResults.task_1[model.key];
+                                            {['knn', 'kernel_regression', 'lwlr'].map(modelKey => {
+                                                const modelData = evaluationResults.models[modelKey];
+                                                if (!modelData) return null;
+                                                const modelNames = {
+                                                    knn: 'KNN',
+                                                    kernel_regression: 'Kernel Regression',
+                                                    lwlr: 'LWLR'
+                                                };
                                                 return (
-                                                    <tr key={model.key} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                                                        <td style={{ padding: '1rem', fontWeight: '500', color: 'var(--text-primary)' }}>{model.label}</td>
-                                                        <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                                            {metrics ? metrics.mae.toFixed(4) : '-'}
-                                                        </td>
-                                                        <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                                            {metrics ? metrics.mse.toFixed(4) : '-'}
-                                                        </td>
-                                                        <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                                            {metrics ? metrics.rmse.toFixed(4) : '-'}
-                                                        </td>
-                                                        <td style={{
-                                                            padding: '1rem',
-                                                            textAlign: 'center',
-                                                            background: metrics ? (metrics.accuracy >= 90 ? '#f0fdf4' : metrics.accuracy >= 80 ? '#fefce8' : '#fef2f2') : 'transparent',
-                                                            fontWeight: '600',
-                                                            color: metrics ? (metrics.accuracy >= 90 ? '#166534' : metrics.accuracy >= 80 ? '#854d0e' : 'var(--danger-color)') : 'var(--text-tertiary)'
-                                                        }}>
-                                                            {metrics ? metrics.accuracy.toFixed(2) + '%' : '-'}
+                                                    <tr key={modelKey} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                                                        <td style={{ padding: '0.75rem', fontWeight: '500' }}>{modelNames[modelKey]}</td>
+                                                        <td style={{ padding: '0.75rem', textAlign: 'center' }}>{modelData.mae ?? 'N/A'}</td>
+                                                        <td style={{ padding: '0.75rem', textAlign: 'center' }}>{modelData.mse ?? 'N/A'}</td>
+                                                        <td style={{ padding: '0.75rem', textAlign: 'center' }}>{modelData.rmse ?? 'N/A'}</td>
+                                                        <td style={{ padding: '0.75rem', textAlign: 'center', fontWeight: '600', color: '#10b981' }}>
+                                                            {modelData.accuracy ? `${modelData.accuracy}%` : 'N/A'}
                                                         </td>
                                                     </tr>
                                                 );
@@ -890,161 +1743,11 @@ const Developer = () => {
                                         </tbody>
                                     </table>
                                 </div>
-                            </div>
-                        )}
-
-                        {/* Task 2 Results Table */}
-                        {evaluationResults.task_2 && Object.keys(evaluationResults.task_2).length > 0 && (
-                            <div>
-                                <h4 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--text-primary)' }}>
-                                    Nhiệm vụ 2: Dữ liệu lớp 10 - dự đoán lớp 11
-                                </h4>
-                                <div style={{ overflowX: 'auto', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
-                                    <table style={{
-                                        width: '100%',
-                                        borderCollapse: 'collapse',
-                                        fontSize: '0.95rem'
-                                    }}>
-                                        <thead style={{ background: 'var(--bg-body)' }}>
-                                            <tr>
-                                                <th style={{ padding: '1rem', textAlign: 'left', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>Mô hình</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>MAE</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>MSE</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>RMSE</th>
-                                                <th style={{ padding: '1rem', textAlign: 'center', borderBottom: '1px solid var(--border-color)', color: 'var(--primary-color)', fontWeight: '700' }}>Accuracy</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {[
-                                                { key: 'knn', label: 'KNN' },
-                                                { key: 'kernel_regression', label: 'Kernel Regression' },
-                                                { key: 'lwlr', label: 'LWLR' }
-                                            ].map(model => {
-                                                const metrics = evaluationResults.task_2[model.key];
-                                                return (
-                                                    <tr key={model.key} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                                                        <td style={{ padding: '1rem', fontWeight: '500', color: 'var(--text-primary)' }}>{model.label}</td>
-                                                        <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                                            {metrics ? metrics.mae.toFixed(4) : '-'}
-                                                        </td>
-                                                        <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                                            {metrics ? metrics.mse.toFixed(4) : '-'}
-                                                        </td>
-                                                        <td style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                                                            {metrics ? metrics.rmse.toFixed(4) : '-'}
-                                                        </td>
-                                                        <td style={{
-                                                            padding: '1rem',
-                                                            textAlign: 'center',
-                                                            background: metrics ? (metrics.accuracy >= 90 ? '#f0fdf4' : metrics.accuracy >= 80 ? '#fefce8' : '#fef2f2') : 'transparent',
-                                                            fontWeight: '600',
-                                                            color: metrics ? (metrics.accuracy >= 90 ? '#166534' : metrics.accuracy >= 80 ? '#854d0e' : 'var(--danger-color)') : 'var(--text-tertiary)'
-                                                        }}>
-                                                            {metrics ? metrics.accuracy.toFixed(2) + '%' : '-'}
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Dataset Info */}
-                        <div style={{ marginTop: '1.5rem', padding: '1rem', background: 'var(--bg-body)', borderRadius: 'var(--radius-md)', fontSize: '0.9rem', color: 'var(--text-secondary)', border: '1px solid var(--border-color)' }}>
-                            <strong style={{ color: 'var(--text-primary)' }}>ℹ️ Thông tin đánh giá:</strong>
-                            <ul style={{ margin: '0.5rem 0 0 1rem', paddingLeft: '1rem' }}>
-                                <li>Bộ dữ liệu: {evaluationResults.dataset_size} mẫu</li>
-                                <li>Nhiệm vụ 1 (Predict 12): {evaluationResults.task_1_train_samples} train + {evaluationResults.task_1_test_samples} test</li>
-                                <li>Nhiệm vụ 2 (Predict 11): {evaluationResults.task_2_train_samples} train + {evaluationResults.task_2_test_samples} test</li>
-                            </ul>
+                            )}
                         </div>
-                    </div>
-                )}
-            </div>
-
-            {/* ML Model Selection Section */}
-            <div className="card">
-                <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
-                    <Brain size={24} style={{ color: 'var(--primary-color)' }} />
-                    Thiết Lập Mô Hình
-                </h3>
-                <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Chọn mô hình học máy để dự đoán điểm số:
-                </p>
-
-                {modelMsg && (
-                    <div style={{
-                        padding: '1rem',
-                        borderRadius: 'var(--radius-md)',
-                        marginBottom: '1.5rem',
-                        background: modelMsg.startsWith('Lỗi') ? '#fef2f2' : '#f0fdf4',
-                        color: modelMsg.startsWith('Lỗi') ? 'var(--danger-color)' : '#166534',
-                        border: `1px solid ${modelMsg.startsWith('Lỗi') ? '#fecaca' : '#bbf7d0'}`
-                    }}>
-                        {modelMsg}
-                    </div>
-                )}
-
-                {loadingModels ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-                        <span className="spinner"></span> Đang tải...
-                    </div>
-                ) : modelStatus ? (
-                    <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem' }}>
-                        {modelStatus.available_models.map((model) => (
-                            <div
-                                key={model}
-                                style={{
-                                    display: 'flex',
-                                    alignItems: 'flex-start',
-                                    gap: '1rem',
-                                    padding: '1.25rem',
-                                    background: selectedModel === model ? 'var(--bg-surface)' : 'var(--bg-body)',
-                                    borderRadius: 'var(--radius-md)',
-                                    border: '2px solid ' + (selectedModel === model ? 'var(--primary-color)' : 'var(--border-color)'),
-                                    cursor: 'pointer',
-                                    transition: 'all 0.2s',
-                                    position: 'relative'
-                                }}
-                                onClick={() => handleSelectModel(model)}
-                            >
-                                <input
-                                    type="radio"
-                                    name="ml-model"
-                                    value={model}
-                                    checked={selectedModel === model}
-                                    onChange={() => handleSelectModel(model)}
-                                    style={{ marginTop: '0.25rem', cursor: 'pointer' }}
-                                />
-                                <div style={{ flex: 1 }}>
-                                    <strong style={{ fontSize: '1rem', display: 'block', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
-                                        {model === 'knn' ? 'KNN' : model === 'kernel_regression' ? 'Kernel Regression' : 'LWLR'}
-                                    </strong>
-                                    {modelStatus.descriptions && modelStatus.descriptions[model] && (
-                                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.5' }}>
-                                            {modelStatus.descriptions[model]}
-                                        </p>
-                                    )}
-                                </div>
-                                {selectedModel === model && (
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '0.75rem',
-                                        right: '0.75rem',
-                                        color: 'var(--primary-color)'
-                                    }}>
-                                        <CheckCircle size={18} />
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                ) : (
-                    <p style={{ color: 'var(--danger-color)' }}>Không thể tải trạng thái mô hình.</p>
-                )}
-            </div>
+                    )}
+                </div>
+            </motion.div>
         </div>
     );
 };

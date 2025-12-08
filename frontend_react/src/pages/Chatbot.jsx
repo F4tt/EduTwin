@@ -200,7 +200,7 @@ const Chatbot = () => {
 
             // Use regular endpoint (faster than streaming for now)
             const res = await axiosClient.post('/chatbot', payload, {
-                timeout: 60000,
+                timeout: 120000, // 120 seconds - allow enough time for LLM response
             });
             const data = res.data;
 
@@ -399,15 +399,6 @@ const Chatbot = () => {
                     </div>
                     <div>
                         <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>Trợ lý ảo EduTwin</h3>
-                        <div className="chat-header-status">
-                            <span style={{
-                                width: '8px',
-                                height: '8px',
-                                borderRadius: '50%',
-                                background: connected ? '#10b981' : '#ef4444'
-                            }}></span>
-                            <span>{connected ? 'Đang kết nối' : 'Mất kết nối'}</span>
-                        </div>
                     </div>
                 </div>
 

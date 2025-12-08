@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { MessageSquare, BarChart2, BookOpen, Settings, LogOut, Wrench, Target, Sliders } from 'lucide-react';
+import { MessageSquare, BarChart2, BookOpen, Settings, LogOut, Wrench } from 'lucide-react';
 
 const Layout = () => {
     const { user, logout } = useAuth();
@@ -15,9 +15,7 @@ const Layout = () => {
     const navItems = [
         { path: '/chat', icon: <MessageSquare size={20} />, label: 'Trò chuyện' },
         { path: '/data', icon: <BarChart2 size={20} />, label: 'Phân tích' },
-        { path: '/goals', icon: <Target size={20} />, label: 'Mục tiêu' },
         { path: '/study', icon: <BookOpen size={20} />, label: 'Điểm số' },
-        { path: '/custom-model', icon: <Sliders size={20} />, label: 'Mô hình tùy chỉnh' },
         { path: '/settings', icon: <Settings size={20} />, label: 'Cài đặt' },
     ];
 

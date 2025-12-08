@@ -1,4 +1,5 @@
-# Core FastAPI dependencies
+# ===== CORE DEPENDENCIES =====
+# FastAPI framework
 fastapi
 uvicorn
 gunicorn
@@ -6,9 +7,10 @@ gunicorn
 # Database
 sqlalchemy
 psycopg2-binary
+alembic
 redis
 
-# Security
+# Security & Encryption
 python-dotenv
 passlib==1.7.4
 bcrypt==3.2.0
@@ -16,20 +18,24 @@ cryptography>=41.0.0
 boto3>=1.34.0
 botocore>=1.34.0
 
-# ML/Data Science
+# ===== ML/DATA SCIENCE =====
 pandas
 openpyxl
 scikit-learn
 scipy
 numpy
 
-# Utilities
+# ===== UTILITIES =====
 python-multipart
 httpx
 python-socketio
 aiofiles
 
-# Monitoring & Logging
+# Document processing
+PyPDF2
+python-docx
+
+# ===== MONITORING & LOGGING =====
 prometheus-client
 python-json-logger
 psutil

@@ -57,8 +57,6 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL}
       - PYTHONUNBUFFERED=1
     volumes:
       # DEV MODE: Mount code for hot reload (comment out for production)

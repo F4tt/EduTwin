@@ -161,3 +161,59 @@ def get_learned_personalization(request: Request, db: Session = Depends(get_db))
         return {"learned_preferences": learned}
     except Exception as exc:
         return {"learned_preferences": [], "error": str(exc)}
+
+
+class CurrentTimepointPayload(BaseModel):
+    structure_id: int
+    current_timepoint: str | None
+
+
+@router.get("/current-timepoint/{structure_id}")
+@require_auth
+def get_current_timepoint(request: Request, structure_id: int, db: Session = Depends(get_db)):
+    """Get current_timepoint for a specific structure"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
+    
+    from db import models
+    pref = db.query(models.UserStructurePreference).filter(
+        models.UserStructurePreference.user_id == current_user.get("user_id"),
+        models.UserStructurePreference.structure_id == structure_id
+    ).first()
+    
+    return {
+        "current_timepoint": pref.current_timepoint if pref else None
+    }
+
+
+@router.post("/current-timepoint")
+@require_auth
+def set_current_timepoint(request: Request, payload: CurrentTimepointPayload, db: Session = Depends(get_db)):
+    """Set current_timepoint for a specific structure"""
+    current_user = get_current_user(request)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
+    
+    from db import models
+    pref = db.query(models.UserStructurePreference).filter(
+        models.UserStructurePreference.user_id == current_user.get("user_id"),
+        models.UserStructurePreference.structure_id == payload.structure_id
+    ).first()
+    
+    if not pref:
+        pref = models.UserStructurePreference(
+            user_id=current_user.get("user_id"),
+            structure_id=payload.structure_id,
+            current_timepoint=payload.current_timepoint
+        )
+        db.add(pref)
+    else:
+        pref.current_timepoint = payload.current_timepoint
+    
+    db.commit()
+    db.refresh(pref)
+    
+    return {
+        "current_timepoint": pref.current_timepoint
+    }

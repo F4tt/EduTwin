@@ -24,10 +24,6 @@ class User(Base):
     preferences = Column('preferences', JSON, nullable=True)
     current_grade = Column(String, nullable=True)
     role = Column(String, nullable=False, default="user")
-    first_login_completed = Column(Boolean, nullable=False, server_default=text("false"))
-    
-    # Track ML config version that user's predictions are based on
-    ml_config_version = Column(Integer, nullable=True, default=0)
 
     # Transparent encryption/decryption properties
     @hybrid_property
@@ -92,11 +88,6 @@ class User(Base):
             from utils.encryption import encrypt_field
             self._encrypted_address = encrypt_field(value)
 
-    study_scores = relationship(
-        "StudyScore",
-        back_populates="user",
-        cascade="all, delete-orphan",
-    )
     data_imports = relationship(
         "DataImportLog",
         back_populates="uploader",
@@ -111,32 +102,6 @@ class User(Base):
         "ChatSession",
         back_populates="user",
         cascade="all, delete-orphan",
-    )
-
-
-class StudyScore(Base):
-    __tablename__ = "study_scores"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    subject = Column(String, nullable=False)
-    grade_level = Column(String, nullable=False)  # "10", "11", "12"
-    semester = Column(String, nullable=False)  # "1", "2"
-    actual_score = Column(Float, nullable=True)
-    predicted_score = Column(Float, nullable=True)
-    actual_source = Column(String, nullable=True)
-    predicted_source = Column(String, nullable=True)
-    actual_status = Column(String, nullable=True)
-    predicted_status = Column(String, nullable=True)
-    actual_updated_at = Column(DateTime(timezone=True), nullable=True)
-    predicted_updated_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    user = relationship("User", back_populates="study_scores")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "subject", "grade_level", "semester", name="uq_user_subject_grade_semester"),
     )
 
 
@@ -161,6 +126,7 @@ class AIInsight(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    structure_id = Column(Integer, ForeignKey("custom_teaching_structures.id", ondelete="CASCADE"), nullable=True, index=True)  # Structure this insight belongs to
     insight_type = Column(String, nullable=False)  # 'slide_comment', 'chat_response', 'subject_analysis', etc
     context_key = Column(String, nullable=True)     # 'overview_chart', 'Math', 'A00', etc
     content = Column(Text, nullable=False)          # Main AI-generated content
@@ -169,6 +135,7 @@ class AIInsight(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="ai_insights")
+    structure = relationship("CustomTeachingStructure")
 
 
 class ChatSession(Base):
@@ -217,36 +184,12 @@ class PendingUpdate(Base):
     user = relationship("User")
 
 
-class MLModelConfig(Base):
-    __tablename__ = "ml_model_configs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    active_model = Column(String, nullable=False, default="knn")  # "knn" | "kernel_regression" | "lwlr"
-    # Version increments each time config changes
-    version = Column(Integer, nullable=False, default=1)
-    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-
-class ModelParameters(Base):
-    __tablename__ = "ml_model_parameters"
-
-    id = Column(Integer, primary_key=True, index=True)
-    # KNN parameter: number of neighbors
-    knn_n = Column(Integer, nullable=False, default=15)
-    # Kernel Regression parameter: bandwidth for Gaussian kernel
-    kr_bandwidth = Column(Float, nullable=False, default=1.25)
-    # LWLR parameter: tau for tricube kernel (window size control)
-    lwlr_tau = Column(Float, nullable=False, default=3.0)
-    # Version increments each time parameters change
-    version = Column(Integer, nullable=False, default=1)
-    # Who last updated these parameters
-    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-
-class KNNReferenceSample(Base):
-    __tablename__ = "reference_dataset"
+class MLReferenceDataset(Base):
+    """Global ML reference dataset for general-purpose predictions.
+    Deprecated: Use CustomDatasetSample for custom teaching structures instead.
+    This table is kept for legacy compatibility only.
+    """
+    __tablename__ = "ml_reference_dataset"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -262,19 +205,23 @@ class CustomTeachingStructure(Base):
     __tablename__ = "custom_teaching_structures"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    structure_name = Column(String, nullable=False)  # User-defined name for the structure
+    # user_id removed - structure is now global
+    structure_name = Column(String, nullable=False)  # Admin-defined name for the structure
     num_time_points = Column(Integer, nullable=False)
     num_subjects = Column(Integer, nullable=False)
     time_point_labels = Column(JSON, nullable=False)  # List of time point names
     subject_labels = Column(JSON, nullable=False)  # List of subject names
-    current_time_point = Column(String, nullable=True)  # Currently selected time point for score input
+    scale_type = Column(String, nullable=False, server_default='0-10')  # '0-10', '0-100', '0-10000', 'A-F', 'GPA'
+    # current_time_point removed - each user manages their own time point
     pipeline_enabled = Column(Boolean, nullable=False, default=False)
-    is_active = Column(Boolean, nullable=False, default=True)  # Currently selected structure
+    is_active = Column(Boolean, nullable=False, default=False)  # Only one can be active globally
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    user = relationship("User")
+    # Unique constraint: only one structure can be active
+    __table_args__ = (
+        Index('ix_custom_teaching_structures_single_active', 'is_active', unique=True, postgresql_where=text('is_active = true')),
+    )
 
 
 class CustomDatasetSample(Base):
@@ -282,13 +229,12 @@ class CustomDatasetSample(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     structure_id = Column(Integer, ForeignKey("custom_teaching_structures.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # user_id removed - dataset is global per structure
     sample_name = Column(String, nullable=True)
     score_data = Column(JSON, nullable=False)  # Dict of subject_timepoint: score
     metadata_ = Column('metadata', JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    user = relationship("User")
     structure = relationship("CustomTeachingStructure")
 
 
@@ -316,18 +262,75 @@ class CustomUserScore(Base):
     )
 
 
-class LearningGoal(Base):
-    __tablename__ = "learning_goals"
+class CustomStructureDocument(Base):
+    """Reference documents for custom teaching structures (PDFs, DOCX, TXT).
+    Each structure can have multiple reference documents to provide context for AI analysis.
+    Documents are processed to extract key information and reduce token usage.
+    """
+    __tablename__ = "custom_structure_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    structure_id = Column(Integer, ForeignKey("custom_teaching_structures.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_name = Column(String, nullable=False)  # Original filename
+    file_type = Column(String, nullable=False)  # 'pdf', 'docx', 'txt'
+    file_size = Column(Integer, nullable=True)  # Size in bytes
+    original_content = Column(Text, nullable=True)  # Full extracted text (for reference)
+    extracted_summary = Column(Text, nullable=False)  # LLM-extracted key points (optimized for context)
+    extraction_method = Column(String, nullable=True, default='llm_summary')  # Method used: llm_summary, embeddings, etc
+    metadata_ = Column('metadata', JSON, nullable=True)  # Additional info: page count, sections, etc
+    uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    structure = relationship("CustomTeachingStructure")
+    uploader = relationship("User")
+
+
+class ModelParameters(Base):
+    """ML model parameters (KNN, Kernel Regression, LWLR)"""
+    __tablename__ = "ml_model_parameters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    knn_n = Column(Integer, nullable=False, server_default='15')
+    kr_bandwidth = Column(Float, nullable=False, server_default='1.25')
+    lwlr_tau = Column(Float, nullable=False, server_default='3.0')
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    updater = relationship("User")
+
+
+class MLModelConfig(Base):
+    """ML model configuration - stores which model is currently active"""
+    __tablename__ = "ml_model_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    active_model = Column(String, nullable=False, server_default='knn')  # 'knn', 'kernel_regression', 'lwlr'
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    updater = relationship("User")
+
+
+class UserStructurePreference(Base):
+    """Store user preferences per structure (e.g., current_timepoint)"""
+    __tablename__ = "user_structure_preferences"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    target_average = Column(Float, nullable=False)
-    target_semester = Column(String, nullable=False)
-    target_grade_level = Column(String, nullable=False)
-    predicted_scores = Column(JSON, nullable=True)
-    trajectory_data = Column(JSON, nullable=True)
-    ai_analysis = Column(Text, nullable=True)
+    structure_id = Column(Integer, ForeignKey("custom_teaching_structures.id", ondelete="CASCADE"), nullable=False, index=True)
+    current_timepoint = Column(String, nullable=True)  # Current time point for this user in this structure
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User")
+    structure = relationship("CustomTeachingStructure")
+
+    __table_args__ = (
+        # Unique constraint: one preference row per (user, structure)
+        Index('ix_user_structure_pref_unique', 'user_id', 'structure_id', unique=True),
+    )
+
+
+# LearningGoal model removed - feature deprecated
+

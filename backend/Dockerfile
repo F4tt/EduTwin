@@ -11,10 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install dependencies with cache (chi rebuild khi requirements thay doi)
-COPY requirements-ml.txt requirements-base.txt ./
+COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir -r requirements-ml.txt && \
-    pip install --no-cache-dir -r requirements-base.txt
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy code (volume mount se override trong dev mode)
 COPY . .

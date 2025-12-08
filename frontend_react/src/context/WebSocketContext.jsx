@@ -46,7 +46,7 @@ export const WebSocketProvider = ({ children }) => {
             path: '/socket.io',
             transports: ['websocket', 'polling'],
             auth: {
-                user_id: user.id
+                user_id: user.user_id || user.id
             },
             reconnection: true,
             reconnectionDelay: 1000,
@@ -59,12 +59,12 @@ export const WebSocketProvider = ({ children }) => {
         
         // Connection event handlers
         newSocket.on('connect', () => {
-            console.log('WebSocket connected');
-            setConnected(true);
+            console.log('WebSocket connected - waiting for authentication');
+            // Don't set connected=true yet, wait for authentication
             reconnectAttemptsRef.current = 0;
             
             // Authenticate after connection
-            newSocket.emit('authenticate', { user_id: user.id });
+            newSocket.emit('authenticate', { user_id: user.user_id || user.id });
         });
         
         newSocket.on('disconnect', (reason) => {
@@ -79,10 +79,14 @@ export const WebSocketProvider = ({ children }) => {
         
         newSocket.on('authenticated', (data) => {
             console.log('WebSocket authenticated:', data);
+            // Set connected only after successful authentication
+            setConnected(true);
         });
         
         newSocket.on('connected', (data) => {
             console.log('WebSocket connection confirmed:', data);
+            // Fallback: also set connected on 'connected' event
+            setConnected(true);
         });
         
         // Chat events

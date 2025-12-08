@@ -8,24 +8,49 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // On mount, try to fetch current authenticated user/profile from backend
+        // On mount, try to restore user from localStorage first for instant UI,
+        // then validate with backend
         const init = async () => {
+            // Step 1: Immediately restore from localStorage for instant UI
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+                try {
+                    const parsedUser = JSON.parse(storedUser);
+                    if (parsedUser && parsedUser.user_id) {
+                        setUser(parsedUser);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse stored user:', e);
+                    localStorage.removeItem('user');
+                }
+            }
+
+            // Step 2: Validate session with backend
             try {
                 const res = await axiosClient.get('/auth/me');
                 // backend returns { user: {...}, message: "..." }
                 const userFromRes = res.data.user || null;
-                if (userFromRes && Object.keys(userFromRes).length > 0) {
+                if (userFromRes && Object.keys(userFromRes).length > 0 && userFromRes.user_id) {
+                    // Session is valid, update user state
                     setUser(userFromRes);
                     localStorage.setItem('user', JSON.stringify(userFromRes));
-                } else {
-                    // fallback to stored user
-                    const storedUser = localStorage.getItem('user');
-                    if (storedUser) setUser(JSON.parse(storedUser));
+                } else if (!storedUser) {
+                    // No valid session and no stored user
+                    setUser(null);
                 }
+                // If we have storedUser but got empty response, keep storedUser (graceful degradation)
             } catch (e) {
-                // no active session or endpoint unavailable
-                const storedUser = localStorage.getItem('user');
-                if (storedUser) setUser(JSON.parse(storedUser));
+                // Session validation failed
+                if (e.response?.status === 401) {
+                    // Session expired or invalid - clear everything
+                    console.log('[Auth] Session expired or invalid, clearing user state');
+                    setUser(null);
+                    localStorage.removeItem('user');
+                } else {
+                    // Network error or backend unavailable - keep localStorage user
+                    console.log('[Auth] Backend unavailable, using cached user');
+                    // storedUser already loaded above, keep it
+                }
             } finally {
                 setLoading(false);
             }
@@ -38,7 +63,7 @@ export const AuthProvider = ({ children }) => {
             const res = await axiosClient.post('/auth/login', { username, password });
             if (res.data && res.data.user) {
                 const userData = res.data.user;
-                // ensure profile fields and is_first_login are preserved
+                // ensure profile fields are preserved
                 const merged = { ...userData, ...(res.data.profile || {}) };
                 setUser(merged);
                 localStorage.setItem('user', JSON.stringify(merged));
@@ -48,11 +73,11 @@ export const AuthProvider = ({ children }) => {
         } catch (error) {
             // Convert backend error to user-friendly Vietnamese message
             let message = 'Đã xảy ra lỗi khi đăng nhập. Vui lòng thử lại.';
-            
+
             if (error.response) {
                 const status = error.response.status;
                 const detail = error.response.data?.detail || '';
-                
+
                 if (status === 401 || detail.includes('Invalid') || detail.includes('incorrect')) {
                     message = 'Tài khoản hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.';
                 } else if (status === 404) {
@@ -67,7 +92,7 @@ export const AuthProvider = ({ children }) => {
             } else if (error.message.includes('Network Error')) {
                 message = 'Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.';
             }
-            
+
             return { success: false, message };
         }
     };
@@ -79,11 +104,11 @@ export const AuthProvider = ({ children }) => {
         } catch (error) {
             // Convert backend error to user-friendly Vietnamese message
             let message = 'Đã xảy ra lỗi khi đăng ký. Vui lòng thử lại.';
-            
+
             if (error.response) {
                 const status = error.response.status;
                 const detail = error.response.data?.detail || '';
-                
+
                 if (status === 409 || detail.includes('already exists') || detail.includes('đã tồn tại')) {
                     message = 'Tên đăng nhập đã tồn tại. Vui lòng chọn tên khác.';
                 } else if (status === 400) {
@@ -102,7 +127,7 @@ export const AuthProvider = ({ children }) => {
             } else if (error.message.includes('Network Error')) {
                 message = 'Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.';
             }
-            
+
             return { success: false, message };
         }
     };
@@ -115,21 +140,21 @@ export const AuthProvider = ({ children }) => {
                 // Clear DataViz AI comments
                 const aiCacheKey = `dataviz_ai_comments_${username}`;
                 window.localStorage.removeItem(aiCacheKey);
-                
+
                 // NOTE: Learning Goals AI strategy is NOT cleared on logout
                 // to preserve strategy even when user logs out
             } catch (e) {
                 console.error('Failed to clear AI cache on logout:', e);
             }
         }
-        
+
         // Cleanup empty chat sessions before logout
         try {
             await axiosClient.delete('/chatbot/cleanup-empty-sessions');
         } catch (e) {
             console.error('Failed to cleanup empty sessions:', e);
         }
-        
+
         setUser(null);
         localStorage.removeItem('user');
         // inform backend

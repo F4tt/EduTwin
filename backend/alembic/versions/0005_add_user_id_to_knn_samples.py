@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '0005'
-down_revision = '0004'
+revision = '0005a_add_user_id_to_knn_samples'
+down_revision = '0004_add_learning_goals'
 branch_labels = None
 depends_on = None
 

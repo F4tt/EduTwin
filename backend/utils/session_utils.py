@@ -41,7 +41,6 @@ class SessionManager:
             "current_grade": user_data.get("current_grade"),
             "name": user_data.get("name"),
             "role": user_data.get("role"),
-            "is_first_login": user_data.get("is_first_login", False),
             "created_at": datetime.utcnow().isoformat(),
             "last_activity": datetime.utcnow().isoformat()
         }
@@ -212,7 +211,6 @@ def get_current_user(request: Request):
             self.age = data.get("age")
             self.current_grade = data.get("current_grade")
             self.role = data.get("role")
-            self.is_first_login = data.get("is_first_login", False)
         
         def get(self, key, default=None):
             """Support dict-like get() method for backward compatibility"""

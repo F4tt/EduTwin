@@ -111,6 +111,21 @@ class PIIRedactor:
         """
         redacted = {}
         
+        # Convert to dict if needed (handles session objects, ORM models, etc.)
+        if not isinstance(user_data, dict):
+            # Try to convert to dict (works with most dict-like objects)
+            try:
+                if hasattr(user_data, '__dict__'):
+                    user_data = user_data.__dict__
+                elif hasattr(user_data, 'to_dict'):
+                    user_data = user_data.to_dict()
+                else:
+                    # Fallback: try dict() conversion
+                    user_data = dict(user_data)
+            except (TypeError, AttributeError):
+                # If conversion fails, return safe default
+                return {'user_id': 'USER_UNKNOWN'}
+        
         # Handle name
         if 'first_name' in user_data and 'last_name' in user_data:
             full_name = f"{user_data.get('last_name', '')} {user_data.get('first_name', '')}".strip()
@@ -119,6 +134,8 @@ class PIIRedactor:
             redacted['user_id'] = cls.hash_value(user_data['username'])
         elif 'id' in user_data:
             redacted['user_id'] = f"USER_{user_data['id']}"
+        elif 'user_id' in user_data:
+            redacted['user_id'] = f"USER_{user_data['user_id']}"
         else:
             redacted['user_id'] = "USER_UNKNOWN"
         
