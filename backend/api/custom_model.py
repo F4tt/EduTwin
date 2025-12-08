@@ -15,7 +15,7 @@ from datetime import datetime
 
 from db import database, models
 from utils.session_utils import require_auth, get_current_user
-from ml.prediction_cache import invalidate_prediction_cache, invalidate_evaluation_cache
+from ml.prediction_cache import invalidate_prediction_cache, invalidate_evaluation_cache, invalidate_cluster_cache
 
 router = APIRouter(prefix="/custom-model", tags=["CustomModel"])
 
@@ -566,6 +566,10 @@ async def upload_custom_dataset(
         imported_count += 1
     
     db.commit()
+    
+    # Invalidate cluster cache for this structure (dataset changed)
+    invalidate_cluster_cache(structure.id)
+    invalidate_evaluation_cache(structure.id)
     
     print(f"[UPLOAD] Imported {imported_count} samples, skipped {skipped_rows} empty/invalid rows")
     

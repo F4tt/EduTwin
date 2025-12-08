@@ -18,7 +18,11 @@ from db import models
 from ml.prediction_cache import (
     get_cached_evaluation,
     set_cached_evaluation,
-    invalidate_evaluation_cache
+    invalidate_evaluation_cache,
+    get_cached_cluster_index,
+    set_cached_cluster_index,
+    compute_dataset_hash,
+    invalidate_cluster_cache
 )
 
 
@@ -420,16 +424,18 @@ def build_cluster_index_for_structure(
     db: Session,
     structure_id: int,
     n_clusters: Optional[int] = None,
-    prototypes_per_cluster: Optional[int] = None
+    prototypes_per_cluster: Optional[int] = None,
+    force_rebuild: bool = False
 ) -> Optional[ClusterPrototypeIndex]:
     """
-    Build cluster+prototype index for a custom structure
+    Build cluster+prototype index for a custom structure (with caching)
     
     Args:
         db: Database session
         structure_id: Structure ID
         n_clusters: Number of clusters (auto-calculate if None)
         prototypes_per_cluster: Max prototypes per cluster (deprecated, auto-calculated)
+        force_rebuild: If True, ignore cache and rebuild
         
     Returns:
         ClusterPrototypeIndex or None if failed
@@ -453,6 +459,23 @@ def build_cluster_index_for_structure(
     dataset = [sample.score_data for sample in samples]
     dataset_size = len(dataset)
     
+    # Compute dataset hash for cache validation
+    dataset_for_hash = [{"id": s.id, "score_data": s.score_data} for s in samples]
+    dataset_hash = compute_dataset_hash(dataset_for_hash)
+    
+    # Try to load from cache first (unless force_rebuild)
+    if not force_rebuild:
+        cached_bytes = get_cached_cluster_index(structure_id, dataset_hash)
+        if cached_bytes:
+            try:
+                index = pickle.loads(cached_bytes)
+                print(f"[CLUSTER CACHE HIT] Loaded cluster index for structure {structure_id} from cache")
+                return index
+            except Exception as e:
+                print(f"[CLUSTER CACHE] Failed to unpickle cached index: {e}")
+    
+    print(f"[CLUSTER] Building new index for structure {structure_id} ({dataset_size} samples)")
+    
     # Auto-calculate optimal clusters if not specified
     if n_clusters is None:
         n_clusters = calculate_optimal_clusters(dataset_size)
@@ -473,6 +496,15 @@ def build_cluster_index_for_structure(
     
     try:
         index.fit(dataset, feature_keys)
+        
+        # Cache the fitted index
+        try:
+            pickled_index = pickle.dumps(index)
+            set_cached_cluster_index(structure_id, dataset_hash, pickled_index)
+            print(f"[CLUSTER] Cached cluster index for structure {structure_id} (hash: {dataset_hash[:8]}...)")
+        except Exception as cache_err:
+            print(f"[CLUSTER] Failed to cache index: {cache_err}")
+        
         return index
     except Exception as e:
         print(f"[CLUSTER] Failed to build index: {e}")

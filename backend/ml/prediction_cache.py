@@ -20,6 +20,7 @@ except Exception as e:
 # Cache TTL (time-to-live) in seconds
 PREDICTION_CACHE_TTL = int(os.getenv("PREDICTION_CACHE_TTL", 3600))  # 1 hour
 EVALUATION_CACHE_TTL = int(os.getenv("EVALUATION_CACHE_TTL", 7200))  # 2 hours
+CLUSTER_CACHE_TTL = int(os.getenv("CLUSTER_CACHE_TTL", 86400))  # 24 hours - clusters rarely change
 
 
 def _create_hash(data: Any) -> str:
@@ -304,6 +305,7 @@ def get_cache_stats() -> Dict:
         # Count keys by pattern
         prediction_keys = sum(1 for _ in redis_client.scan_iter(match="prediction:*"))
         evaluation_keys = sum(1 for _ in redis_client.scan_iter(match="evaluation:*"))
+        cluster_keys = sum(1 for _ in redis_client.scan_iter(match="cluster:*"))
         
         # Get Redis info
         info = redis_client.info()
@@ -312,12 +314,144 @@ def get_cache_stats() -> Dict:
             "status": "enabled",
             "prediction_cached": prediction_keys,
             "evaluation_cached": evaluation_keys,
+            "cluster_cached": cluster_keys,
             "total_keys": info.get("db0", {}).get("keys", 0),
             "memory_used": info.get("used_memory_human", "N/A"),
             "ttl": {
                 "prediction": PREDICTION_CACHE_TTL,
-                "evaluation": EVALUATION_CACHE_TTL
+                "evaluation": EVALUATION_CACHE_TTL,
+                "cluster": CLUSTER_CACHE_TTL
             }
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ============================================
+# CLUSTER + PROTOTYPE CACHING
+# ============================================
+
+def get_cluster_cache_key(structure_id: int, dataset_hash: str) -> str:
+    """
+    Generate cache key for cluster + prototype data
+    
+    Key format: cluster:{structure_id}:{dataset_hash}
+    """
+    return f"cluster:{structure_id}:{dataset_hash}"
+
+
+def compute_dataset_hash(dataset_samples: list) -> str:
+    """
+    Compute hash of dataset for cache invalidation
+    
+    Args:
+        dataset_samples: List of sample dicts from database
+        
+    Returns:
+        MD5 hash string
+    """
+    # Sort by sample ID to ensure consistent hashing
+    sorted_data = sorted(
+        [{"id": s.get("id"), "data": s.get("score_data", {})} for s in dataset_samples],
+        key=lambda x: x.get("id", 0)
+    )
+    return _create_hash(sorted_data)
+
+
+def get_cached_cluster_index(
+    structure_id: int,
+    dataset_hash: str
+) -> Optional[bytes]:
+    """
+    Try to get cached cluster index (pickled ClusterPrototypeIndex)
+    
+    Returns:
+        Pickled bytes if cache hit, None if cache miss
+    """
+    if not REDIS_AVAILABLE:
+        return None
+    
+    try:
+        cache_key = get_cluster_cache_key(structure_id, dataset_hash)
+        cached_data = redis_client.get(cache_key)
+        
+        if cached_data:
+            print(f"[CACHE HIT] Loaded cluster index from cache for structure {structure_id}")
+            return cached_data
+        else:
+            print(f"[CACHE MISS] No cached cluster index for structure {structure_id}")
+            return None
+            
+    except Exception as e:
+        print(f"[CACHE ERROR] Failed to get cached cluster index: {e}")
+        return None
+
+
+def set_cached_cluster_index(
+    structure_id: int,
+    dataset_hash: str,
+    pickled_index: bytes
+) -> bool:
+    """
+    Cache cluster index (pickled ClusterPrototypeIndex)
+    
+    Args:
+        structure_id: Structure ID
+        dataset_hash: Hash of dataset for invalidation
+        pickled_index: Pickled ClusterPrototypeIndex bytes
+        
+    Returns:
+        True if cached successfully, False otherwise
+    """
+    if not REDIS_AVAILABLE:
+        return False
+    
+    try:
+        cache_key = get_cluster_cache_key(structure_id, dataset_hash)
+        
+        redis_client.setex(
+            cache_key,
+            CLUSTER_CACHE_TTL,
+            pickled_index
+        )
+        
+        print(f"[CACHE SET] Cached cluster index for structure {structure_id} (TTL: {CLUSTER_CACHE_TTL}s)")
+        return True
+        
+    except Exception as e:
+        print(f"[CACHE ERROR] Failed to cache cluster index: {e}")
+        return False
+
+
+def invalidate_cluster_cache(structure_id: Optional[int] = None) -> int:
+    """
+    Invalidate cluster cache
+    
+    Args:
+        structure_id: If provided, only invalidate for this structure
+        
+    Returns:
+        Number of keys deleted
+    """
+    if not REDIS_AVAILABLE:
+        return 0
+    
+    try:
+        if structure_id:
+            pattern = f"cluster:{structure_id}:*"
+        else:
+            pattern = "cluster:*"
+        
+        deleted = 0
+        for key in redis_client.scan_iter(match=pattern):
+            redis_client.delete(key)
+            deleted += 1
+        
+        if deleted > 0:
+            print(f"[CACHE INVALIDATE] Deleted {deleted} cluster cache keys for structure {structure_id or 'ALL'}")
+        return deleted
+        
+    except Exception as e:
+        print(f"[CACHE ERROR] Failed to invalidate cluster cache: {e}")
+        return 0
+
