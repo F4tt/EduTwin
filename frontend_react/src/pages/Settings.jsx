@@ -29,9 +29,40 @@ const Settings = () => {
     const fetchLearnedPreferences = async () => {
         try {
             const res = await axiosClient.get('/user/preferences');
-            const learned = res.data.learned || [];
+            const learned = res.data.learned || {};
             console.log('[Settings] Learned preferences:', learned);
-            setLearnedPrefs(Array.isArray(learned) ? learned : []);
+
+            // Handle both formats: dict (new) and array (legacy)
+            if (typeof learned === 'object' && !Array.isArray(learned)) {
+                // New format: { category: [items] }
+                const categoryNames = {
+                    learning_style: '📚 Phong cách học',
+                    personality: '🧠 Tính cách',
+                    emotions: '💭 Cảm xúc',
+                    habits: '⏰ Thói quen',
+                    schedule: '📅 Lịch trình',
+                    interests: '⭐ Sở thích',
+                    goals: '🎯 Mục tiêu',
+                    challenges: '💪 Thách thức',
+                    communication_style: '💬 Giao tiếp'
+                };
+
+                const flatList = [];
+                for (const [category, items] of Object.entries(learned)) {
+                    if (Array.isArray(items)) {
+                        const categoryLabel = categoryNames[category] || category;
+                        items.forEach(item => {
+                            flatList.push(`${categoryLabel}: ${item}`);
+                        });
+                    }
+                }
+                setLearnedPrefs(flatList);
+            } else if (Array.isArray(learned)) {
+                // Legacy format: flat array
+                setLearnedPrefs(learned);
+            } else {
+                setLearnedPrefs([]);
+            }
         } catch (e) {
             console.error('Failed to fetch learned preferences:', e);
             setLearnedPrefs([]);
@@ -309,7 +340,7 @@ const Settings = () => {
                                 Chưa có dữ liệu cá nhân hóa
                             </p>
                             <p style={{ fontSize: '0.95rem', color: 'var(--text-tertiary)', maxWidth: '400px', margin: '0 auto' }}>
-                                Chatbot sẽ tự động học phong cách của bạn sau mỗi 5 tin nhắn trò chuyện.
+                                Chatbot sẽ tự động học phong cách của bạn sau mỗi 3 tin nhắn trò chuyện.
                                 Hãy bắt đầu chat để hệ thống hiểu bạn hơn!
                             </p>
                         </div>
