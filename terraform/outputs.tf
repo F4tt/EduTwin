@@ -10,8 +10,13 @@ output "rds_endpoint" {
 
 output "rds_database_url" {
   description = "Complete database URL for application"
-  value       = "postgresql://admin:${var.db_password}@${aws_db_instance.main.endpoint}/${var.project_name}"
+  value       = "postgresql://edutwin_admin:${var.db_password}@${aws_db_instance.main.endpoint}/${var.project_name}"
   sensitive   = true
+}
+
+output "application_url" {
+  description = "URL to access the application"
+  value       = var.domain_name != "" ? "https://${var.domain_name}" : "http://${aws_lb.main.dns_name}"
 }
 
 output "ecr_backend_repository_url" {

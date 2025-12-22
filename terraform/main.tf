@@ -16,32 +16,6 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Variables
-variable "aws_region" {
-  description = "AWS Region"
-  type        = string
-  default     = "ap-southeast-1"
-}
-
-variable "project_name" {
-  description = "Project name"
-  type        = string
-  default     = "edutwin"
-}
-
-variable "db_password" {
-  description = "RDS master password"
-  type        = string
-  sensitive   = true
-}
-
-variable "openai_api_key" {
-  description = "OpenAI API Key"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_availability_zones" "available" {
@@ -224,12 +198,12 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_db_instance" "main" {
   identifier             = "${var.project_name}-db"
   engine                 = "postgres"
-  engine_version         = "15.4"
+  engine_version         = "15.7"
   instance_class         = "db.t3.micro"
   allocated_storage      = 20
   storage_type           = "gp2"
   db_name                = var.project_name
-  username               = "admin"
+  username               = "edutwin_admin"
   password               = var.db_password
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
@@ -335,57 +309,6 @@ resource "aws_lb_target_group" "frontend" {
   }
 }
 
-# ALB Listeners
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = "80"
-  protocol          = "HTTP"
+# NOTE: ALB Listeners are defined in ssl-route53.tf with HTTPS support
 
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.frontend.arn
-  }
-}
-
-# Backend path routing
-resource "aws_lb_listener_rule" "backend" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 100
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend.arn
-  }
-
-  condition {
-    path_pattern {
-      values = ["/api/*", "/docs", "/openapi.json"]
-    }
-  }
-}
-
-# Outputs
-output "alb_dns_name" {
-  description = "DNS name of the load balancer"
-  value       = aws_lb.main.dns_name
-}
-
-output "rds_endpoint" {
-  description = "RDS instance endpoint"
-  value       = aws_db_instance.main.endpoint
-}
-
-output "ecr_backend_url" {
-  description = "ECR repository URL for backend"
-  value       = aws_ecr_repository.backend.repository_url
-}
-
-output "ecr_frontend_url" {
-  description = "ECR repository URL for frontend"
-  value       = aws_ecr_repository.frontend.repository_url
-}
-
-output "ecs_cluster_name" {
-  description = "ECS cluster name"
-  value       = aws_ecs_cluster.main.name
-}
+# NOTE: All outputs are defined in outputs.tf

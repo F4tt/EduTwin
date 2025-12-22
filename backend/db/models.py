@@ -88,11 +88,7 @@ class User(Base):
             from utils.encryption import encrypt_field
             self._encrypted_address = encrypt_field(value)
 
-    data_imports = relationship(
-        "DataImportLog",
-        back_populates="uploader",
-        cascade="all",
-    )
+
     ai_insights = relationship(
         "AIInsight",
         back_populates="user",
@@ -105,20 +101,6 @@ class User(Base):
     )
 
 
-class DataImportLog(Base):
-    __tablename__ = "dataset_import_logs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    filename = Column(String, nullable=False)
-    total_rows = Column(Integer, nullable=False, default=0)
-    imported_rows = Column(Integer, nullable=False, default=0)
-    skipped_rows = Column(Integer, nullable=False, default=0)
-    error_message = Column(Text, nullable=True)
-    metadata_ = Column('metadata', JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    uploader = relationship("User", back_populates="data_imports")
 
 
 class AIInsight(Base):
@@ -169,36 +151,8 @@ class ChatMessage(Base):
     session = relationship("ChatSession", back_populates="messages")
 
 
-class PendingUpdate(Base):
-    __tablename__ = "pending_updates"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    update_type = Column(String, nullable=False)  # 'profile' | 'score' | 'document'
-    field = Column(String, nullable=True)
-    old_value = Column(String, nullable=True)
-    new_value = Column(String, nullable=True)
-    metadata_ = Column('metadata', JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    user = relationship("User")
 
 
-class MLReferenceDataset(Base):
-    """Global ML reference dataset for general-purpose predictions.
-    Deprecated: Use CustomDatasetSample for custom teaching structures instead.
-    This table is kept for legacy compatibility only.
-    """
-    __tablename__ = "ml_reference_dataset"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
-    sample_label = Column(String, nullable=True)
-    feature_data = Column(JSON, nullable=False)
-    metadata_ = Column('metadata', JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-    user = relationship("User")
 
 
 class CustomTeachingStructure(Base):

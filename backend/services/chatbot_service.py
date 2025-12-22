@@ -9,86 +9,8 @@ from sqlalchemy.orm import Session
 import re
 
 from db import models
-from services.intent_detection import ScoreUpdateIntent, detect_score_update_intent
-from services.intent_detection import detect_profile_update_intent, detect_personalization_intent
-from services.intent_detection import detect_confirmation_intent, detect_cancellation_intent
 from services.pii_redaction import redact_message_content, prepare_safe_llm_prompt, redact_user_for_llm
-# REMOVED: memory_manager import (service deleted, functions moved inline)
-# REMOVED: vector_store_provider import (no longer used)
-from services.educational_knowledge import get_educational_context, get_score_classification, get_gpa_classification, compare_with_benchmark
-
-
-# Helper functions moved from deleted memory_manager service
-def create_pending_update(db: Session, user_id: int, update_type: str, field: str = None, 
-                         old_value: str = None, new_value: str = None, metadata: dict = None):
-    pu = models.PendingUpdate(
-        user_id=user_id,
-        update_type=update_type,
-        field=field,
-        old_value=str(old_value) if old_value is not None else None,
-        new_value=str(new_value) if new_value is not None else None,
-        metadata_=metadata or {},
-    )
-    db.add(pu)
-    db.flush()
-    return pu
-
-
-def list_pending_updates(db: Session, user_id: int):
-    return db.query(models.PendingUpdate).filter(models.PendingUpdate.user_id == user_id).all()
-
-
-def apply_pending_update(db: Session, update_id: int, user_id: int):
-    """Apply a pending update and remove it. Now uses CustomUserScore."""
-    pu = db.query(models.PendingUpdate).filter(
-        models.PendingUpdate.id == update_id,
-        models.PendingUpdate.user_id == user_id
-    ).first()
-    if not pu:
-        return None
-    
-    if pu.update_type == "profile":
-        user = db.query(models.User).filter(models.User.id == user_id).first()
-        if user and pu.field in ("first_name", "last_name", "email", "phone"):
-            setattr(user, pu.field, pu.new_value)
-            db.commit()
-    elif pu.update_type == "score":
-        score_id = (pu.metadata_ or {}).get("score_id")
-        if score_id:
-            # Use CustomUserScore instead of StudyScore
-            score = db.query(models.CustomUserScore).filter(models.CustomUserScore.id == int(score_id)).first()
-            if score:
-                from datetime import datetime
-                score.actual_score = float(pu.new_value)
-                score.updated_at = datetime.utcnow()
-                db.commit()
-                # Trigger prediction update
-                from ml import prediction_service
-                prediction_service.update_predictions_for_user(db, score.user_id)
-    
-    try:
-        db.delete(pu)
-        db.commit()
-    except Exception:
-        db.rollback()
-    return pu
-
-
-def cancel_pending_update(db: Session, update_id: int, user_id: int) -> bool:
-    """Cancel a pending update."""
-    pu = db.query(models.PendingUpdate).filter(
-        models.PendingUpdate.id == update_id,
-        models.PendingUpdate.user_id == user_id
-    ).first()
-    if not pu:
-        return False
-    try:
-        db.delete(pu)
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        return False
+# NOTE: educational_knowledge removed - now using Custom Structure documents for context
 
 
 def set_user_preference(db: Session, user_id: int, key: str, value) -> dict:
@@ -270,26 +192,19 @@ def _get_dataset_summary(db: Session, structure_id: int, user_scores: Optional[D
     Returns only summary stats (avg, percentiles) NOT raw data to save tokens.
     """
     try:
-        # Check if dataset exists
-        dataset = db.query(models.ReferenceDataset).filter(
-            models.ReferenceDataset.structure_id == structure_id
-        ).first()
+        # Check if dataset exists - using CustomDatasetSample (the current model)
+        samples = db.query(models.CustomDatasetSample).filter(
+            models.CustomDatasetSample.structure_id == structure_id
+        ).limit(100).all()  # Limit for performance
         
-        if not dataset or not dataset.data_json:
+        if not samples:
             return ""
         
-        # Parse dataset
-        import json
-        dataset_records = json.loads(dataset.data_json) if isinstance(dataset.data_json, str) else dataset.data_json
-        
-        if not dataset_records or not isinstance(dataset_records, list):
-            return ""
-        
-        # Calculate aggregated stats
+        # Calculate aggregated stats from score_data JSON
         all_scores = []
-        for record in dataset_records[:100]:  # Limit to first 100 records for performance
-            if isinstance(record, dict):
-                scores = [v for v in record.values() if isinstance(v, (int, float)) and 0 <= v <= 10]
+        for sample in samples:
+            if sample.score_data and isinstance(sample.score_data, dict):
+                scores = [v for v in sample.score_data.values() if isinstance(v, (int, float)) and 0 <= v <= 10000]
                 if scores:
                     all_scores.extend(scores)
         
@@ -308,9 +223,17 @@ def _get_dataset_summary(db: Session, structure_id: int, user_scores: Optional[D
         # Add user comparison if scores provided
         if user_scores:
             user_avg = sum(user_scores.values()) / len(user_scores) if user_scores else 0
-            benchmark = compare_with_benchmark(user_scores, dataset_records[:100])
-            if benchmark.get("percentile"):
-                summary += f" | Bạn: TB={user_avg:.1f} (top {100-benchmark['percentile']:.0f}%)"
+            # Inline percentile calculation
+            all_averages = []
+            for sample in samples:
+                if sample.score_data and isinstance(sample.score_data, dict):
+                    scores = [v for v in sample.score_data.values() if isinstance(v, (int, float)) and 0 <= v <= 10000]
+                    if scores:
+                        all_averages.append(sum(scores) / len(scores))
+            if all_averages:
+                all_averages.sort()
+                percentile = sum(1 for avg_val in all_averages if avg_val < user_avg) / len(all_averages) * 100
+                summary += f" | Bạn: TB={user_avg:.1f} (top {100-percentile:.0f}%)"
         
         return summary
         
@@ -358,56 +281,135 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
         })
     
     # Get scores only if message mentions subjects/grades
-    score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp', 'kết quả', 'thi', 'kiểm tra']
+    score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp', 'kết quả', 'thành tích', 'thi', 'kiểm tra', 'dự đoán']
     if any(kw in message.lower() for kw in score_keywords):
-        # Prefer active structure, but fallback to any user scores
+        # Get active structure
         active_structure = db.query(models.CustomTeachingStructure).filter(
             models.CustomTeachingStructure.is_active == True
         ).first()
         
-        # Extract mentioned subjects for filtering
-        mentioned_subjects = _extract_subject_keywords(message)
-        
-        # Query scores - prioritize active structure
-        score_query = db.query(models.CustomUserScore)\
-            .filter(models.CustomUserScore.user_id == user_id)\
-            .filter(models.CustomUserScore.actual_score.isnot(None))
-        
-        # Filter by active structure if exists
         if active_structure:
-            score_query = score_query.filter(models.CustomUserScore.structure_id == active_structure.id)
-        
-        # Filter by mentioned subjects if any
-        if mentioned_subjects:
-            score_query = score_query.filter(models.CustomUserScore.subject.in_(mentioned_subjects))
-            limit = 10  # More scores if specific subject mentioned
-        else:
-            limit = 8  # All subjects, limit to recent 8
-        
-        recent_scores = score_query.order_by(models.CustomUserScore.updated_at.desc()).limit(limit).all()
-        
-        # Group by subject for compact format
-        subject_scores = {}
-        structure_name = active_structure.structure_name if active_structure else "Tất cả cấu trúc"
-        
-        for score in recent_scores:
-            if score.subject not in subject_scores:
-                subject_scores[score.subject] = []
-            subject_scores[score.subject].append(f"{score.time_point}:{score.actual_score}")
-        
-        # Create compact score summary
-        if subject_scores:
-            score_lines = [f"{subj} ({', '.join(scores[:3])})" for subj, scores in subject_scores.items()]
-            contexts.append({
-                "title": "Điểm số hiện tại",
-                "content": "; ".join(score_lines),
-                "score": 0.95,
-                "metadata": {
-                    "type": "score_data",
-                    "structure": structure_name,
-                    "subject_count": len(subject_scores)
+            # Get user's current time point preference
+            user_pref = db.query(models.UserStructurePreference).filter(
+                models.UserStructurePreference.user_id == user_id,
+                models.UserStructurePreference.structure_id == active_structure.id
+            ).first()
+            
+            current_tp = user_pref.current_timepoint if user_pref and user_pref.current_timepoint else None
+            time_point_labels = active_structure.time_point_labels or []
+            
+            # Determine current time point index
+            if current_tp and current_tp in time_point_labels:
+                current_tp_index = time_point_labels.index(current_tp)
+            else:
+                # Default to last time point with actual data
+                current_tp_index = 0
+            
+            # Get ALL scores for this user+structure (both actual and predicted)
+            all_scores = db.query(models.CustomUserScore).filter(
+                models.CustomUserScore.user_id == user_id,
+                models.CustomUserScore.structure_id == active_structure.id
+            ).all()
+            
+            # Categorize scores by temporal status
+            past_scores = []      # time_point_index < current_tp_index
+            current_scores = []   # time_point_index == current_tp_index
+            future_scores = []    # time_point_index > current_tp_index
+            
+            for score in all_scores:
+                # Get time point index
+                if score.time_point in time_point_labels:
+                    tp_index = time_point_labels.index(score.time_point)
+                else:
+                    continue
+                
+                # Determine score type
+                if score.actual_score is not None:
+                    score_value = score.actual_score
+                    score_type = "thực tế"
+                    marker = "✓"
+                elif score.predicted_score is not None:
+                    score_value = score.predicted_score
+                    score_type = "dự đoán"
+                    marker = "⚡"
+                else:
+                    continue  # No data
+                
+                score_info = {
+                    "subject": score.subject,
+                    "time_point": score.time_point,
+                    "value": score_value,
+                    "type": score_type,
+                    "marker": marker,
+                    "source": score.predicted_source if score.actual_score is None else None
                 }
-            })
+                
+                # Categorize by temporal status
+                if tp_index < current_tp_index:
+                    past_scores.append(score_info)
+                elif tp_index == current_tp_index:
+                    current_scores.append(score_info)
+                else:
+                    future_scores.append(score_info)
+            
+            # Build enhanced context string
+            context_parts = []
+            context_parts.append(f"📊 ĐIỂM SỐ (Cấu trúc: \"{active_structure.structure_name}\", Thời điểm hiện tại: {current_tp or 'chưa xác định'})")
+            
+            # Format past scores
+            if past_scores:
+                past_lines = []
+                subjects = {}
+                for s in past_scores:
+                    if s["subject"] not in subjects:
+                        subjects[s["subject"]] = []
+                    subjects[s["subject"]].append(f"{s['time_point']}={s['value']}{s['marker']}")
+                for subj, scores in subjects.items():
+                    past_lines.append(f"  • {subj}: {', '.join(scores[:4])}")
+                context_parts.append("🔙 QUÁ KHỨ:")
+                context_parts.extend(past_lines[:5])  # Limit to 5 subjects
+            
+            # Format current scores
+            if current_scores:
+                curr_lines = []
+                for s in current_scores:
+                    status = f"({s['type']})" if s['type'] == 'dự đoán' else ""
+                    curr_lines.append(f"  • {s['subject']}: {s['value']}{s['marker']} {status}")
+                context_parts.append("📍 HIỆN TẠI:")
+                context_parts.extend(curr_lines[:8])  # Limit to 8 subjects
+            
+            # Format future predictions
+            if future_scores:
+                fut_lines = []
+                subjects = {}
+                for s in future_scores:
+                    if s["subject"] not in subjects:
+                        subjects[s["subject"]] = []
+                    subjects[s["subject"]].append(f"{s['time_point']}={s['value']}{s['marker']}")
+                for subj, scores in subjects.items():
+                    fut_lines.append(f"  • {subj}: {', '.join(scores[:4])}")
+                context_parts.append("TƯƠNG LAI (dự đoán):")
+                context_parts.extend(fut_lines[:5])  # Limit to 5 subjects
+            
+            # Add legend
+            if past_scores or current_scores or future_scores:
+                context_parts.append("Chú thích: ✓=thực tế, ⚡=dự đoán ML")
+            
+            # Create context block
+            if len(context_parts) > 1:  # Has more than just header
+                contexts.append({
+                    "title": "Điểm số học sinh",
+                    "content": "\n".join(context_parts),
+                    "score": 0.95,
+                    "metadata": {
+                        "type": "enhanced_score_data",
+                        "structure": active_structure.structure_name,
+                        "current_timepoint": current_tp,
+                        "past_count": len(past_scores),
+                        "current_count": len(current_scores),
+                        "future_count": len(future_scores)
+                    }
+                })
     
     return contexts
 
@@ -421,10 +423,8 @@ def _build_prompt(
 ) -> List[Dict[str, str]]:
     """Build optimized system prompt with dynamic context selection and custom structure adaptation."""
     
-    # REMOVED: context_optimizer (service deleted, using simplified direct approach)
-    
-    # Build context directly (simplified)
-    educational_ctx = get_educational_context()[:1500]  # Limit to 1500 chars
+    # NOTE: Legacy educational_knowledge.get_educational_context() removed
+    # Context is now dynamically loaded from CustomStructureDocument associated with active structure
     
     # Base instructions (always included, lightweight)
     instructions = (
@@ -508,10 +508,6 @@ def _build_prompt(
             import logging
             logging.getLogger("uvicorn.error").warning(f"Failed to load custom structure context: {e}")
     
-    # Add educational knowledge
-    if educational_ctx:
-        instructions += f"\n\n# KIẾN THỨC:\n{educational_ctx}"
-
     # build context block
     context_texts = []
     for idx, ctx in enumerate(contexts, start=1):
@@ -632,8 +628,8 @@ def _derive_score_suggestion(
     intent: Optional[ScoreUpdateIntent],
 ) -> Optional[Dict[str, object]]:
     """
-    Derive score suggestion from intent detection.
-    Now uses CustomUserScore and supports multiple structures.
+    Derive score suggestion from score update intent.
+    Uses CustomUserScore and supports multiple structures.
     
     Strategy:
     1. Try active structure first
@@ -720,71 +716,6 @@ async def generate_chat_response(
 ) -> Dict[str, object]:
     user_id = user.get("user_id") if user else None
     
-    # Check for confirmation/cancellation of pending updates FIRST
-    is_confirmation = detect_confirmation_intent(message)
-    is_cancellation = detect_cancellation_intent(message)
-    
-    confirmation_result = None
-    if user_id and (is_confirmation or is_cancellation):
-        # Get most recent pending update
-        pending_updates = list_pending_updates(db, user_id)
-        if pending_updates:
-            most_recent = pending_updates[0]  # Most recent first
-            
-            if is_confirmation:
-                # Apply the pending update
-                try:
-                    applied = apply_pending_update(db, most_recent.id, user_id)
-                    if applied:
-                        confirmation_result = {
-                            "action": "confirmed",
-                            "type": most_recent.update_type,
-                            "field": most_recent.field,
-                            "value": most_recent.new_value,
-                            "message": f"Đã cập nhật {most_recent.field} thành {most_recent.new_value}"
-                        }
-                        
-                        # If it's a score update, also update predictions
-                        if most_recent.update_type == "score":
-                            from ml import prediction_service
-                            # REMOVED: vector_store sync (no longer used)
-                            
-                            try:
-                                # Update predictions only
-                                prediction_service.update_predictions_for_user(db, user_id)
-                            except Exception:
-                                pass
-                except Exception as e:
-                    confirmation_result = {
-                        "action": "error",
-                        "message": f"Lỗi khi cập nhật: {str(e)}"
-                    }
-            
-            elif is_cancellation:
-                # Cancel the pending update
-                try:
-                    cancelled = cancel_pending_update(db, most_recent.id, user_id)
-                    if cancelled:
-                        confirmation_result = {
-                            "action": "cancelled",
-                            "type": most_recent.update_type,
-                            "field": most_recent.field,
-                            "message": f"Đã hủy yêu cầu cập nhật {most_recent.field}"
-                        }
-                except Exception:
-                    pass
-    
-    # If we handled a confirmation/cancellation, return early with custom response
-    if confirmation_result:
-        answer = confirmation_result["message"]
-        return {
-            "answer": answer,
-            "contexts": [],
-            "confirmation_handled": True,
-            "confirmation_result": confirmation_result,
-            "session_id": session_id
-        }
-    
     contexts = _build_context_blocks(user_id, message, db)
     
     # Prepare conversation history for optimization
@@ -820,8 +751,6 @@ async def generate_chat_response(
     # Append current user message at end
     optimized_history.append({"role": "user", "content": safe_message})
 
-    # REMOVED: Intent detection for score updates
-    # User will update scores manually via UI, not through chatbot auto-detection
 
     # Finalize message list: system messages first, then optimized history
     messages = []
@@ -857,80 +786,7 @@ async def generate_chat_response(
             )
         contexts.append({"error": str(exc)})
 
-    # No pending score updates - removed intent detection
     pending_score_update = None
-
-    # Detect profile updates
-    profile_candidate = detect_profile_update_intent(message)
-    pending_profile = None
-    if profile_candidate and user_id:
-        # create pending update so user can confirm
-        # We only try to set a tentative update if the detected candidate has at least moderate confidence
-        conf = float(profile_candidate.get("confidence", 0))
-        field = profile_candidate.get("field")
-        value = profile_candidate.get("value")
-        if conf >= 0.6 and field and value:
-            # For a full detected value (like email/phone/name) we create a pending update
-            # and include it in the response payload for the frontend to ask confirmation
-            try:
-                # handle name splitting heuristics
-                pending_field = field
-                pending_value = value
-                if field == "first_last":
-                    parts = value.split()
-                    last = parts[0] if parts else value
-                    first = " ".join(parts[1:]) if len(parts) > 1 else ""
-                    # store name as separate pending updates is safer; prefer setting both
-                    pending_profile = create_pending_update(
-                        db,
-                        user_id=user_id,
-                        update_type="profile",
-                        field="last_name",
-                        old_value=None,
-                        new_value=last,
-                    )
-                    # also create a pending first name if present (frontend can show both)
-                    if first:
-                        create_pending_update(
-                            db,
-                            user_id=user_id,
-                            update_type="profile",
-                            field="first_name",
-                            old_value=None,
-                            new_value=first,
-                        )
-                else:
-                    pending_profile = create_pending_update(
-                        db,
-                        user_id=user_id,
-                        update_type="profile",
-                        field=("first_name" if field == "first_name" else ("last_name" if field == "last_name" else field)),
-                        old_value=None,
-                        new_value=value,
-                    )
-            except Exception:
-                pending_profile = None
-
-    # Detect explicit write memory cues: if user asked the assistant to remember something
-    wants_memory = any(k in message.lower() for k in ("ghi nhớ", "remember", "save this", "nhớ rằng"))
-    memory_doc = None
-    if wants_memory and user_id:
-        # create a short learning document and upsert immediately (non-sensitive)
-        try:
-            doc_title = "Ghi nhớ từ cuộc trò chuyện"
-            memory_doc = create_pending_update(
-                db,
-                user_id,
-                update_type="document",
-                field=doc_title,
-                old_value=None,
-                new_value=message,
-            )
-            # auto-apply document-type pending updates (non-sensitive)
-            apply_pending_update(db, memory_doc.id, user_id)
-            memory_doc = None
-        except Exception:
-            memory_doc = None
 
     # Detect non-sensitive personalization intents and auto-apply
     try:
@@ -1112,8 +968,6 @@ async def generate_chat_response(
         "answer": answer,
         "contexts": contexts,
         "pending_score_update": pending_score_update,
-        "pending_profile_update": {"id": pending_profile.id, "field": pending_profile.field, "value": pending_profile.new_value} if pending_profile else None,
-        "memory_saved": bool(memory_doc is None and wants_memory and user_id),
         "session_id": persisted_session_id,
     }
 

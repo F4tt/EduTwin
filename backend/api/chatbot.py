@@ -21,56 +21,6 @@ from services.proactive_engagement import ProactiveEngagement
 from core.websocket_manager import emit_chat_message, emit_chat_typing
 
 
-# Helper functions for pending updates (moved from deleted memory_manager service)
-def list_pending_updates_for_user(db: Session, user_id: int):
-    return db.query(models.PendingUpdate).filter(models.PendingUpdate.user_id == user_id).all()
-
-
-def apply_pending_update(db: Session, update_id: int, user_id: int):
-    """Apply a pending update and remove it from queue."""
-    pu = db.query(models.PendingUpdate).filter(
-        models.PendingUpdate.id == update_id,
-        models.PendingUpdate.user_id == user_id
-    ).first()
-    if not pu:
-        return None
-    
-    # Handle profile updates
-    if pu.update_type == "profile":
-        user = db.query(models.User).filter(models.User.id == user_id).first()
-        if user and pu.field in ("first_name", "last_name", "email", "phone"):
-            setattr(user, pu.field, pu.new_value)
-            db.commit()
-    
-    # Score updates removed - use custom structure API instead
-    
-    # Remove pending update after applying
-    try:
-        db.delete(pu)
-        db.commit()
-    except Exception:
-        db.rollback()
-    
-    return pu
-
-
-def cancel_pending_update(db: Session, update_id: int, user_id: int) -> bool:
-    """Cancel a pending update without applying it."""
-    pu = db.query(models.PendingUpdate).filter(
-        models.PendingUpdate.id == update_id,
-        models.PendingUpdate.user_id == user_id
-    ).first()
-    if not pu:
-        return False
-    try:
-        db.delete(pu)
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        return False
-
-
 router = APIRouter(tags=["Chatbot"])
 
 
@@ -86,18 +36,6 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(default=None)
     message: str
 
-
-class ScoreUpdateConfirmation(BaseModel):
-    score_id: int
-    new_score: float = Field(ge=0, le=10)
-
-
-class PendingUpdateConfirm(BaseModel):
-    update_id: int
-
-
-class PendingUpdateCancel(BaseModel):
-    update_id: int
 
 
 class CreateSessionPayload(BaseModel):
@@ -287,10 +225,11 @@ async def chatbot_endpoint(
             logging.getLogger("uvicorn.error").warning(f"Failed to emit WebSocket message: {e}")
     
     # Auto-learn personalization AFTER response (non-blocking)
-    # Run in background to not slow down response
+    # Uses HYBRID approach: keyword detection + LLM analysis
     if current_user and sess_id:
-        import threading
-        def background_learning():
+        import asyncio
+        
+        async def async_hybrid_learning():
             learning_db = database.SessionLocal()
             try:
                 session_id_int = int(sess_id)
@@ -299,51 +238,28 @@ async def chatbot_endpoint(
                     learning_db.refresh(session)
                     msg_count = len(session.messages)
                     
-                    if msg_count % 5 == 0 and msg_count >= 5:
-                        import logging
-                        logger = logging.getLogger("uvicorn.error")
-                        logger.info(f"Background learning started for user {current_user.get('user_id')} after {msg_count} messages")
+                    # Trigger every 3 messages (more frequent personalization updates)
+                    if msg_count % 3 == 0 and msg_count >= 3:
+                        logger.info(f"[HYBRID] Starting personalization learning for user {current_user.get('user_id')} after {msg_count} messages")
                         
-                        learner = PersonalizationLearner()
-                        learned = learner.analyze_session_preferences(session)
+                        from services.hybrid_personalization_learner import update_user_personalization_hybrid
+                        result = await update_user_personalization_hybrid(
+                            db=learning_db,
+                            user_id=current_user.get("user_id"),
+                            session=session
+                        )
                         
-                        user = learning_db.query(models.User).filter_by(id=current_user.get("user_id")).first()
-                        if user:
-                            if not user.preferences:
-                                user.preferences = {}
-                            
-                            # Merge with existing preferences (dict format)
-                            existing = user.preferences.get("learned", {})
-                            if isinstance(existing, dict):
-                                # Merge categories
-                                for category, items in learned.items():
-                                    if category not in existing:
-                                        existing[category] = []
-                                    # Add new items, avoid duplicates
-                                    for item in items:
-                                        if item not in existing[category]:
-                                            existing[category].append(item)
-                                    # Keep max 5 per category
-                                    existing[category] = existing[category][:5]
-                                user.preferences["learned"] = existing
-                            else:
-                                # First time or old format - use new dict
-                                user.preferences["learned"] = learned
-                            
-                            from sqlalchemy.orm.attributes import flag_modified
-                            flag_modified(user, "preferences")
-                            
-                            learning_db.commit()
+                        if result.get("updated"):
+                            logger.info(f"[HYBRID] Updated preferences: {result.get('categories_updated')}")
+                        
             except Exception as e:
-                import logging
-                logging.getLogger("uvicorn.error").exception(f"Error in background auto-learning: {e}")
+                logger.exception(f"Error in hybrid personalization learning: {e}")
                 learning_db.rollback()
             finally:
                 learning_db.close()
         
-        # Start background thread (non-blocking)
-        thread = threading.Thread(target=background_learning, daemon=True)
-        thread.start()
+        # Run async task in background
+        asyncio.create_task(async_hybrid_learning())
     
     return JSONResponse(content=response_payload)
 
@@ -473,67 +389,6 @@ async def chatbot_stream_endpoint(
         }
     )
 
-
-@router.get("/chatbot/pending-updates")
-@require_auth
-def list_pending_updates(request: Request, db: Session = Depends(get_db)):
-    current_user = get_current_user(request)
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
-
-    updates = list_pending_updates_for_user(db, current_user.get("user_id"))
-    return [
-        {
-            "id": u.id,
-            "type": u.update_type,
-            "field": u.field,
-            "old_value": u.old_value,
-            "new_value": u.new_value,
-            "metadata": u.metadata_,
-            "created_at": u.created_at,
-        }
-        for u in updates
-    ]
-@router.post("/chatbot/confirm-update")
-@require_auth
-async def confirm_pending_update(
-    request: Request,
-    payload: dict = Body(...),
-    db: Session = Depends(get_db)
-):
-    current_user = get_current_user(request)
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
-
-    update_id = payload.get("update_id")
-    if not update_id:
-        raise HTTPException(status_code=400, detail="Thiếu update_id")
-    
-    pu = apply_pending_update(db, update_id, current_user.get("user_id"))
-    if not pu:
-        raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu cập nhật.")
-    return {"message": "Đã áp dụng cập nhật.", "id": pu.id}
-
-
-@router.post("/chatbot/cancel-update")
-@require_auth
-async def cancel_update(
-    request: Request,
-    payload: dict = Body(...),
-    db: Session = Depends(get_db)
-):
-    current_user = get_current_user(request)
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
-
-    update_id = payload.get("update_id")
-    if not update_id:
-        raise HTTPException(status_code=400, detail="Thiếu update_id")
-    
-    ok = cancel_pending_update(db, update_id, current_user.get("user_id"))
-    if not ok:
-        raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu.")
-    return {"message": "Đã huỷ yêu cầu cập nhật."}
 
 
 @router.post("/chatbot/sessions")

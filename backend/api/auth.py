@@ -198,13 +198,17 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
     # ML predictions are now handled per custom structure via /custom-model/user-scores API
     # Old auto-update system removed - users trigger predictions via custom structure UI
     
+    # Determine if we're in production (HTTPS required)
+    import os
+    is_production = os.getenv("ENVIRONMENT", "development") == "production"
+    
     # Set session cookie with proper settings for cross-origin requests
     response.set_cookie(
         key="session_id",
         value=session_id,
         httponly=True,  # Bảo mật: JavaScript không thể truy cập
-        secure=False,   # Để test local (sẽ là True trong production với HTTPS)
-        samesite="lax", # Bảo vệ CSRF, cho phép cookie gửi với navigation
+        secure=is_production,   # True for production (HTTPS), False for local dev
+        samesite="lax" if is_production else "lax", # Bảo vệ CSRF
         max_age=24 * 60 * 60,  # 24 giờ - quan trọng để cookie persist qua refresh
         path="/",       # Cookie available for all paths
     )

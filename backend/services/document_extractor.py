@@ -154,7 +154,54 @@ Hãy trích xuất thông tin quan trọng theo định dạng yêu cầu:"""
 
     try:
         llm = get_llm_provider()
-        summary = await llm.generate_async(prompt, max_tokens=TARGET_SUMMARY_TOKENS)
+        
+        # Use chat method which is available in LLMProvider
+        messages = [
+            {"role": "system", "content": "Bạn là chuyên gia phân tích tài liệu giáo dục. Hãy trích xuất thông tin quan trọng một cách súc tích."},
+            {"role": "user", "content": prompt}
+        ]
+        response = await llm.chat(messages, temperature=0.3)
+        
+        # Extract text from response (handle different response formats)
+        summary = ""
+        if isinstance(response, dict):
+            # Try various response formats
+            if "candidates" in response:
+                candidates = response.get("candidates", [])
+                if candidates and isinstance(candidates[0], dict):
+                    content = candidates[0].get("content", {})
+                    if isinstance(content, dict):
+                        parts = content.get("parts", [])
+                        if parts and isinstance(parts[0], dict):
+                            summary = parts[0].get("text", "")
+            elif "choices" in response:
+                choices = response.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {})
+                    summary = msg.get("content", "") if isinstance(msg, dict) else ""
+            
+            if not summary:
+                # Fallback: scan for text in response
+                def _scan(obj):
+                    if isinstance(obj, str) and len(obj) > 100:
+                        return obj
+                    if isinstance(obj, dict):
+                        for v in obj.values():
+                            res = _scan(v)
+                            if res:
+                                return res
+                    if isinstance(obj, list):
+                        for v in obj:
+                            res = _scan(v)
+                            if res:
+                                return res
+                    return None
+                summary = _scan(response) or ""
+        elif isinstance(response, str):
+            summary = response
+        
+        if not summary:
+            raise ValueError("Empty response from LLM")
         
         metadata = {
             "original_length_chars": len(full_text),

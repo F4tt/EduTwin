@@ -383,6 +383,8 @@ def update_predictions_for_custom_structure(
             k=model_params["knn_n"]
         )
     
+    # Note: predictions are already in the scale of the reference dataset
+    
     # Save predictions
     predicted_count = 0
     for key, pred_value in predictions.items():

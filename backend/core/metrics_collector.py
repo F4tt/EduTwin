@@ -5,7 +5,7 @@ Runs periodically to update system-level metrics.
 import asyncio
 import psutil
 import time
-from backend.core.metrics import (
+from core.metrics import (
     process_memory_bytes,
     process_cpu_percent,
     db_connections_active,

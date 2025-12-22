@@ -1,8 +1,8 @@
 import axios from 'axios';
 
-// Dev mode: use VITE_API_URL from env or default to localhost:8000
-// Production mode: empty string (use Nginx proxy)
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Dev mode: use VITE_API_URL from env
+// Production mode: empty string (relative URL - API calls go through ALB routing)
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 const axiosClient = axios.create({
     baseURL: API_URL,
@@ -22,7 +22,7 @@ axiosClient.interceptors.response.use(
             if (requestUrl.includes('/auth/me')) {
                 return Promise.reject(error);
             }
-            
+
             // For other endpoints, redirect to login (but avoid loop)
             if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
                 window.location.href = '/login';

@@ -26,6 +26,49 @@ def _ensure_developer(user: dict | None) -> None:
         raise HTTPException(status_code=403, detail="Chỉ developer mới được phép truy cập tính năng này.")
 
 
+import os
+
+@router.post("/set-admin")
+async def set_admin_role(
+    payload: dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Set user role to admin using a secret key.
+    This is a secure way to promote users without direct database access.
+    
+    Required payload:
+    - username: Username to promote
+    - secret_key: Must match SECRET_KEY environment variable
+    """
+    username = payload.get("username", "").strip()
+    secret_key = payload.get("secret_key", "").strip()
+    
+    # Verify secret key matches
+    env_secret = os.getenv("SECRET_KEY", "")
+    if not secret_key or secret_key != env_secret:
+        raise HTTPException(status_code=403, detail="Invalid secret key")
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    
+    # Find user
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+    
+    # Set role to admin
+    old_role = user.role
+    user.role = "admin"
+    db.commit()
+    
+    return JSONResponse(content={
+        "message": f"User '{username}' role changed from '{old_role}' to 'admin'",
+        "username": username,
+        "new_role": "admin"
+    })
+
+
 def _retrigger_pipeline_for_all_users(db: Session) -> dict:
     """Retrigger ML pipeline for all users with active structures after model/parameter changes."""
     from api.custom_model import _trigger_prediction_for_structure
@@ -121,61 +164,9 @@ async def llm_test(payload: dict = Body(...)):
     return JSONResponse(content={"raw": resp, "answer": answer})
 
 
-@router.get("/dataset-status")
-@require_auth
-def get_dataset_status(request: Request, db: Session = Depends(get_db)):
-    """Get ML reference dataset status."""
-    user = get_current_user(request)
-    _ensure_developer(user)
 
-    sample_count = db.query(models.MLReferenceDataset).count()
-    
-    all_imports = (
-        db.query(models.DataImportLog)
-        .order_by(models.DataImportLog.created_at.desc())
-        .all()
-    )
-    
-    last_import = None
-    for imp in all_imports:
-        if imp.metadata_:
-            metadata = imp.metadata_ if isinstance(imp.metadata_, dict) else {}
-            if metadata.get('dataset_type') == 'ml_reference':
-                last_import = imp
-                break
-    
-    if not last_import and all_imports:
-        last_import = all_imports[0]
-    
-    if sample_count > 0:
-        sample = db.query(models.MLReferenceDataset).first()
-        if sample and sample.feature_data:
-            avg_features = len(sample.feature_data)
-            estimated_bytes = sample_count * avg_features * 20
-            size_mb = estimated_bytes / (1024 * 1024)
-        else:
-            size_mb = 0
-    else:
-        size_mb = 0
 
-    result = {
-        "has_dataset": sample_count > 0,
-        "sample_count": sample_count,
-        "size_mb": round(size_mb, 2),
-        "last_import": None
-    }
 
-    if last_import:
-        result["last_import"] = {
-            "filename": last_import.filename,
-            "imported_rows": last_import.imported_rows,
-            "total_rows": last_import.total_rows,
-            "skipped_rows": last_import.skipped_rows,
-            "created_at": last_import.created_at.isoformat() if last_import.created_at else None,
-            "uploaded_by": last_import.uploaded_by
-        }
-
-    return result
 
 
 # ===== CUSTOM STRUCTURE DOCUMENT MANAGEMENT =====

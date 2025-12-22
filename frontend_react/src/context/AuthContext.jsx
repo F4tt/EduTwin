@@ -140,9 +140,6 @@ export const AuthProvider = ({ children }) => {
                 // Clear DataViz AI comments
                 const aiCacheKey = `dataviz_ai_comments_${username}`;
                 window.localStorage.removeItem(aiCacheKey);
-
-                // NOTE: Learning Goals AI strategy is NOT cleared on logout
-                // to preserve strategy even when user logs out
             } catch (e) {
                 console.error('Failed to clear AI cache on logout:', e);
             }

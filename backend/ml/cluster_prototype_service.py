@@ -24,73 +24,38 @@ from ml.prediction_cache import (
     compute_dataset_hash,
     invalidate_cluster_cache
 )
+from ml.scale_normalizer import get_scale_max
 
 
 def calculate_optimal_clusters(dataset_size: int) -> int:
     """
-    Calculate optimal number of clusters based on dataset size
+    Calculate optimal number of clusters based on dataset size.
     
-    OPTIMIZED STRATEGY for LWLR accuracy:
-    - Small (< 3,000): No clustering - use full dataset for maximum accuracy
-    - Medium-Low (3,000 - 5,000): Light clustering (~15-22 clusters)
-    - Medium (5,000 - 10,000): Moderate clustering (~30-45 clusters)
-    - Large (10,000 - 30,000): Standard clustering (~50-100 clusters)
-    - Very Large (30,000 - 50,000): Heavy clustering (~70-100 clusters)
-    - Massive (> 50,000): Maximum clustering (100-150 clusters)
+    Strategy: Each cluster should have ~3000 samples for optimal prediction.
+    - N < 3000: No clustering (return 1)
+    - N >= 3000: K = ceil(N / 3000), capped at MAX_CLUSTERS for KMeans efficiency
+    
+    This ensures:
+    - Minimal merge operations (clusters are ~3000 in size)
+    - Fast KMeans (capped cluster count for large datasets)
     """
-    if dataset_size < 3000:
-        # Small dataset: NO clustering, use full dataset for best LWLR accuracy
+    TARGET_SAMPLES_PER_CLUSTER = 3000
+    MAX_CLUSTERS = 100  # Cap to keep KMeans efficient for very large datasets
+    
+    if dataset_size < TARGET_SAMPLES_PER_CLUSTER:
+        # Small dataset: NO clustering, use full dataset
         return 1
-    elif dataset_size < 5000:
-        # Light clustering: ~15-22 clusters
-        return max(15, int(np.sqrt(dataset_size / 10)))
-    elif dataset_size < 10000:
-        # Moderate clustering: ~30-45 clusters
-        return max(30, int(np.sqrt(dataset_size / 5)))
-    elif dataset_size < 30000:
-        # Standard clustering: ~50-100 clusters
-        return max(50, dataset_size // 300)
-    elif dataset_size < 50000:
-        # Heavy clustering: ~70-100 clusters
-        return max(70, dataset_size // 500)
-    else:
-        # Maximum clustering: 100-150 clusters (capped)
-        return min(150, max(100, dataset_size // 500))
+    
+    # Calculate clusters to achieve ~3000 samples per cluster
+    optimal_k = int(np.ceil(dataset_size / TARGET_SAMPLES_PER_CLUSTER))
+    return min(optimal_k, MAX_CLUSTERS)
 
 
-def calculate_optimal_prototypes(cluster_size: int, total_dataset_size: int) -> int:
-    """
-    Calculate optimal number of prototypes per cluster
-    
-    OPTIMIZED for LWLR accuracy:
-    - < 3,000: Use ALL samples (100%) - no reduction
-    - 3,000 - 5,000: Keep 70-80% for high accuracy
-    - 5,000 - 10,000: Keep 50-60% balanced approach
-    - 10,000 - 30,000: Keep 35-45% for performance
-    - > 30,000: Keep 25-35% prioritize speed
-    
-    LWLR requires sufficient samples for stable weighted regression.
-    Minimum ~40-80 prototypes per cluster depending on dataset size.
-    """
-    if total_dataset_size < 3000:
-        # Small dataset: use ALL samples for maximum accuracy
-        return cluster_size
-    elif total_dataset_size < 5000:
-        # Keep 70-80% of cluster data
-        n_prototypes = int(cluster_size * 0.75)
-        return max(80, min(120, n_prototypes))
-    elif total_dataset_size < 10000:
-        # Keep 50-60% of cluster data
-        n_prototypes = int(cluster_size * 0.55)
-        return max(60, min(100, n_prototypes))
-    elif total_dataset_size < 30000:
-        # Keep 35-45% of cluster data
-        n_prototypes = int(cluster_size * 0.4)
-        return max(50, min(80, n_prototypes))
-    else:
-        # Keep 25-35% of cluster data for large datasets
-        n_prototypes = int(cluster_size * 0.3)
-        return max(40, min(60, n_prototypes))
+
+# Note: calculate_optimal_prototypes removed - we now store ALL samples in clusters
+# and select ~3000 at prediction time via merge/select logic
+
+
 
 
 class ClusterPrototypeIndex:
@@ -122,7 +87,10 @@ class ClusterPrototypeIndex:
     
     def fit(self, dataset: List[Dict[str, float]], feature_keys: List[str]):
         """
-        Cluster dataset and select prototypes
+        Cluster dataset and store ALL samples per cluster.
+        
+        Samples are sorted by distance to cluster center for efficient
+        prototype selection at prediction time.
         
         Args:
             dataset: List of score dictionaries
@@ -161,38 +129,31 @@ class ClusterPrototypeIndex:
         )
         cluster_labels = self.kmeans.fit_predict(X)
         
-        # Select prototypes for each cluster
+        # Store ALL samples for each cluster (sorted by distance to center)
         for cluster_id in range(self.n_clusters):
             cluster_mask = cluster_labels == cluster_id
             cluster_samples = [valid_samples[i] for i in range(len(valid_samples)) if cluster_mask[i]]
             cluster_X = X[cluster_mask]
             
             if len(cluster_samples) == 0:
+                self.cluster_prototypes[cluster_id] = []
                 continue
             
-            # Calculate optimal prototypes for this cluster
-            optimal_prototypes = calculate_optimal_prototypes(
-                cluster_size=len(cluster_samples),
-                total_dataset_size=len(X)
-            )
-            
-            # Prototype selection: use k-medoids-like approach
-            # Select points closest to cluster center
+            # Calculate distance to cluster center and sort samples
             center = self.kmeans.cluster_centers_[cluster_id:cluster_id+1]
             distances = np.linalg.norm(cluster_X - center, axis=1)
+            sorted_indices = np.argsort(distances)
             
-            # Take top N closest points as prototypes
-            n_prototypes = min(optimal_prototypes, len(cluster_samples))
-            prototype_indices = np.argsort(distances)[:n_prototypes]
+            # Store ALL samples, sorted by distance (closest first)
+            self.cluster_prototypes[cluster_id] = [cluster_samples[idx] for idx in sorted_indices]
             
-            self.cluster_prototypes[cluster_id] = [cluster_samples[idx] for idx in prototype_indices]
-            
-            print(f"[CLUSTER] Cluster {cluster_id}: {len(cluster_samples)} samples -> {len(self.cluster_prototypes[cluster_id])} prototypes ({n_prototypes}/{len(cluster_samples)} = {100*n_prototypes/len(cluster_samples):.1f}%)")
+            print(f"[CLUSTER] Cluster {cluster_id}: {len(cluster_samples)} samples stored")
         
         self.is_fitted = True
-        total_prototypes = sum(len(p) for p in self.cluster_prototypes.values())
-        reduction_ratio = 100 * (1 - total_prototypes / len(X))
-        print(f"[CLUSTER] Clustering complete. Total prototypes: {total_prototypes}/{len(X)} (reduced by {reduction_ratio:.1f}%)")
+        total_samples = sum(len(p) for p in self.cluster_prototypes.values())
+        avg_per_cluster = total_samples // max(1, self.n_clusters)
+        print(f"[CLUSTER] Clustering complete. Total: {total_samples} samples, Avg: {avg_per_cluster}/cluster")
+
     
     def assign_cluster(self, query_features: Dict[str, float]) -> int:
         """
@@ -226,6 +187,37 @@ class ClusterPrototypeIndex:
             List of prototype samples
         """
         return self.cluster_prototypes.get(cluster_id, [])
+    
+    def find_nearest_clusters(self, cluster_id: int, k: int = 3) -> List[int]:
+        """
+        Find k nearest clusters to the given cluster based on centroid distance
+        
+        Args:
+            cluster_id: Source cluster ID
+            k: Number of nearest neighbors to find
+            
+        Returns:
+            List of cluster IDs sorted by distance (excluding source cluster)
+        """
+        if not self.is_fitted or self.kmeans is None:
+            return []
+        
+        # Get centroid of source cluster
+        source_centroid = self.kmeans.cluster_centers_[cluster_id]
+        
+        # Calculate distances to all other centroids
+        distances = []
+        for cid in range(self.n_clusters):
+            if cid == cluster_id:
+                continue
+            other_centroid = self.kmeans.cluster_centers_[cid]
+            dist = np.linalg.norm(source_centroid - other_centroid)
+            distances.append((dist, cid))
+        
+        # Sort by distance and return top k
+        distances.sort(key=lambda x: x[0])
+        return [cid for _, cid in distances[:k]]
+
     
     def save(self, filepath: str):
         """Save index to file"""
@@ -516,10 +508,16 @@ def predict_with_cluster_index(
     actual_map: Dict[str, float],
     target_keys: Set[str],
     model_type: str = "knn",
-    model_params: Dict[str, float] = None
+    model_params: Dict[str, float] = None,
+    target_samples: int = 3000
 ) -> Dict[str, float]:
     """
-    Predict using cluster index
+    Predict using cluster index with adaptive sample selection.
+    
+    Strategy:
+    - If cluster has < target_samples: MERGE neighboring clusters
+    - If cluster has > target_samples: SELECT closest prototypes
+    - Target ~3000 samples for optimal lazy learning prediction
     
     Args:
         index: Fitted ClusterPrototypeIndex
@@ -527,6 +525,7 @@ def predict_with_cluster_index(
         target_keys: Keys to predict
         model_type: 'knn', 'kernel_regression', or 'lwlr'
         model_params: Model parameters
+        target_samples: Target number of samples for prediction (default 3000)
         
     Returns:
         Predictions dict
@@ -544,39 +543,67 @@ def predict_with_cluster_index(
     # Step 1: Assign to cluster
     cluster_id = index.assign_cluster(actual_map)
     
-    # Step 2: Get prototypes for this cluster
-    prototypes = index.get_cluster_prototypes(cluster_id)
+    # Step 2: Get samples for this cluster
+    samples = list(index.get_cluster_prototypes(cluster_id))
     
-    if not prototypes:
-        print(f"[CLUSTER] Warning: No prototypes in cluster {cluster_id}")
+    if not samples:
+        print(f"[CLUSTER] Warning: No samples in cluster {cluster_id}")
         return {}
     
-    print(f"[CLUSTER] Assigned to cluster {cluster_id} with {len(prototypes)} prototypes")
+    initial_count = len(samples)
+    print(f"[CLUSTER] Assigned to cluster {cluster_id} with {initial_count} samples")
     
-    # Step 3: Predict using local model
+    # Step 3: Adjust to reach ~target_samples
+    if len(samples) < target_samples:
+        # MERGE: Cluster too small, merge from neighbors
+        print(f"[CLUSTER] Samples ({len(samples)}) < target ({target_samples}), merging neighbors...")
+        
+        neighbor_ids = index.find_nearest_clusters(cluster_id, k=index.n_clusters - 1)
+        
+        for neighbor_id in neighbor_ids:
+            neighbor_samples = index.get_cluster_prototypes(neighbor_id)
+            samples.extend(neighbor_samples)
+            
+            if len(samples) >= target_samples:
+                print(f"[CLUSTER] Merged {len(samples) - initial_count} samples from neighbors, total: {len(samples)}")
+                break
+        
+        if len(samples) < target_samples:
+            print(f"[CLUSTER] Warning: Could only gather {len(samples)} samples (less than {target_samples})")
+    
+    elif len(samples) > target_samples:
+        # SELECT: Cluster too large, select closest prototypes
+        # Samples are already sorted by distance to center (from fit())
+        samples = samples[:target_samples]
+        print(f"[CLUSTER] Selected {target_samples} closest prototypes from {initial_count} samples")
+    
+    # Step 4: Predict using local model with ~3000 samples
     if model_type == "kernel_regression":
         predictions = _predict_with_cluster_kernel_regression(
-            prototypes=prototypes,
+            prototypes=samples,
             actual_map=actual_map,
             target_keys=target_keys,
             bandwidth=model_params["kr_bandwidth"]
         )
     elif model_type == "lwlr":
         predictions = _predict_with_cluster_lwlr(
-            prototypes=prototypes,
+            prototypes=samples,
             actual_map=actual_map,
             target_keys=target_keys,
             tau=model_params["lwlr_tau"]
         )
     else:  # knn
         predictions = _predict_with_cluster_knn(
-            prototypes=prototypes,
+            prototypes=samples,
             actual_map=actual_map,
             target_keys=target_keys,
             k=model_params["knn_n"]
         )
     
     return predictions
+
+
+
 
 
 def evaluate_cluster_models(
@@ -722,7 +749,7 @@ def evaluate_cluster_models(
         mse = mean_squared_error(actuals, predictions)
         rmse = np.sqrt(mse)
         
-        scale_max = 10.0  # Could use structure.scale_type
+        scale_max = get_scale_max(getattr(structure, 'scale_type', '0-10'))
         accuracy = max(0, min(100, 100 - (mae / scale_max) * 100))
         
         results[model_name] = {

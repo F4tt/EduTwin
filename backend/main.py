@@ -54,16 +54,19 @@ async def log_request_time(request: Request, call_next):
 # Add Prometheus middleware first
 app.add_middleware(PrometheusMiddleware)
 
+# CORS origins từ environment (cho production) hoặc defaults (cho development)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else [
+    "http://localhost:3000",
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:8000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,21 +111,6 @@ async def startup_event():
                     ADD COLUMN IF NOT EXISTS current_grade VARCHAR,
                     ADD COLUMN IF NOT EXISTS role VARCHAR DEFAULT 'user',
                     ADD COLUMN IF NOT EXISTS preferences JSON
-                """))
-                # Old tables (study_scores, ml_model_parameters) removed - using custom structure instead
-                
-                # Rename reference_dataset to ml_reference_dataset if needed
-                conn.execute(text("""
-                    ALTER TABLE IF EXISTS reference_dataset RENAME TO ml_reference_dataset
-                """))
-                
-                # Add user_id to ml_reference_dataset if not exists
-                conn.execute(text("""
-                    ALTER TABLE ml_reference_dataset
-                    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
-                """))
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_ml_reference_dataset_user_id ON ml_reference_dataset(user_id)
                 """))
             logger.info("Database tables created successfully")
             

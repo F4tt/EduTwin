@@ -20,12 +20,12 @@ export const WebSocketProvider = ({ children }) => {
     const [studyUpdates, setStudyUpdates] = useState([]);
     const [predictions, setPredictions] = useState([]);
     const [isTyping, setIsTyping] = useState(false);
-    
+
     const socketRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
     const reconnectAttemptsRef = useRef(0);
     const maxReconnectAttempts = 5;
-    
+
     // Connect to WebSocket server
     useEffect(() => {
         if (!user) {
@@ -38,10 +38,11 @@ export const WebSocketProvider = ({ children }) => {
             }
             return;
         }
-        
-        // Connect to WebSocket
-        const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000';
-        
+
+        // Production: use relative URL (same origin via ALB)
+        // Development: use VITE_WS_URL from env
+        const wsUrl = import.meta.env.VITE_WS_URL || '';
+
         const newSocket = io(wsUrl, {
             path: '/socket.io',
             transports: ['websocket', 'polling'],
@@ -53,80 +54,80 @@ export const WebSocketProvider = ({ children }) => {
             reconnectionDelayMax: 5000,
             reconnectionAttempts: maxReconnectAttempts
         });
-        
+
         socketRef.current = newSocket;
         setSocket(newSocket);
-        
+
         // Connection event handlers
         newSocket.on('connect', () => {
             console.log('WebSocket connected - waiting for authentication');
             // Don't set connected=true yet, wait for authentication
             reconnectAttemptsRef.current = 0;
-            
+
             // Authenticate after connection
             newSocket.emit('authenticate', { user_id: user.user_id || user.id });
         });
-        
+
         newSocket.on('disconnect', (reason) => {
             console.log('WebSocket disconnected:', reason);
             setConnected(false);
         });
-        
+
         newSocket.on('connect_error', (error) => {
             console.error('WebSocket connection error:', error);
             setConnected(false);
         });
-        
+
         newSocket.on('authenticated', (data) => {
             console.log('WebSocket authenticated:', data);
             // Set connected only after successful authentication
             setConnected(true);
         });
-        
+
         newSocket.on('connected', (data) => {
             console.log('WebSocket connection confirmed:', data);
             // Fallback: also set connected on 'connected' event
             setConnected(true);
         });
-        
+
         // Chat events
         newSocket.on('chat_message', (data) => {
             console.log('Received chat message:', data);
             setChatMessages(prev => [...prev, data]);
         });
-        
+
         newSocket.on('chat_typing', (data) => {
             console.log('Typing indicator:', data);
             setIsTyping(data.is_typing);
         });
-        
+
         // Study update events
         newSocket.on('study_update', (data) => {
             console.log('Received study update:', data);
             setStudyUpdates(prev => [...prev, data]);
         });
-        
+
         newSocket.on('prediction_update', (data) => {
             console.log('Received prediction update:', data);
             setPredictions(data.predictions || []);
         });
-        
+
         // Error handling
         newSocket.on('error', (error) => {
             console.error('WebSocket error:', error);
         });
-        
+
         // Ping/pong for connection health
         const pingInterval = setInterval(() => {
             if (newSocket.connected) {
                 newSocket.emit('ping');
             }
         }, 30000); // Every 30 seconds
-        
+
         newSocket.on('pong', (data) => {
             console.log('Pong received:', data);
         });
-        
+
         // Cleanup
         return () => {
             clearInterval(pingInterval);
@@ -136,7 +137,7 @@ export const WebSocketProvider = ({ children }) => {
             newSocket.disconnect();
         };
     }, [user]);
-    
+
     // Join chat session room
     const joinChatSession = useCallback((chatSessionId) => {
         if (socketRef.current && socketRef.current.connected) {
@@ -144,7 +145,7 @@ export const WebSocketProvider = ({ children }) => {
             socketRef.current.emit('join_chat_session', { chat_session_id: chatSessionId });
         }
     }, []);
-    
+
     // Leave chat session room
     const leaveChatSession = useCallback((chatSessionId) => {
         if (socketRef.current && socketRef.current.connected) {
@@ -152,7 +153,7 @@ export const WebSocketProvider = ({ children }) => {
             socketRef.current.emit('leave_chat_session', { chat_session_id: chatSessionId });
         }
     }, []);
-    
+
     // Send custom event
     const emit = useCallback((event, data) => {
         if (socketRef.current && socketRef.current.connected) {
@@ -161,7 +162,7 @@ export const WebSocketProvider = ({ children }) => {
             console.warn('Socket not connected. Cannot emit:', event);
         }
     }, []);
-    
+
     // Subscribe to custom event
     const on = useCallback((event, callback) => {
         if (socketRef.current) {
@@ -173,14 +174,14 @@ export const WebSocketProvider = ({ children }) => {
                 }
             };
         }
-        return () => {};
+        return () => { };
     }, []);
-    
+
     // Clear chat messages
     const clearChatMessages = useCallback(() => {
         setChatMessages([]);
     }, []);
-    
+
     const value = {
         socket,
         connected,
@@ -194,7 +195,7 @@ export const WebSocketProvider = ({ children }) => {
         on,
         clearChatMessages
     };
-    
+
     return (
         <WebSocketContext.Provider value={value}>
             {children}

@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS Region to deploy resources"
   type        = string
-  default     = "ap-southeast-1"
+  default     = "us-east-1"  # Cheapest region
 }
 
 variable "project_name" {
@@ -16,10 +16,21 @@ variable "db_password" {
   sensitive   = true
 }
 
-variable "openai_api_key" {
-  description = "OpenAI API Key for chatbot functionality"
+variable "gemini_api_key" {
+  description = "Gemini API Key for AI chatbot functionality"
   type        = string
   sensitive   = true
+}
+
+variable "secret_key" {
+  description = "Application secret key for JWT tokens"
+  type        = string
+  sensitive   = true
+}
+
+variable "domain_name" {
+  description = "Your domain name (optional, leave empty for HTTP-only mode)"
+  type        = string
   default     = ""
 }
 

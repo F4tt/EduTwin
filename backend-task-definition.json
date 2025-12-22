@@ -1,15 +1,17 @@
 {
   "family": "edutwin-backend",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "512",
-  "memory": "1024",
-  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskRole",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskRole",
   "containerDefinitions": [
     {
       "name": "backend",
-      "image": "YOUR_ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com/edutwin-backend:latest",
+      "image": "${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/edutwin-backend:latest",
       "portMappings": [
         {
           "containerPort": 8000,
@@ -41,36 +43,44 @@
         {
           "name": "LOG_LEVEL",
           "value": "INFO"
+        },
+        {
+          "name": "CORS_ORIGINS",
+          "value": "https://${YOUR_DOMAIN}"
         }
       ],
       "secrets": [
         {
           "name": "DATABASE_URL",
-          "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:YOUR_ACCOUNT_ID:secret:edutwin/database-url"
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/database-url"
         },
         {
           "name": "SECRET_KEY",
-          "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:YOUR_ACCOUNT_ID:secret:edutwin/secret-key"
-        },
-        {
-          "name": "LLM_API_URL",
-          "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:YOUR_ACCOUNT_ID:secret:edutwin/llm-api-url"
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/secret-key"
         },
         {
           "name": "LLM_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:ap-southeast-1:YOUR_ACCOUNT_ID:secret:edutwin/llm-api-key"
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/llm-api-key"
+        },
+        {
+          "name": "REDIS_URL",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/redis-url"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/edutwin-backend",
-          "awslogs-region": "ap-southeast-1",
-          "awslogs-stream-prefix": "ecs"
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
         }
       },
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
+        "command": [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"
+        ],
         "interval": 30,
         "timeout": 5,
         "retries": 3,

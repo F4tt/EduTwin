@@ -1448,24 +1448,6 @@ LƯU Ý: Tìm điểm ĐẶC BIỆT, không nhắc lại "điểm kỳ 1 là...,
                         Vui lòng tạo và kích hoạt một cấu trúc học tập tùy chỉnh để xem trực quan hóa dữ liệu.
 
                     </p>
-                    <div style={{ marginTop: '2rem' }}>
-                        <a
-                            href="/custom-model"
-                            className="btn"
-                            style={{
-                                background: 'white',
-                                color: '#667eea',
-                                padding: '0.75rem 2rem',
-                                fontSize: '1rem',
-                                fontWeight: '600',
-                                textDecoration: 'none',
-                                display: 'inline-block',
-                                borderRadius: '8px'
-                            }}
-                        >
-                            Đi tới Cấu trúc tùy chỉnh
-                        </a>
-                    </div>
                 </div>
             </div>
         );

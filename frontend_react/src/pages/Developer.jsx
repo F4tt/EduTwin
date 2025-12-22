@@ -483,7 +483,7 @@ const Developer = () => {
                 return;
             }
 
-            setEvaluationMessage(`Đang đánh giá ${startRes.data.reference_count} mẫu dữ liệu... (chạy nền)`);
+            setEvaluationMessage(`Đang đánh giá ${startRes.data.reference_count} mẫu dữ liệu...`);
 
             // Poll for status every 2 seconds
             const pollInterval = setInterval(async () => {

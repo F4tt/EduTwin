@@ -1,0 +1,80 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  AWS_REGION: us-east-1
+  ECR_BACKEND: 339712865058.dkr.ecr.us-east-1.amazonaws.com/edutwin-backend
+  ECR_FRONTEND: 339712865058.dkr.ecr.us-east-1.amazonaws.com/edutwin-frontend
+  ECS_CLUSTER: edutwin-cluster
+  ECS_SERVICE_BACKEND: edutwin-backend
+  ECS_SERVICE_FRONTEND: edutwin-frontend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Backend image
+        working-directory: ./backend
+        run: |
+          docker build -f Dockerfile.prod -t ${{ env.ECR_BACKEND }}:latest -t ${{ env.ECR_BACKEND }}:${{ github.sha }} .
+          docker push ${{ env.ECR_BACKEND }}:latest
+          docker push ${{ env.ECR_BACKEND }}:${{ github.sha }}
+
+      - name: Build and push Frontend image
+        working-directory: ./frontend_react
+        run: |
+          docker build -f Dockerfile.prod -t ${{ env.ECR_FRONTEND }}:latest -t ${{ env.ECR_FRONTEND }}:${{ github.sha }} .
+          docker push ${{ env.ECR_FRONTEND }}:latest
+          docker push ${{ env.ECR_FRONTEND }}:${{ github.sha }}
+
+      - name: Update ECS Backend Service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_BACKEND }} \
+            --force-new-deployment
+
+      - name: Update ECS Frontend Service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_FRONTEND }} \
+            --force-new-deployment
+
+      - name: Wait for Backend deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_BACKEND }}
+
+      - name: Wait for Frontend deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_FRONTEND }}
+
+      - name: Deployment complete
+        run: |
+          echo "✅ Deployment complete!"
+          echo "🌐 Application: https://edutwin.online"
+          echo "📦 Backend image: ${{ env.ECR_BACKEND }}:${{ github.sha }}"
+          echo "📦 Frontend image: ${{ env.ECR_FRONTEND }}:${{ github.sha }}"

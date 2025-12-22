@@ -21,6 +21,7 @@ from ml.prediction_cache import (
     set_cached_prediction,
     invalidate_prediction_cache
 )
+from ml.scale_normalizer import get_scale_max
 
 
 def _predict_with_knn(
@@ -233,6 +234,8 @@ def update_predictions_for_custom_structure(
     if not dataset:
         return 0
     
+    # Note: dataset is already in the original scale from reference samples
+    
     # Get current time point index
     try:
         current_tp_index = structure.time_point_labels.index(current_time_point)
@@ -367,6 +370,8 @@ def update_predictions_for_custom_structure(
             if score_val is not None:
                 actual_map[key] = float(score_val)
     
+    # Note: user's actual scores are already in the correct scale
+    
     # Determine target keys (future time points)
     target_keys: Set[str] = set()
     for i, tp in enumerate(structure.time_point_labels):
@@ -399,7 +404,7 @@ def update_predictions_for_custom_structure(
         # Try to use clustering for faster prediction
         predictions = {}
         
-        if use_clustering and len(dataset) >= 100:
+        if use_clustering and len(dataset) >= 3000:
         # Use cluster+prototype approach for large datasets
             print(f"[PREDICT] Using cluster-based prediction (dataset size: {len(dataset)})")
         
@@ -479,6 +484,8 @@ def update_predictions_for_custom_structure(
                 predictions=predictions
             )
     
+    # Note: predictions are already in the scale of the reference dataset
+    
     # Save predictions
     predicted_count = 0
     for key, pred_value in predictions.items():
@@ -504,6 +511,9 @@ def evaluate_models_for_structure(
     """
     Evaluate KNN, Kernel Regression, and LWLR models on custom structure.
     Uses 80/20 train-test split to predict output_timepoints from input_timepoints.
+    
+    NOTE: For large datasets (>= 3000 samples), delegates to cluster-based evaluation
+    to match production prediction behavior exactly.
     """
     print(f"[EVALUATE] Starting evaluation for structure {structure_id}")
     print(f"[EVALUATE] Input timepoints: {input_timepoints}")
@@ -568,6 +578,42 @@ def evaluate_models_for_structure(
     
     if len(valid_samples) < 20:
         return {"error": f"Chỉ có {len(valid_samples)} mẫu hợp lệ, cần ít nhất 20", "models": {}}
+    
+    # =========================================================================
+    # DELEGATE TO CLUSTER-BASED EVALUATION FOR LARGE DATASETS
+    # This ensures evaluation matches production prediction behavior
+    # =========================================================================
+    if len(valid_samples) >= 3000:
+        print(f"[EVALUATE] Large dataset ({len(valid_samples)} >= 3000) - using cluster-based evaluation")
+        from ml.cluster_prototype_service import evaluate_cluster_models
+        
+        result = evaluate_cluster_models(
+            db=db,
+            structure_id=structure_id,
+            input_timepoints=input_timepoints,
+            output_timepoints=output_timepoints,
+            model_params=model_params,
+            n_clusters=None,  # Auto-calculate
+            prototypes_per_cluster=None  # Auto-calculate
+        )
+        
+        # Add note that cluster method was used
+        result["evaluation_method"] = "cluster_prototype"
+        result["cluster_threshold"] = 3000
+        
+        # Cache with "standard" method key for compatibility
+        set_cached_evaluation(
+            structure_id=structure_id,
+            input_timepoints=input_timepoints,
+            output_timepoints=output_timepoints,
+            model_params=model_params,
+            method="standard",
+            results=result
+        )
+        
+        return result
+    
+    print(f"[EVALUATE] Small dataset ({len(valid_samples)} < 3000) - using full dataset evaluation")
     
     # Prepare X (input features) and y (output targets - averaged across subjects)
     X_data = []
@@ -675,8 +721,8 @@ def evaluate_models_for_structure(
             mse = mean_squared_error(y_test, y_pred)
             rmse = np.sqrt(mse)
             
-            # Calculate accuracy based on scale
-            scale_max = 10.0  # Default, could be adjusted based on structure.scale_type
+            # Calculate accuracy based on actual scale type
+            scale_max = get_scale_max(getattr(structure, 'scale_type', '0-10'))
             accuracy = max(0, min(100, 100 - (mae / scale_max) * 100))
             
             print(f"[EVALUATE] {display_name}: MAE={mae:.4f}, RMSE={rmse:.4f}, Accuracy={accuracy:.2f}%")

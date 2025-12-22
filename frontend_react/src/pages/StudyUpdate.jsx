@@ -554,32 +554,12 @@ const StudyUpdate = () => {
                     color: 'white',
                     borderRadius: '12px'
                 }}>
-                    <div style={{ fontSize: '4rem', marginBottom: '1rem' }}>📚</div>
                     <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem', color: 'white' }}>
                         Chưa thiết lập cấu trúc học tập
                     </h2>
                     <p style={{ fontSize: '1rem', opacity: 0.95, maxWidth: '600px', margin: '0 auto', lineHeight: 1.6 }}>
-                        Vui lòng tạo và kích hoạt một cấu trúc học tập tùy chỉnh để sử dụng tính năng này.
-                        Bạn có thể tạo cấu trúc mới tại trang <strong>Cấu trúc tùy chỉnh</strong>.
+                        Vui lòng tạo và kích hoạt một cấu trúc học tập tùy chỉnh để xem trực quan hóa dữ liệu.
                     </p>
-                    <div style={{ marginTop: '2rem' }}>
-                        <a
-                            href="/custom-model"
-                            className="btn"
-                            style={{
-                                background: 'white',
-                                color: '#667eea',
-                                padding: '0.75rem 2rem',
-                                fontSize: '1rem',
-                                fontWeight: '600',
-                                textDecoration: 'none',
-                                display: 'inline-block',
-                                borderRadius: '8px'
-                            }}
-                        >
-                            Đi tới Cấu trúc tùy chỉnh
-                        </a>
-                    </div>
                 </div>
             </div>
         );
