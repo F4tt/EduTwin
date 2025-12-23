@@ -227,10 +227,13 @@ button {
 }
 
 @keyframes pulse {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 1;
     box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
   }
+
   50% {
     opacity: 0.9;
     box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
@@ -535,4 +538,152 @@ button {
   color: #94a3b8;
   opacity: 1;
   font-weight: 400;
+}
+
+/* ========== Mobile Responsive Styles ========== */
+
+/* Slide up animation for mobile modals */
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Mobile Chat Container */
+.chat-container-mobile {
+  flex-direction: column;
+  height: calc(100vh - 56px - 64px);
+  /* header - bottom nav */
+  gap: 0;
+}
+
+.chat-container-mobile .chat-main {
+  height: 100%;
+  border-radius: 0;
+  border: none;
+}
+
+/* Mobile breakpoint styles */
+@media (max-width: 768px) {
+
+  /* Container adjustments */
+  .container {
+    padding: 0;
+    max-width: 100%;
+  }
+
+  /* Cards */
+  .card {
+    border-radius: var(--radius-md);
+    margin-bottom: 1rem;
+  }
+
+  /* Buttons */
+  .btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+  }
+
+  /* Inputs */
+  .input-field {
+    padding: 0.65rem 0.85rem;
+    font-size: 0.95rem;
+  }
+
+  /* Chat styles */
+  .chat-container {
+    height: calc(100vh - 120px);
+    gap: 0;
+  }
+
+  .chat-sidebar {
+    display: none;
+  }
+
+  .chat-main {
+    border-radius: 0;
+  }
+
+  .chat-message {
+    max-width: 85%;
+    padding: 0.75rem 1rem;
+    font-size: 0.9rem;
+  }
+
+  .chat-input-area {
+    padding: 0.75rem;
+  }
+
+  /* Charts - make them smaller */
+  .chart-wrapper {
+    height: 220px;
+  }
+
+  /* Insight boxes */
+  .insight-box {
+    padding: 1rem 1.25rem;
+    font-size: 0.9rem;
+    margin-top: 1rem;
+  }
+
+  /* Tables - horizontal scroll */
+  .table-responsive {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Grid layouts - force single column */
+  .mobile-stack {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 1rem !important;
+  }
+
+  /* Pending score card */
+  .pending-score-card {
+    max-width: 100%;
+    padding: 0.75rem 1rem;
+  }
+
+  .pending-score-title {
+    font-size: 0.9rem;
+  }
+
+  .pending-score-text {
+    font-size: 0.85rem;
+  }
+
+  /* Session items */
+  .session-item {
+    padding: 0.65rem 0.75rem;
+  }
+
+  /* Scrollbar - thinner on mobile */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+}
+
+/* Small mobile (< 400px) */
+@media (max-width: 400px) {
+  .btn {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+  }
+
+  .input-field {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.9rem;
+  }
+
+  .chart-wrapper {
+    height: 180px;
+  }
 }

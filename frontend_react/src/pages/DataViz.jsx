@@ -8,6 +8,7 @@ import {
     ML_PIPELINE_PROCESSING_EVENT,
     ML_PIPELINE_COMPLETED_EVENT,
 } from '../utils/eventBus';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const formatScoreValue = (value) => {
     if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
@@ -236,6 +237,7 @@ const AI_COMMENTS_VERSION = 3;
 
 const DataViz = () => {
     const { user } = useAuth();
+    const isMobile = useIsMobile();
     const [scores, setScores] = useState([]);
     const [termAverages, setTermAverages] = useState([]);
     const [currentGrade, setCurrentGrade] = useState(null);
@@ -1432,7 +1434,7 @@ LƯU Ý: Tìm điểm ĐẶC BIỆT, không nhắc lại "điểm kỳ 1 là...,
     // Handle case when no active structure
     if (!activeStructure) {
         return (
-            <div className="container" style={{ maxWidth: '1000px', paddingTop: '2rem', paddingBottom: '3rem' }}>
+            <div className="container" style={{ maxWidth: isMobile ? '100%' : '1000px', paddingTop: isMobile ? '1rem' : '2rem', paddingBottom: isMobile ? '80px' : '3rem' }}>
                 <div className="card" style={{
                     padding: '3rem 2rem',
                     textAlign: 'center',

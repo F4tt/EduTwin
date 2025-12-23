@@ -12,9 +12,11 @@ import {
     ML_PIPELINE_PROCESSING_EVENT,
     ML_PIPELINE_COMPLETED_EVENT,
 } from '../utils/eventBus';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const StudyUpdate = () => {
     const { user, updateProfile } = useAuth();
+    const isMobile = useIsMobile();
     const [scores, setScores] = useState([]);
     const [loading, setLoading] = useState(true);
     const [inputs, setInputs] = useState({});
@@ -568,14 +570,14 @@ const StudyUpdate = () => {
     const gradeOptions = activeStructure.timePoints.map(tp => ({ value: tp, label: tp }));
 
     return (
-        <div className="container" style={{ maxWidth: '1000px', paddingBottom: '3rem' }}>
+        <div className="container" style={{ maxWidth: isMobile ? '100%' : '1000px', paddingBottom: isMobile ? '80px' : '3rem' }}>
 
             {/* Current Semester Selector */}
-            <div className="card" style={{ marginBottom: '2rem', background: 'var(--primary-light)', border: '1px solid var(--primary-color)' }}>
-                <h3 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--primary-color)' }}>
+            <div className="card" style={{ marginBottom: isMobile ? '1rem' : '2rem', background: 'var(--primary-light)', border: '1px solid var(--primary-color)' }}>
+                <h3 style={{ fontSize: isMobile ? '1rem' : '1.1rem', fontWeight: '600', marginBottom: '1rem', color: 'var(--primary-color)' }}>
                     🎓 Mốc thời gian hiện tại
                 </h3>
-                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: '1rem', alignItems: isMobile ? 'stretch' : 'center' }}>
                     <select
                         className="input-field"
                         value={currentGrade}

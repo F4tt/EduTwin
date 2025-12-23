@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight, History } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import axiosClient from '../api/axiosClient';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
 import PreferenceVisualizer from '../components/PreferenceVisualizer';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const Chatbot = () => {
     const { user } = useAuth();
@@ -26,6 +27,8 @@ const Chatbot = () => {
     });
     const messagesEndRef = useRef(null);
     const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
+    const [showSessionsModal, setShowSessionsModal] = useState(false);
+    const isMobile = useIsMobile();
 
     useEffect(() => {
         // Find the portal target in Layout
@@ -254,15 +257,80 @@ const Chatbot = () => {
     };
 
     return (
-        <div className="container chat-container">
+        <div className={`container chat-container ${isMobile ? 'chat-container-mobile' : ''}`}>
             {/* Render PreferenceVisualizer in the Header Portal */}
             {headerPortalTarget && createPortal(
                 <PreferenceVisualizer preferenceCount={preferenceCount} />,
                 headerPortalTarget
             )}
 
-            {/* Expand Button (Visible when sidebar is collapsed) */}
-            {collapsed && (
+            {/* Mobile Sessions Modal */}
+            {isMobile && showSessionsModal && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0,0,0,0.5)',
+                    zIndex: 2000,
+                    display: 'flex',
+                    alignItems: 'flex-end'
+                }} onClick={() => setShowSessionsModal(false)}>
+                    <div style={{
+                        background: 'var(--bg-surface)',
+                        width: '100%',
+                        maxHeight: '70vh',
+                        borderTopLeftRadius: '20px',
+                        borderTopRightRadius: '20px',
+                        padding: '1.5rem',
+                        animation: 'slideUp 0.3s ease'
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                            <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700' }}>Lịch sử chat</h3>
+                            <button onClick={() => setShowSessionsModal(false)} className="btn btn-ghost" style={{ padding: '4px' }}>
+                                <X size={24} />
+                            </button>
+                        </div>
+                        <button
+                            className="btn btn-primary"
+                            onClick={() => { createNewSession(); setShowSessionsModal(false); }}
+                            style={{ marginBottom: '1rem', width: '100%', justifyContent: 'center' }}
+                        >
+                            <Plus size={18} /> Cuộc trò chuyện mới
+                        </button>
+                        <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+                            {sessions.map(sess => (
+                                <div
+                                    key={sess.id}
+                                    className={`session-item ${currentSessionId === sess.id ? 'active' : ''}`}
+                                    onClick={() => { setCurrentSessionId(sess.id); setShowSessionsModal(false); }}
+                                    style={{ padding: '0.75rem', marginBottom: '0.5rem' }}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1 }}>
+                                        <MessageSquare size={18} />
+                                        <span style={{ fontSize: '0.9rem', fontWeight: currentSessionId === sess.id ? '600' : '500' }}>
+                                            {sess.title || 'Phiên chat mới'}
+                                        </span>
+                                    </div>
+                                    {!String(sess.id).startsWith('draft') && (
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleDeleteSession(sess.id); }}
+                                            className="btn-ghost"
+                                            style={{ padding: '4px' }}
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Desktop: Expand Button (Visible when sidebar is collapsed) */}
+            {!isMobile && collapsed && (
                 <div style={{ width: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     <button
                         onClick={toggleCollapsed}
@@ -284,8 +352,8 @@ const Chatbot = () => {
                 </div>
             )}
 
-            {/* Sessions Sidebar */}
-            {!collapsed && (
+            {/* Desktop: Sessions Sidebar */}
+            {!isMobile && !collapsed && (
                 <div className="chat-sidebar">
                     <button
                         onClick={toggleCollapsed}
@@ -377,7 +445,7 @@ const Chatbot = () => {
                                             display: 'flex',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            opacity: currentSessionId === sess.id ? 1 : 0, // Show only on hover or active
+                                            opacity: currentSessionId === sess.id ? 1 : 0,
                                             transition: 'all 0.2s ease'
                                         }}
                                     >
@@ -391,19 +459,29 @@ const Chatbot = () => {
             )}
 
             {/* Chat Area */}
-            <div className="chat-main">
+            <div className="chat-main" style={isMobile ? { borderRadius: 0, border: 'none' } : {}}>
                 {/* Header */}
-                <div className="chat-header">
+                <div className="chat-header" style={isMobile ? { padding: '0.75rem 1rem' } : {}}>
                     <div className="chat-header-avatar">
                         <span>🤖</span>
                     </div>
-                    <div>
-                        <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>Trợ lý ảo EduTwin</h3>
+                    <div style={{ flex: 1 }}>
+                        <h3 style={{ margin: 0, fontSize: isMobile ? '0.95rem' : '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>Trợ lý ảo EduTwin</h3>
                     </div>
+                    {/* Mobile: History Button */}
+                    {isMobile && (
+                        <button
+                            onClick={() => setShowSessionsModal(true)}
+                            className="btn btn-ghost"
+                            style={{ padding: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        >
+                            <History size={20} />
+                        </button>
+                    )}
                 </div>
 
                 {/* Messages */}
-                <div className="chat-messages">
+                <div className="chat-messages" style={isMobile ? { padding: '1rem' } : {}}>
                     {messages.length === 0 && (
                         <div style={{
                             display: 'flex',
@@ -413,11 +491,11 @@ const Chatbot = () => {
                             height: '100%',
                             color: 'var(--text-tertiary)',
                             textAlign: 'center',
-                            padding: '2rem'
+                            padding: isMobile ? '1rem' : '2rem'
                         }}>
-                            <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>💬</div>
-                            <h3 style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Bắt đầu cuộc trò chuyện mới</h3>
-                            <p style={{ maxWidth: '400px' }}>Hãy hỏi tôi về điểm số, xu hướng học tập hoặc lời khuyên để cải thiện kết quả của bạn.</p>
+                            <div style={{ fontSize: isMobile ? '2.5rem' : '3rem', marginBottom: '1rem', opacity: 0.5 }}>💬</div>
+                            <h3 style={{ fontSize: isMobile ? '1rem' : '1.2rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Bắt đầu cuộc trò chuyện mới</h3>
+                            <p style={{ maxWidth: '400px', fontSize: isMobile ? '0.9rem' : '1rem' }}>Hãy hỏi tôi về điểm số, xu hướng học tập hoặc lời khuyên để cải thiện kết quả của bạn.</p>
                         </div>
                     )}
 
@@ -428,24 +506,24 @@ const Chatbot = () => {
                                 display: 'flex',
                                 justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                                 alignItems: 'flex-end',
-                                gap: '0.75rem'
+                                gap: isMobile ? '0.5rem' : '0.75rem'
                             }}
                         >
                             {msg.role === 'assistant' && (
                                 <div style={{
-                                    width: '28px',
-                                    height: '28px',
+                                    width: isMobile ? '24px' : '28px',
+                                    height: isMobile ? '24px' : '28px',
                                     borderRadius: '50%',
                                     background: 'var(--primary-light)',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
-                                    fontSize: '0.9rem',
+                                    fontSize: isMobile ? '0.8rem' : '0.9rem',
                                     flexShrink: 0
                                 }}>🤖</div>
                             )}
 
-                            <div className={`chat-message ${msg.role}`}>
+                            <div className={`chat-message ${msg.role}`} style={isMobile ? { maxWidth: '85%', fontSize: '0.9rem' } : {}}>
                                 <div className="markdown-content">
                                     <ReactMarkdown>{msg.content}</ReactMarkdown>
                                 </div>
@@ -521,18 +599,18 @@ const Chatbot = () => {
 
                     {/* Pending Score Update Card */}
                     {pendingScore && (
-                        <div className="animate-fade-in pending-score-card">
-                            <h4 className="pending-score-title">
+                        <div className="animate-fade-in pending-score-card" style={isMobile ? { maxWidth: '100%', padding: '0.75rem 1rem' } : {}}>
+                            <h4 className="pending-score-title" style={isMobile ? { fontSize: '0.9rem' } : {}}>
                                 ⚠️ Phát hiện thay đổi điểm số
                             </h4>
-                            <p className="pending-score-text">
+                            <p className="pending-score-text" style={isMobile ? { fontSize: '0.85rem' } : {}}>
                                 Môn <b>{pendingScore.subject}</b> học kỳ <b>{pendingScore.semester}</b> lớp <b>{pendingScore.grade_level}</b>: <span style={{ textDecoration: 'line-through', opacity: 0.7 }}>{pendingScore.old_score || '?'}</span> → <b style={{ color: '#059669' }}>{pendingScore.new_score}</b>
                             </p>
-                            <div style={{ display: 'flex', gap: '1rem' }}>
-                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: '#059669', borderColor: '#059669' }} onClick={handleConfirmScore}>
+                            <div style={{ display: 'flex', gap: isMobile ? '0.5rem' : '1rem', flexWrap: 'wrap' }}>
+                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: '#059669', borderColor: '#059669', flex: isMobile ? 1 : 'none' }} onClick={handleConfirmScore}>
                                     <Check size={16} /> Xác nhận
                                 </button>
-                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', color: '#dc2626', borderColor: '#dc2626' }} onClick={() => setPendingScore(null)}>
+                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', color: '#dc2626', borderColor: '#dc2626', flex: isMobile ? 1 : 'none' }} onClick={() => setPendingScore(null)}>
                                     <X size={16} /> Bỏ qua
                                 </button>
                             </div>
@@ -543,7 +621,7 @@ const Chatbot = () => {
                 </div>
 
                 {/* Input Area */}
-                <div className="chat-input-area">
+                <div className="chat-input-area" style={isMobile ? { padding: '0.75rem' } : {}}>
                     <input
                         className="input-field"
                         placeholder="Nhập câu hỏi của bạn..."
@@ -551,15 +629,15 @@ const Chatbot = () => {
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                         disabled={loading}
-                        style={{ margin: 0, boxShadow: 'var(--shadow-sm)' }}
+                        style={{ margin: 0, boxShadow: 'var(--shadow-sm)', fontSize: isMobile ? '0.95rem' : '1rem' }}
                     />
                     <button
                         className="btn btn-primary"
                         onClick={handleSend}
                         disabled={loading || !input.trim()}
                         style={{
-                            width: '48px',
-                            height: '48px',
+                            width: isMobile ? '44px' : '48px',
+                            height: isMobile ? '44px' : '48px',
                             padding: 0,
                             borderRadius: '12px',
                             display: 'flex',
@@ -568,7 +646,7 @@ const Chatbot = () => {
                             flexShrink: 0
                         }}
                     >
-                        <Send size={20} />
+                        <Send size={isMobile ? 18 : 20} />
                     </button>
                 </div>
             </div>

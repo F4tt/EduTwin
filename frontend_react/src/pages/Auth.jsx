@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { isValidUsername, isValidName } from '../utils/validation';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const Auth = () => {
     const [isLogin, setIsLogin] = useState(true);
@@ -12,6 +13,7 @@ const Auth = () => {
     const [error, setError] = useState('');
     const { login, register } = useAuth();
     const navigate = useNavigate();
+    const isMobile = useIsMobile();
 
     const handleChange = (e) => {
         setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -61,38 +63,47 @@ const Auth = () => {
 
     return (
         <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', background: 'var(--bg-body)' }}>
-            {/* Left Side - Image/Brand */}
-            <div style={{
-                flex: 1,
-                background: 'linear-gradient(135deg, var(--primary-color) 0%, var(--primary-hover) 100%)',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'center',
-                alignItems: 'center',
-                color: 'white',
-                padding: '2rem',
-                position: 'relative'
-            }}>
-                <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0.1, backgroundImage: 'url("https://www.transparenttextures.com/patterns/cubes.png")' }}></div>
-                <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.8 }}
-                    style={{ zIndex: 1, textAlign: 'center' }}
-                >
-                    <h1 style={{ fontSize: '4rem', fontWeight: '800', marginBottom: '1rem', letterSpacing: '-1px' }}>EduTwin</h1>
-                    <p style={{ fontSize: '1.5rem', opacity: 0.9, fontWeight: '300' }}>Trợ lý học tập thông minh của bạn</p>
-                </motion.div>
-            </div>
+            {/* Left Side - Image/Brand (Hidden on mobile) */}
+            {!isMobile && (
+                <div style={{
+                    flex: 1,
+                    background: 'linear-gradient(135deg, var(--primary-color) 0%, var(--primary-hover) 100%)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    color: 'white',
+                    padding: '2rem',
+                    position: 'relative'
+                }}>
+                    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0.1, backgroundImage: 'url("https://www.transparenttextures.com/patterns/cubes.png")' }}></div>
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.8 }}
+                        style={{ zIndex: 1, textAlign: 'center' }}
+                    >
+                        <h1 style={{ fontSize: '4rem', fontWeight: '800', marginBottom: '1rem', letterSpacing: '-1px' }}>EduTwin</h1>
+                        <p style={{ fontSize: '1.5rem', opacity: 0.9, fontWeight: '300' }}>Trợ lý học tập thông minh của bạn</p>
+                    </motion.div>
+                </div>
+            )}
 
             {/* Right Side - Form */}
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-surface)' }}>
-                <div style={{ width: '100%', maxWidth: '450px', padding: '3rem' }}>
-                    <div style={{ marginBottom: '2.5rem' }}>
-                        <h2 style={{ fontSize: '2rem', fontWeight: '700', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-surface)', padding: isMobile ? '1rem' : 0 }}>
+                <div style={{ width: '100%', maxWidth: isMobile ? '100%' : '450px', padding: isMobile ? '1.5rem' : '3rem' }}>
+                    {/* Mobile: Show brand header */}
+                    {isMobile && (
+                        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+                            <h1 style={{ fontSize: '2rem', fontWeight: '800', color: 'var(--primary-color)', marginBottom: '0.5rem' }}>EduTwin</h1>
+                            <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)' }}>Trợ lý học tập thông minh</p>
+                        </div>
+                    )}
+                    <div style={{ marginBottom: isMobile ? '1.5rem' : '2.5rem' }}>
+                        <h2 style={{ fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '700', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
                             {isLogin ? 'Chào mừng trở lại!' : 'Tạo tài khoản mới'}
                         </h2>
-                        <p style={{ color: 'var(--text-secondary)', fontSize: '1.05rem' }}>
+                        <p style={{ color: 'var(--text-secondary)', fontSize: isMobile ? '0.95rem' : '1.05rem' }}>
                             {isLogin ? 'Vui lòng đăng nhập để tiếp tục.' : 'Bắt đầu hành trình học tập của bạn.'}
                         </p>
                     </div>

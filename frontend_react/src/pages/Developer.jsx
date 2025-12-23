@@ -6,9 +6,11 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, L
 import axiosClient from '../api/axiosClient';
 import { uploadStructureDocument, getStructureDocuments, deleteStructureDocument } from '../api/documentApi';
 import { useAuth } from '../context/AuthContext';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const Developer = () => {
     const { user } = useAuth();
+    const isMobile = useIsMobile();
     // Form states for creating new structure
     const [structureName, setStructureName] = useState('');
     const [numTimePoints, setNumTimePoints] = useState('');
@@ -527,21 +529,23 @@ const Developer = () => {
     };
 
     return (
-        <div style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
+        <div style={{ padding: isMobile ? '1rem' : '2rem', maxWidth: '1400px', margin: '0 auto' }}>
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3 }}
             >
                 {/* Page Header */}
-                <div style={{ marginBottom: '2rem' }}>
-                    <h1 style={{ fontSize: '2rem', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <Settings size={32} style={{ color: '#8b5cf6' }} />
-                        Quản Lý Hệ Thống (Developer/Admin)
+                <div style={{ marginBottom: isMobile ? '1.5rem' : '2rem' }}>
+                    <h1 style={{ fontSize: isMobile ? '1.25rem' : '2rem', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: isMobile ? '0.5rem' : '1rem' }}>
+                        <Settings size={isMobile ? 24 : 32} style={{ color: '#8b5cf6' }} />
+                        {isMobile ? 'Quản Lý Hệ Thống' : 'Quản Lý Hệ Thống (Developer/Admin)'}
                     </h1>
-                    <p style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>
-                        Quản lý cấu trúc giảng dạy, tập dữ liệu, cấu hình mô hình ML và đánh giá hiệu suất
-                    </p>
+                    {!isMobile && (
+                        <p style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>
+                            Quản lý cấu trúc giảng dạy, tập dữ liệu, cấu hình mô hình ML và đánh giá hiệu suất
+                        </p>
+                    )}
                 </div>
 
                 {/* Message Display */}
@@ -559,12 +563,12 @@ const Developer = () => {
                 )}
 
                 {/* Create New Structure Section */}
-                <div style={{ background: 'var(--bg-surface)', padding: '2rem', borderRadius: 'var(--radius-lg)', marginBottom: '2rem', border: '1px solid var(--border-color)' }}>
-                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '1.5rem', color: 'var(--text-primary)' }}>
+                <div style={{ background: 'var(--bg-surface)', padding: isMobile ? '1rem' : '2rem', borderRadius: 'var(--radius-lg)', marginBottom: isMobile ? '1rem' : '2rem', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: isMobile ? '1rem' : '1.25rem', fontWeight: '600', marginBottom: isMobile ? '1rem' : '1.5rem', color: 'var(--text-primary)' }}>
                         Thiết lập cấu trúc giảng dạy mới
                     </h3>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', marginBottom: '2rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '1rem' : '2rem', marginBottom: isMobile ? '1rem' : '2rem' }}>
                         {/* Left Column - Form Inputs */}
                         <div>
                             <div style={{ marginBottom: '1.5rem' }}>

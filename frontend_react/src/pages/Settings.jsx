@@ -3,9 +3,11 @@ import { useAuth } from '../context/AuthContext';
 import axiosClient from '../api/axiosClient';
 import { validateProfileFields } from '../utils/validation';
 import { Save, Sparkles } from 'lucide-react';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const Settings = () => {
     const { user, updateProfile } = useAuth();
+    const isMobile = useIsMobile();
     const [formData, setFormData] = useState({
         email: user?.email || '',
         phone: user?.phone || '',
@@ -131,10 +133,10 @@ const Settings = () => {
     };
 
     return (
-        <div style={{ maxWidth: '700px', margin: '0 auto', paddingBottom: '3rem' }}>
+        <div style={{ maxWidth: isMobile ? '100%' : '700px', margin: '0 auto', paddingBottom: isMobile ? '80px' : '3rem' }}>
 
-            <div className="card" style={{ marginBottom: '2rem' }}>
-                <h3 style={{ marginBottom: '1.5rem', fontSize: '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>Thông tin cá nhân</h3>
+            <div className="card" style={{ marginBottom: isMobile ? '1rem' : '2rem' }}>
+                <h3 style={{ marginBottom: isMobile ? '1rem' : '1.5rem', fontSize: isMobile ? '1rem' : '1.25rem', fontWeight: '600', color: 'var(--text-primary)' }}>Thông tin cá nhân</h3>
 
                 {message && (
                     <div style={{
