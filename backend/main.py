@@ -166,8 +166,38 @@ async def metrics():
 @app.get("/health")
 def health():
     """Health check endpoint for monitoring."""
-    return {
+    from sqlalchemy import text
+    
+    # Basic health status
+    health_data = {
         "status": "healthy",
-        "service": "edutwin-backend",
+        "service": "edutwin-backend", 
         "timestamp": time.time()
     }
+    
+    # Try database connection
+    try:
+        with database.engine.begin() as conn:
+            conn.execute(text("SELECT 1"))
+        health_data["database"] = "connected"
+    except Exception as e:
+        logger.warning(f"Database health check failed: {e}")
+        health_data["database"] = "disconnected"
+        health_data["database_error"] = str(e)
+    
+    # Try Redis connection (if configured)
+    try:
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            import redis
+            r = redis.from_url(redis_url)
+            r.ping()
+            health_data["redis"] = "connected"
+        else:
+            health_data["redis"] = "not_configured"
+    except Exception as e:
+        logger.warning(f"Redis health check failed: {e}")
+        health_data["redis"] = "disconnected"
+        health_data["redis_error"] = str(e)
+    
+    return health_data
