@@ -80,6 +80,81 @@ def extract_text_from_pdf(file_content: bytes) -> str:
         raise ValueError(f"Failed to extract text from PDF file: {e}")
 
 
+async def generate_document_summary(content: str, file_name: str) -> Tuple[str, dict]:
+    """
+    Generate a summary of document content using LLM.
+    
+    Args:
+        content: Full text content of the document
+        file_name: Name of the file for metadata
+    
+    Returns:
+        Tuple of (summary_text, metadata_dict)
+    """
+    from services.llm_provider import get_llm_provider
+    
+    # Truncate content to prevent token overflow (approx 8000 tokens = 32000 chars)
+    max_content_chars = 32000
+    truncated = content[:max_content_chars] if len(content) > max_content_chars else content
+    was_truncated = len(content) > max_content_chars
+    
+    provider = get_llm_provider()
+    
+    prompt = f"""Hãy tóm tắt nội dung tài liệu sau đây một cách ngắn gọn, súc tích (tối đa 500 từ).
+Tập trung vào các ý chính, khái niệm quan trọng, và thông tin hữu ích cho việc học tập.
+
+Tên tài liệu: {file_name}
+
+Nội dung:
+{truncated}
+
+{"[Lưu ý: Tài liệu đã được cắt ngắn do quá dài]" if was_truncated else ""}
+
+Tóm tắt:"""
+
+    try:
+        messages = [
+            {"role": "system", "content": "Bạn là trợ lý tóm tắt tài liệu học tập. Hãy viết tóm tắt ngắn gọn, dễ hiểu."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response = await provider.chat(messages=messages, temperature=0.3)
+        
+        summary = ""
+        if response and isinstance(response, dict):
+            candidates = response.get("candidates", [])
+            if candidates and isinstance(candidates[0], dict):
+                content_obj = candidates[0].get("content", {})
+                parts = content_obj.get("parts", [])
+                if parts and isinstance(parts[0], dict):
+                    summary = parts[0].get("text", "")
+        
+        if not summary:
+            # Fallback: Use first 500 chars as summary
+            summary = truncated[:500] + "..." if len(truncated) > 500 else truncated
+        
+        metadata = {
+            "file_name": file_name,
+            "content_length": len(content),
+            "was_truncated": was_truncated,
+            "summary_generated": bool(summary),
+            "method": "llm" if summary else "fallback"
+        }
+        
+        return summary, metadata
+        
+    except Exception as e:
+        logger.error(f"Error generating document summary: {e}")
+        # Fallback to simple truncation
+        fallback_summary = truncated[:500] + "..." if len(truncated) > 500 else truncated
+        return fallback_summary, {
+            "file_name": file_name,
+            "content_length": len(content),
+            "error": str(e),
+            "method": "fallback"
+        }
+
+
 def extract_document_text(file_content: bytes, file_type: str) -> str:
     """
     Extract text from document based on file type

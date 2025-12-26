@@ -13,6 +13,59 @@ from services.pii_redaction import redact_message_content, prepare_safe_llm_prom
 # NOTE: educational_knowledge removed - now using Custom Structure documents for context
 
 
+# ========== Intent Detection Classes ==========
+
+class ScoreUpdateIntent:
+    """Represents a detected score update intent from user message."""
+    def __init__(self, subject: str, new_score: float, old_score: Optional[float] = None, confidence: float = 0.0):
+        self.subject = subject
+        self.new_score = new_score
+        self.old_score = old_score
+        self.confidence = confidence
+
+
+def detect_personalization_intent(message: str) -> Optional[Dict[str, object]]:
+    """
+    Detect personalization intent from user message using keyword matching.
+    Returns dict with 'field', 'value', 'confidence' if detected, else None.
+    
+    Detects patterns like:
+    - "Tôi thích học môn Toán" -> {field: 'favorite_subject', value: 'Toán', confidence: 0.8}
+    - "Tôi là học sinh lớp 12" -> {field: 'grade', value: '12', confidence: 0.9}
+    - "Tôi muốn học vào buổi tối" -> {field: 'study_time', value: 'evening', confidence: 0.7}
+    """
+    if not message:
+        return None
+    
+    message_lower = message.lower()
+    
+    # Detect grade level
+    grade_patterns = [
+        (r'lớp\s*(\d+)', 'grade'),
+        (r'khối\s*(\d+)', 'grade'),
+    ]
+    for pattern, field in grade_patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            return {'field': field, 'value': match.group(1), 'confidence': 0.9}
+    
+    # Detect favorite subject
+    subjects = ['toán', 'văn', 'anh', 'lý', 'hóa', 'sinh', 'sử', 'địa', 'gdcd', 'tin']
+    for subj in subjects:
+        if f'thích {subj}' in message_lower or f'thích môn {subj}' in message_lower:
+            return {'field': 'favorite_subject', 'value': subj.capitalize(), 'confidence': 0.8}
+    
+    # Detect study time preference
+    if 'buổi sáng' in message_lower or 'sáng sớm' in message_lower:
+        return {'field': 'study_time', 'value': 'morning', 'confidence': 0.7}
+    if 'buổi tối' in message_lower or 'tối' in message_lower:
+        return {'field': 'study_time', 'value': 'evening', 'confidence': 0.7}
+    if 'buổi chiều' in message_lower:
+        return {'field': 'study_time', 'value': 'afternoon', 'confidence': 0.7}
+    
+    return None
+
+
 def set_user_preference(db: Session, user_id: int, key: str, value) -> dict:
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
