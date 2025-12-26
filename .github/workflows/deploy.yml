@@ -12,14 +12,20 @@ env:
   ECS_CLUSTER: edutwin-cluster
   ECS_SERVICE_BACKEND: edutwin-backend
   ECS_SERVICE_FRONTEND: edutwin-frontend
+  # Resource limits to prevent OOM during builds
+  DOCKER_BUILDKIT: 1
+  BUILDKIT_PROGRESS: plain
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -27,36 +33,57 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 3600
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          retry-on-failure: true
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=host
+            
+      - name: Free up space
+        run: |
+          echo "🧹 Cleaning up space before build..."
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          sudo docker system prune -af --volumes
+          df -h
 
       - name: Build and push Backend image
-        working-directory: ./backend
-        run: |
-          echo "🔨 Building backend image..."
-          docker build -f Dockerfile.prod -t ${{ env.ECR_BACKEND }}:latest -t ${{ env.ECR_BACKEND }}:${{ github.sha }} .
-          
-          echo "📤 Pushing backend images to ECR..."
-          docker push ${{ env.ECR_BACKEND }}:latest
-          docker push ${{ env.ECR_BACKEND }}:${{ github.sha }}
-          
-          echo "✅ Backend images pushed successfully"
-          docker images | grep edutwin-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.prod
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_BACKEND }}:latest
+            ${{ env.ECR_BACKEND }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
 
-      - name: Build and push Frontend image
-        working-directory: ./frontend_react
-        run: |
-          echo "🔨 Building frontend image..."
-          docker build -f Dockerfile.prod -t ${{ env.ECR_FRONTEND }}:latest -t ${{ env.ECR_FRONTEND }}:${{ github.sha }} .
-          
-          echo "📤 Pushing frontend images to ECR..."
-          docker push ${{ env.ECR_FRONTEND }}:latest
-          docker push ${{ env.ECR_FRONTEND }}:${{ github.sha }}
-          
-          echo "✅ Frontend images pushed successfully"
-          docker images | grep edutwin-frontend
+      - name: Build and push Frontend image  
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend_react
+          file: ./frontend_react/Dockerfile.prod
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_FRONTEND }}:latest
+            ${{ env.ECR_FRONTEND }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
       
       - name: Verify images in ECR
         run: |
@@ -64,96 +91,170 @@ jobs:
           aws ecr describe-images \
             --repository-name edutwin-backend \
             --image-ids imageTag=latest \
-            --query 'imageDetails[0].imageTags' \
-            --output text
+            --query 'imageDetails[0].[imageTags,imageSizeInBytes,imagePushedAt]' \
+            --output table
           
           echo "🔍 Verifying frontend image in ECR..."
           aws ecr describe-images \
             --repository-name edutwin-frontend \
             --image-ids imageTag=latest \
-            --query 'imageDetails[0].imageTags' \
-            --output text
-
-      - name: Update ECS Backend Service
-        run: |
-          echo "🚀 Updating ECS Backend Service..."
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE_BACKEND }} \
-            --force-new-deployment \
-            --output json | jq '.service | {serviceName: .serviceName, status: .status, desiredCount: .desiredCount, runningCount: .runningCount}'
-
-      - name: Update ECS Frontend Service  
-        run: |
-          echo "🚀 Updating ECS Frontend Service..."
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE_FRONTEND }} \
-            --force-new-deployment \
-            --output json | jq '.service | {serviceName: .serviceName, status: .status, desiredCount: .desiredCount, runningCount: .runningCount}'
-
-      - name: Wait for Backend deployment
-        run: |
-          echo "⏳ Waiting for Backend service to be stable..."
-          echo "ℹ️  This may take up to 15 minutes for database initialization and health checks"
-          
-          # Check task status before waiting
-          aws ecs describe-services \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }} \
-            --query 'services[0].{serviceName: serviceName, runningCount: runningCount, desiredCount: desiredCount, pendingCount: pendingCount}' \
+            --query 'imageDetails[0].[imageTags,imageSizeInBytes,imagePushedAt]' \
             --output table
+
+      - name: Prepare ECS task definitions
+        run: |
+          echo "🔧 Preparing task definitions with current account ID..."
           
-          # Show recent task events for debugging
-          echo "📋 Recent task events:"
-          aws ecs describe-services \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }} \
-            --query 'services[0].events[0:3].[createdAt,message]' \
-            --output table
+          # Replace AWS_ACCOUNT_ID placeholders
+          sed "s/\${AWS_ACCOUNT_ID}/${{ steps.login-ecr.outputs.registry }}/g" \
+            backend-task-definition.json > backend-task-definition-processed.json
+            
+          sed "s/\${AWS_ACCOUNT_ID}/${{ steps.login-ecr.outputs.registry }}/g" \
+            frontend-task-definition.json > frontend-task-definition-processed.json
           
-          # Wait with extended timeout (20 minutes)
-          timeout 1200 aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }} || {
-            echo "❌ Backend service did not stabilize within 20 minutes"
-            echo "🔍 Final service status:"
+          echo "✅ Task definitions prepared"
+
+      - name: Deploy Backend to ECS
+        id: backend-deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: backend-task-definition-processed.json
+          service: ${{ env.ECS_SERVICE_BACKEND }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false
+          force-new-deployment: true
+
+      - name: Deploy Frontend to ECS
+        id: frontend-deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: frontend-task-definition-processed.json
+          service: ${{ env.ECS_SERVICE_FRONTEND }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false
+          force-new-deployment: true
+
+      - name: Monitor Backend deployment
+        timeout-minutes: 25
+        run: |
+          echo "⏳ Monitoring Backend deployment stability..."
+          echo "ℹ️  Extended timeout (25 min) for database initialization"
+          
+          # Function to check service health
+          check_service_health() {
             aws ecs describe-services \
               --cluster ${{ env.ECS_CLUSTER }} \
               --services ${{ env.ECS_SERVICE_BACKEND }} \
-              --query 'services[0].{serviceName: serviceName, runningCount: runningCount, desiredCount: desiredCount, pendingCount: pendingCount}' \
-              --output table
-            exit 1
+              --query 'services[0]' > service_status.json
+            
+            running_count=$(jq -r '.runningCount' service_status.json)
+            desired_count=$(jq -r '.desiredCount' service_status.json)
+            
+            echo "Running: $running_count, Desired: $desired_count"
+            
+            if [ "$running_count" -eq "$desired_count" ] && [ "$running_count" -gt "0" ]; then
+              echo "✅ Service is stable!"
+              return 0
+            fi
+            return 1
           }
-
-      - name: Wait for Frontend deployment
-        run: |
-          echo "⏳ Waiting for Frontend service to be stable..."
           
-          # Wait with timeout (10 minutes - frontend is lighter)
-          timeout 600 aws ecs wait services-stable \
+          # Wait with retry logic
+          max_attempts=50
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "🔄 Attempt $attempt/$max_attempts - Checking service status..."
+            
+            if check_service_health; then
+              echo "🎉 Backend service deployment successful!"
+              break
+            fi
+            
+            # Show task events for debugging
+            aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE_BACKEND }} \
+              --query 'services[0].events[0:2].[createdAt,message]' \
+              --output table
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "❌ Backend service failed to stabilize after $max_attempts attempts"
+              
+              # Show detailed debugging info
+              echo "🔍 Final service status:"
+              cat service_status.json | jq '.'
+              
+              # Show recent task failures
+              echo "🔍 Recent task failures:"
+              aws ecs list-tasks --cluster ${{ env.ECS_CLUSTER }} --service-name ${{ env.ECS_SERVICE_BACKEND }} \
+                --query 'taskArns[0:3]' --output text | xargs -r aws ecs describe-tasks \
+                --cluster ${{ env.ECS_CLUSTER }} --tasks
+              
+              exit 1
+            fi
+            
+            sleep 30
+            attempt=$((attempt + 1))
+          done
+
+      - name: Monitor Frontend deployment
+        timeout-minutes: 10
+        run: |
+          echo "⏳ Monitoring Frontend deployment..."
+          
+          # Simple wait for frontend (lighter workload)
+          aws ecs wait services-stable \
             --cluster ${{ env.ECS_CLUSTER }} \
             --services ${{ env.ECS_SERVICE_FRONTEND }} || {
-            echo "❌ Frontend service did not stabilize within 10 minutes"
-            echo "🔍 Final service status:"
+            echo "❌ Frontend deployment failed"
             aws ecs describe-services \
               --cluster ${{ env.ECS_CLUSTER }} \
               --services ${{ env.ECS_SERVICE_FRONTEND }} \
-              --query 'services[0].{serviceName: serviceName, runningCount: runningCount, desiredCount: desiredCount}' \
+              --query 'services[0].events[0:3]' \
               --output table
             exit 1
           }
+          
+          echo "✅ Frontend deployment successful!"
 
-      - name: Deployment complete
+      - name: Run post-deployment health checks
         run: |
-          echo "✅ Deployment process completed!"
+          echo "🏥 Running post-deployment health checks..."
+          
+          # Get service endpoints
+          backend_tasks=$(aws ecs list-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.ECS_SERVICE_BACKEND }} \
+            --query 'taskArns' --output text)
+          
+          if [ ! -z "$backend_tasks" ]; then
+            echo "✅ Backend tasks are running"
+          else
+            echo "❌ No backend tasks found"
+            exit 1
+          fi
+          
+          # Test application endpoint (if load balancer is ready)
+          echo "🌐 Testing application availability..."
+          timeout 60 bash -c 'until curl -s https://edutwin.online/health; do echo "Waiting for app..."; sleep 5; done' || \
+            echo "⚠️  App endpoint not yet responding (may need DNS propagation time)"
+
+      - name: Deployment Summary
+        run: |
+          echo "📊 === DEPLOYMENT SUMMARY ===" 
+          echo "✅ Deployment completed successfully!"
           echo "🌐 Application: https://edutwin.online"  
           echo "📦 Backend image: ${{ env.ECR_BACKEND }}:${{ github.sha }}"
           echo "📦 Frontend image: ${{ env.ECR_FRONTEND }}:${{ github.sha }}"
+          echo "📅 Deployed at: $(date -u)"
           echo ""
-          echo "🔍 Final service status:"
+          echo "🔍 Service Status:"
           aws ecs describe-services \
             --cluster ${{ env.ECS_CLUSTER }} \
             --services ${{ env.ECS_SERVICE_BACKEND }} ${{ env.ECS_SERVICE_FRONTEND }} \
             --query 'services[].[serviceName,status,runningCount,desiredCount]' \
             --output table
+          
+          echo ""
+          echo "🎯 Deployment completed in job #${{ github.run_number }}"

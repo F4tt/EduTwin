@@ -48,30 +48,85 @@ get_aws_info() {
     echo -e "AWS Region: ${GREEN}$AWS_REGION${NC}"
 }
 
-# Build and push Docker images
+# Build and push Docker images  
 build_and_push() {
     echo -e "\n${YELLOW}Building and pushing Docker images...${NC}"
     
-    # Login to ECR
-    aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+    # Login to ECR with retry logic
+    echo -e "\n${YELLOW}Logging into ECR...${NC}"
+    for attempt in 1 2 3; do
+        if aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com; then
+            echo -e "${GREEN}ECR login successful${NC}"
+            break
+        else
+            echo -e "${RED}ECR login failed (attempt $attempt/3)${NC}"
+            if [ $attempt -eq 3 ]; then
+                echo -e "${RED}Failed to login to ECR after 3 attempts${NC}"
+                exit 1
+            fi
+            sleep 5
+        fi
+    done
     
-    # Build and push backend
+    # Clean up existing images
+    echo -e "\n${YELLOW}Cleaning up local Docker cache...${NC}"
+    docker system prune -f
+
+    # Build and push backend with optimizations
     echo -e "\n${YELLOW}Building backend image...${NC}"
     cd backend
-    docker build -f Dockerfile.prod -t edutwin-backend:latest .
-    docker tag edutwin-backend:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-backend:latest
+    
+    # Build with BuildKit for better caching
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        --no-cache \
+        -f Dockerfile.prod \
+        -t edutwin-backend:latest \
+        -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-backend:latest \
+        -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-backend:$(date +%Y%m%d-%H%M%S) \
+        .
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Backend build failed${NC}"
+        exit 1
+    fi
+    
+    # Push backend images
+    echo -e "\n${YELLOW}Pushing backend images...${NC}"
     docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-backend:latest
+    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-backend:$(date +%Y%m%d-%H%M%S)
     cd ..
     
     # Build and push frontend
     echo -e "\n${YELLOW}Building frontend image...${NC}"
     cd frontend_react
-    docker build -f Dockerfile.prod -t edutwin-frontend:latest .
-    docker tag edutwin-frontend:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-frontend:latest
+    
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        --no-cache \
+        -f Dockerfile.prod \
+        -t edutwin-frontend:latest \
+        -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-frontend:latest \
+        -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-frontend:$(date +%Y%m%d-%H%M%S) \
+        .
+
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Frontend build failed${NC}"
+        exit 1
+    fi
+    
+    # Push frontend images
+    echo -e "\n${YELLOW}Pushing frontend images...${NC}"
     docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-frontend:latest
+    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/edutwin-frontend:$(date +%Y%m%d-%H%M%S)
     cd ..
     
     echo -e "${GREEN}Docker images built and pushed successfully!${NC}"
+    
+    # Verify images in ECR
+    echo -e "\n${YELLOW}Verifying images in ECR...${NC}"
+    aws ecr describe-images --repository-name edutwin-backend --query 'imageDetails[0].imageTags' --output table
+    aws ecr describe-images --repository-name edutwin-frontend --query 'imageDetails[0].imageTags' --output table
 }
 
 # Apply Terraform
@@ -103,14 +158,125 @@ apply_terraform() {
     echo -e "${GREEN}Terraform applied successfully!${NC}"
 }
 
-# Update ECS services
+# Update ECS services with improved monitoring
 update_services() {
     echo -e "\n${YELLOW}Updating ECS services...${NC}"
     
-    aws ecs update-service --cluster edutwin-cluster --service edutwin-backend --force-new-deployment --region $AWS_REGION
-    aws ecs update-service --cluster edutwin-cluster --service edutwin-frontend --force-new-deployment --region $AWS_REGION
+    # Update backend service
+    echo -e "\n${YELLOW}Updating backend service...${NC}"
+    BACKEND_UPDATE=$(aws ecs update-service \
+        --cluster edutwin-cluster \
+        --service edutwin-backend \
+        --force-new-deployment \
+        --region $AWS_REGION \
+        --output json)
     
-    echo -e "${GREEN}ECS services updated!${NC}"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to update backend service${NC}"
+        exit 1
+    fi
+    
+    # Update frontend service  
+    echo -e "\n${YELLOW}Updating frontend service...${NC}"
+    FRONTEND_UPDATE=$(aws ecs update-service \
+        --cluster edutwin-cluster \
+        --service edutwin-frontend \
+        --force-new-deployment \
+        --region $AWS_REGION \
+        --output json)
+        
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to update frontend service${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}ECS services update initiated!${NC}"
+    
+    # Monitor backend deployment with extended timeout
+    echo -e "\n${YELLOW}Monitoring backend deployment (may take up to 20 minutes)...${NC}"
+    
+    max_attempts=80  # 80 * 15 seconds = 20 minutes
+    attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        echo -e "Checking backend service stability (attempt $attempt/$max_attempts)..."
+        
+        # Get service status
+        SERVICE_STATUS=$(aws ecs describe-services \
+            --cluster edutwin-cluster \
+            --services edutwin-backend \
+            --region $AWS_REGION \
+            --query 'services[0]' \
+            --output json)
+        
+        RUNNING_COUNT=$(echo $SERVICE_STATUS | jq -r '.runningCount')
+        DESIRED_COUNT=$(echo $SERVICE_STATUS | jq -r '.desiredCount')
+        PENDING_COUNT=$(echo $SERVICE_STATUS | jq -r '.pendingCount')
+        
+        echo -e "  Running: $RUNNING_COUNT, Desired: $DESIRED_COUNT, Pending: $PENDING_COUNT"
+        
+        # Check if stable (running count matches desired count)
+        if [ "$RUNNING_COUNT" -eq "$DESIRED_COUNT" ] && [ "$RUNNING_COUNT" -gt "0" ] && [ "$PENDING_COUNT" -eq "0" ]; then
+            echo -e "${GREEN}Backend service is stable!${NC}"
+            break
+        fi
+        
+        # Show recent events for debugging
+        if [ $((attempt % 4)) -eq 0 ]; then
+            echo -e "Recent service events:"
+            aws ecs describe-services \
+                --cluster edutwin-cluster \
+                --services edutwin-backend \
+                --region $AWS_REGION \
+                --query 'services[0].events[0:2].[createdAt,message]' \
+                --output table
+        fi
+        
+        if [ $attempt -eq $max_attempts ]; then
+            echo -e "${RED}Backend service failed to stabilize after 20 minutes${NC}"
+            echo -e "Final status: Running=$RUNNING_COUNT, Desired=$DESIRED_COUNT, Pending=$PENDING_COUNT"
+            
+            # Show task details for debugging
+            echo -e "\nTask details:"
+            aws ecs list-tasks \
+                --cluster edutwin-cluster \
+                --service-name edutwin-backend \
+                --region $AWS_REGION \
+                --query 'taskArns[0]' \
+                --output text | xargs -I {} aws ecs describe-tasks \
+                --cluster edutwin-cluster \
+                --tasks {} \
+                --region $AWS_REGION \
+                --query 'tasks[0].lastStatus'
+            
+            exit 1
+        fi
+        
+        sleep 15
+        attempt=$((attempt + 1))
+    done
+    
+    # Monitor frontend deployment (shorter timeout)
+    echo -e "\n${YELLOW}Monitoring frontend deployment...${NC}"
+    
+    timeout 600 aws ecs wait services-stable \
+        --cluster edutwin-cluster \
+        --services edutwin-frontend \
+        --region $AWS_REGION || {
+        echo -e "${RED}Frontend service failed to stabilize${NC}"
+        exit 1
+    }
+    
+    echo -e "${GREEN}All services deployed successfully!${NC}"
+    
+    # Final status check
+    echo -e "\n${YELLOW}Final service status:${NC}"
+    aws ecs describe-services \
+        --cluster edutwin-cluster \
+        --services edutwin-backend edutwin-frontend \
+        --region $AWS_REGION \
+        --query 'services[].[serviceName,status,runningCount,desiredCount]' \
+        --output table
 }
 
 # Main menu

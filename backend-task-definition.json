@@ -4,8 +4,8 @@
   "requiresCompatibilities": [
     "FARGATE"
   ],
-  "cpu": "256",
-  "memory": "512",
+  "cpu": "512",
+  "memory": "1024",
   "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/ecsTaskRole",
   "containerDefinitions": [
@@ -15,7 +15,8 @@
       "portMappings": [
         {
           "containerPort": 8000,
-          "protocol": "tcp"
+          "protocol": "tcp",
+          "name": "http"
         }
       ],
       "essential": true,
@@ -34,11 +35,11 @@
         },
         {
           "name": "LLM_TIMEOUT_SECONDS",
-          "value": "60"
+          "value": "120"
         },
         {
           "name": "LLM_CONCURRENCY",
-          "value": "6"
+          "value": "4"
         },
         {
           "name": "LOG_LEVEL",
@@ -46,7 +47,35 @@
         },
         {
           "name": "CORS_ORIGINS",
-          "value": "https://${YOUR_DOMAIN}"
+          "value": "https://edutwin.online,https://*.edutwin.online"
+        },
+        {
+          "name": "PYTHONPATH",
+          "value": "/app"
+        },
+        {
+          "name": "PYTHONDONTWRITEBYTECODE",
+          "value": "1"
+        },
+        {
+          "name": "PYTHONUNBUFFERED",
+          "value": "1"
+        },
+        {
+          "name": "WORKERS",
+          "value": "2"
+        },
+        {
+          "name": "WORKER_CONNECTIONS",
+          "value": "1000"
+        },
+        {
+          "name": "MAX_REQUESTS",
+          "value": "1000"
+        },
+        {
+          "name": "TIMEOUT",
+          "value": "300"
         }
       ],
       "secrets": [
@@ -72,20 +101,54 @@
         "options": {
           "awslogs-group": "/ecs/edutwin-backend",
           "awslogs-region": "us-east-1",
-          "awslogs-stream-prefix": "ecs",
-          "awslogs-create-group": "true"
+          "awslogs-stream-prefix": "backend",
+          "awslogs-create-group": "true",
+          "awslogs-datetime-format": "%Y-%m-%d %H:%M:%S"
         }
       },
       "healthCheck": {
         "command": [
           "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"
+          "curl -f http://localhost:8000/health || exit 1"
         ],
-        "interval": 30,
-        "timeout": 15,
-        "retries": 10,
-        "startPeriod": 180
+        "interval": 60,
+        "timeout": 30,
+        "retries": 5,
+        "startPeriod": 600
+      },
+      "stopTimeout": 120,
+      "startTimeout": 600,
+      "ulimits": [
+        {
+          "name": "nofile",
+          "softLimit": 65536,
+          "hardLimit": 65536
+        }
+      ],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "dependsOn": [],
+      "dockerLabels": {
+        "service": "edutwin-backend",
+        "environment": "production",
+        "version": "latest"
       }
+    }
+  ],
+  "volumes": [],
+  "placementConstraints": [],
+  "tags": [
+    {
+      "key": "Name",
+      "value": "edutwin-backend"
+    },
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Service",
+      "value": "backend"
     }
   ]
 }

@@ -1,35 +1,63 @@
-# Production Dockerfile cho Backend
+# Production Dockerfile cho Backend - Optimized
 FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including curl for health checks
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/*
 
-# Copy requirements
+# Copy requirements first (better layer caching)
 COPY requirements.txt ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install dependencies
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir gunicorn
 
 # Copy application code
 COPY . .
 
-# Create non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+# Create directories and set permissions
+RUN mkdir -p /app/logs /app/tmp \
+    && useradd -m -u 1000 appuser \
+    && chown -R appuser:appuser /app
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=15s --start-period=180s --retries=10 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# Switch to non-root user
+USER appuser
 
 # Expose port
 EXPOSE 8000
 
-# Run application with gunicorn for production
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000", "--timeout", "120", "main:app"]
+# Health check with more lenient settings
+HEALTHCHECK --interval=60s --timeout=30s --start-period=300s --retries=5 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run with optimized gunicorn settings
+CMD ["gunicorn", \
+     "-w", "2", \
+     "-k", "uvicorn.workers.UvicornWorker", \
+     "-b", "0.0.0.0:8000", \
+     "--timeout", "300", \
+     "--keep-alive", "5", \
+     "--max-requests", "1000", \
+     "--max-requests-jitter", "100", \
+     "--preload", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "--log-level", "info", \
+     "main:app"]
