@@ -41,6 +41,28 @@ jobs:
         with:
           retry-on-failure: true
 
+      - name: Verify ECR repositories exist
+        run: |
+          echo "🔍 Checking ECR repositories..."
+          
+          # Check backend repository
+          if aws ecr describe-repositories --repository-names edutwin-backend >/dev/null 2>&1; then
+            echo "✅ Backend ECR repository exists"
+          else
+            echo "❌ Backend ECR repository not found. Creating..."
+            aws ecr create-repository --repository-name edutwin-backend
+            echo "✅ Backend ECR repository created"
+          fi
+          
+          # Check frontend repository  
+          if aws ecr describe-repositories --repository-names edutwin-frontend >/dev/null 2>&1; then
+            echo "✅ Frontend ECR repository exists"
+          else
+            echo "❌ Frontend ECR repository not found. Creating..."
+            aws ecr create-repository --repository-name edutwin-frontend
+            echo "✅ Frontend ECR repository created"
+          fi
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -56,6 +78,7 @@ jobs:
           df -h
 
       - name: Build and push Backend image
+        id: backend-build
         uses: docker/build-push-action@v5
         with:
           context: ./backend
@@ -69,8 +92,18 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
+        timeout-minutes: 20
 
-      - name: Build and push Frontend image  
+      - name: Verify Backend build success
+        run: |
+          if [ "${{ steps.backend-build.outcome }}" != "success" ]; then
+            echo "❌ Backend build failed"
+            exit 1
+          fi
+          echo "✅ Backend build completed successfully"
+
+      - name: Build and push Frontend image
+        id: frontend-build  
         uses: docker/build-push-action@v5
         with:
           context: ./frontend_react
@@ -84,35 +117,95 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
+        timeout-minutes: 15
+
+      - name: Verify Frontend build success
+        run: |
+          if [ "${{ steps.frontend-build.outcome }}" != "success" ]; then
+            echo "❌ Frontend build failed"
+            exit 1
+          fi
+          echo "✅ Frontend build completed successfully"
+
+      - name: Wait for ECR propagation
+        run: |
+          echo "⏳ Waiting for ECR image propagation..."
+          sleep 30
+          echo "✅ Propagation wait completed"
       
       - name: Verify images in ECR
         run: |
-          echo "🔍 Verifying backend image in ECR..."
-          aws ecr describe-images \
-            --repository-name edutwin-backend \
-            --image-ids imageTag=latest \
-            --query 'imageDetails[0].[imageTags,imageSizeInBytes,imagePushedAt]' \
-            --output table
+          echo "🔍 Verifying images were pushed successfully..."
           
-          echo "🔍 Verifying frontend image in ECR..."
-          aws ecr describe-images \
-            --repository-name edutwin-frontend \
-            --image-ids imageTag=latest \
-            --query 'imageDetails[0].[imageTags,imageSizeInBytes,imagePushedAt]' \
-            --output table
+          # Check backend image with proper error handling
+          echo "Checking backend image..."
+          if aws ecr describe-images --repository-name edutwin-backend --image-ids imageTag=latest >/dev/null 2>&1; then
+            echo "✅ Backend image found in ECR"
+            aws ecr describe-images \
+              --repository-name edutwin-backend \
+              --image-ids imageTag=latest \
+              --query 'imageDetails[0].{Tags:imageTags,Size:imageSizeInBytes,Pushed:imagePushedAt}' \
+              --output table
+          else
+            echo "❌ Backend image not found in ECR"
+            echo "Available images in backend repository:"
+            aws ecr describe-images --repository-name edutwin-backend --query 'imageDetails[*].imageTags' --output table || echo "No images found"
+            exit 1
+          fi
+          
+          # Check frontend image with proper error handling  
+          echo "Checking frontend image..."
+          if aws ecr describe-images --repository-name edutwin-frontend --image-ids imageTag=latest >/dev/null 2>&1; then
+            echo "✅ Frontend image found in ECR"
+            aws ecr describe-images \
+              --repository-name edutwin-frontend \
+              --image-ids imageTag=latest \
+              --query 'imageDetails[0].{Tags:imageTags,Size:imageSizeInBytes,Pushed:imagePushedAt}' \
+              --output table
+          else
+            echo "❌ Frontend image not found in ECR"
+            echo "Available images in frontend repository:"
+            aws ecr describe-images --repository-name edutwin-frontend --query 'imageDetails[*].imageTags' --output table || echo "No images found"
+            exit 1
+          fi
 
       - name: Prepare ECS task definitions
         run: |
-          echo "🔧 Preparing task definitions with current account ID..."
+          echo "🔧 Preparing task definitions..."
+          
+          # Get AWS Account ID properly
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS Account ID: $AWS_ACCOUNT_ID"
           
           # Replace AWS_ACCOUNT_ID placeholders
-          sed "s/\${AWS_ACCOUNT_ID}/${{ steps.login-ecr.outputs.registry }}/g" \
+          echo "Processing backend task definition..."
+          sed "s/\${AWS_ACCOUNT_ID}/$AWS_ACCOUNT_ID/g" \
             backend-task-definition.json > backend-task-definition-processed.json
             
-          sed "s/\${AWS_ACCOUNT_ID}/${{ steps.login-ecr.outputs.registry }}/g" \
+          echo "Processing frontend task definition..."  
+          sed "s/\${AWS_ACCOUNT_ID}/$AWS_ACCOUNT_ID/g" \
             frontend-task-definition.json > frontend-task-definition-processed.json
           
-          echo "✅ Task definitions prepared"
+          echo "✅ Task definitions processed"
+          
+          # Validate task definitions
+          echo "🔍 Validating task definitions..."
+          
+          # Check if backend task definition is valid JSON
+          if ! jq empty backend-task-definition-processed.json >/dev/null 2>&1; then
+            echo "❌ Backend task definition is not valid JSON"
+            cat backend-task-definition-processed.json
+            exit 1
+          fi
+          
+          # Check if frontend task definition is valid JSON
+          if ! jq empty frontend-task-definition-processed.json >/dev/null 2>&1; then
+            echo "❌ Frontend task definition is not valid JSON"  
+            cat frontend-task-definition-processed.json
+            exit 1
+          fi
+          
+          echo "✅ Task definitions validation passed"
 
       - name: Deploy Backend to ECS
         id: backend-deploy
@@ -135,61 +228,94 @@ jobs:
           force-new-deployment: true
 
       - name: Monitor Backend deployment
-        timeout-minutes: 25
+        timeout-minutes: 30
         run: |
           echo "⏳ Monitoring Backend deployment stability..."
-          echo "ℹ️  Extended timeout (25 min) for database initialization"
+          echo "ℹ️  Extended timeout (30 min) for complete deployment cycle"
           
-          # Function to check service health
+          # Function to check service health with detailed info
           check_service_health() {
-            aws ecs describe-services \
+            local service_name="$1"
+            
+            if ! aws ecs describe-services \
               --cluster ${{ env.ECS_CLUSTER }} \
-              --services ${{ env.ECS_SERVICE_BACKEND }} \
-              --query 'services[0]' > service_status.json
+              --services "$service_name" \
+              --query 'services[0]' > service_status.json 2>/dev/null; then
+              echo "❌ Failed to describe service $service_name"
+              return 1
+            fi
             
-            running_count=$(jq -r '.runningCount' service_status.json)
-            desired_count=$(jq -r '.desiredCount' service_status.json)
+            # Check if service exists
+            if [ "$(jq -r '.serviceName // "null"' service_status.json)" = "null" ]; then
+              echo "❌ Service $service_name not found"
+              return 1
+            fi
             
-            echo "Running: $running_count, Desired: $desired_count"
+            local running_count=$(jq -r '.runningCount // 0' service_status.json)
+            local desired_count=$(jq -r '.desiredCount // 0' service_status.json)
+            local pending_count=$(jq -r '.pendingCount // 0' service_status.json)
+            local status=$(jq -r '.status // "UNKNOWN"' service_status.json)
             
-            if [ "$running_count" -eq "$desired_count" ] && [ "$running_count" -gt "0" ]; then
-              echo "✅ Service is stable!"
+            echo "Service Status: $status | Running: $running_count | Desired: $desired_count | Pending: $pending_count"
+            
+            # Service is stable if running count matches desired and no pending
+            if [ "$running_count" -eq "$desired_count" ] && [ "$running_count" -gt "0" ] && [ "$pending_count" -eq "0" ] && [ "$status" = "ACTIVE" ]; then
+              echo "✅ Service $service_name is stable!"
               return 0
             fi
             return 1
           }
           
-          # Wait with retry logic
-          max_attempts=50
+          # Wait with comprehensive retry logic
+          max_attempts=60  # 60 * 30 seconds = 30 minutes
           attempt=1
           
           while [ $attempt -le $max_attempts ]; do
-            echo "🔄 Attempt $attempt/$max_attempts - Checking service status..."
+            echo "🔄 Attempt $attempt/$max_attempts - Checking backend service..."
             
-            if check_service_health; then
+            if check_service_health "${{ env.ECS_SERVICE_BACKEND }}"; then
               echo "🎉 Backend service deployment successful!"
               break
             fi
             
-            # Show task events for debugging
-            aws ecs describe-services \
-              --cluster ${{ env.ECS_CLUSTER }} \
-              --services ${{ env.ECS_SERVICE_BACKEND }} \
-              --query 'services[0].events[0:2].[createdAt,message]' \
-              --output table
+            # Show recent events every 5 attempts for debugging
+            if [ $((attempt % 5)) -eq 0 ]; then
+              echo "📋 Recent service events:"
+              aws ecs describe-services \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --services ${{ env.ECS_SERVICE_BACKEND }} \
+                --query 'services[0].events[0:3].[createdAt,message]' \
+                --output table 2>/dev/null || echo "No events available"
+              
+              echo "🔍 Current tasks:"
+              aws ecs list-tasks \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --service-name ${{ env.ECS_SERVICE_BACKEND }} \
+                --query 'taskArns[*]' \
+                --output text 2>/dev/null | head -3 | while read task; do
+                if [ ! -z "$task" ]; then
+                  aws ecs describe-tasks \
+                    --cluster ${{ env.ECS_CLUSTER }} \
+                    --tasks "$task" \
+                    --query 'tasks[0].{TaskArn:taskArn,LastStatus:lastStatus,HealthStatus:healthStatus,CreatedAt:createdAt}' \
+                    --output table 2>/dev/null || echo "Task details unavailable"
+                fi
+              done
+            fi
             
             if [ $attempt -eq $max_attempts ]; then
-              echo "❌ Backend service failed to stabilize after $max_attempts attempts"
+              echo "❌ Backend service failed to stabilize after 30 minutes"
               
-              # Show detailed debugging info
+              # Final debugging info
               echo "🔍 Final service status:"
-              cat service_status.json | jq '.'
+              cat service_status.json | jq '.' 2>/dev/null || echo "Service status unavailable"
               
-              # Show recent task failures
-              echo "🔍 Recent task failures:"
-              aws ecs list-tasks --cluster ${{ env.ECS_CLUSTER }} --service-name ${{ env.ECS_SERVICE_BACKEND }} \
-                --query 'taskArns[0:3]' --output text | xargs -r aws ecs describe-tasks \
-                --cluster ${{ env.ECS_CLUSTER }} --tasks
+              echo "🔍 All events:"
+              aws ecs describe-services \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --services ${{ env.ECS_SERVICE_BACKEND }} \
+                --query 'services[0].events[0:10].[createdAt,message]' \
+                --output table 2>/dev/null || echo "Events unavailable"
               
               exit 1
             fi

@@ -123,10 +123,42 @@ build_and_push() {
     
     echo -e "${GREEN}Docker images built and pushed successfully!${NC}"
     
-    # Verify images in ECR
+    # Verify images in ECR with proper error handling
     echo -e "\n${YELLOW}Verifying images in ECR...${NC}"
-    aws ecr describe-images --repository-name edutwin-backend --query 'imageDetails[0].imageTags' --output table
-    aws ecr describe-images --repository-name edutwin-frontend --query 'imageDetails[0].imageTags' --output table
+    
+    # Check backend image
+    echo -e "Checking backend image..."
+    if aws ecr describe-images --repository-name edutwin-backend --image-ids imageTag=latest --region $AWS_REGION >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Backend image found in ECR${NC}"
+        aws ecr describe-images \
+            --repository-name edutwin-backend \
+            --image-ids imageTag=latest \
+            --region $AWS_REGION \
+            --query 'imageDetails[0].{Tags:imageTags,Size:imageSizeInBytes,Pushed:imagePushedAt}' \
+            --output table
+    else
+        echo -e "${RED}❌ Backend image not found in ECR${NC}"
+        echo -e "Available backend images:"
+        aws ecr describe-images --repository-name edutwin-backend --region $AWS_REGION --query 'imageDetails[*].imageTags' --output table 2>/dev/null || echo "No images found in repository"
+        exit 1
+    fi
+    
+    # Check frontend image  
+    echo -e "Checking frontend image..."
+    if aws ecr describe-images --repository-name edutwin-frontend --image-ids imageTag=latest --region $AWS_REGION >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Frontend image found in ECR${NC}"
+        aws ecr describe-images \
+            --repository-name edutwin-frontend \
+            --image-ids imageTag=latest \
+            --region $AWS_REGION \
+            --query 'imageDetails[0].{Tags:imageTags,Size:imageSizeInBytes,Pushed:imagePushedAt}' \
+            --output table
+    else
+        echo -e "${RED}❌ Frontend image not found in ECR${NC}"
+        echo -e "Available frontend images:"
+        aws ecr describe-images --repository-name edutwin-frontend --region $AWS_REGION --query 'imageDetails[*].imageTags' --output table 2>/dev/null || echo "No images found in repository"
+        exit 1
+    fi
 }
 
 # Apply Terraform
