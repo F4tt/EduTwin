@@ -15,6 +15,7 @@ from db.database import get_db
 from db.models import User, ChatSession, ChatMessage
 from core.websocket_manager import sio
 from services.learning_agent import LearningAgent
+from services.multi_agent_learning import process_with_multi_agent
 from services.document_processor import process_document
 from services.vector_service import get_vector_service
 
@@ -97,12 +98,17 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
             except Exception as e:
                 logger.error(f"[WS] Failed to send message: {e}")
 
-        # Initialize learning agent
-        learning_agent = LearningAgent(db=db, user_id=user_id, websocket_callback=websocket_callback)
-        
-        # Process query with agent
+        # Use Multi-Agent architecture (Leader-Worker pattern)
+        # Leader: analyzes, plans, evaluates, synthesizes
+        # Worker: executes tools (document search, wikipedia, calculator)
         try:
-            result = await learning_agent.process_query(request.message)
+            result = await process_with_multi_agent(
+                db=db,
+                user_id=user_id,
+                query=request.message,
+                conversation_history=None,
+                websocket_callback=websocket_callback
+            )
             response = result.get('response', 'Không có phản hồi từ agent')
             
             # Save agent response
