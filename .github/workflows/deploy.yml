@@ -94,19 +94,66 @@ jobs:
 
       - name: Wait for Backend deployment
         run: |
-          aws ecs wait services-stable \
+          echo "⏳ Waiting for Backend service to be stable..."
+          echo "ℹ️  This may take up to 15 minutes for database initialization and health checks"
+          
+          # Check task status before waiting
+          aws ecs describe-services \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }}
+            --services ${{ env.ECS_SERVICE_BACKEND }} \
+            --query 'services[0].{serviceName: serviceName, runningCount: runningCount, desiredCount: desiredCount, pendingCount: pendingCount}' \
+            --output table
+          
+          # Show recent task events for debugging
+          echo "📋 Recent task events:"
+          aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_BACKEND }} \
+            --query 'services[0].events[0:3].[createdAt,message]' \
+            --output table
+          
+          # Wait with extended timeout (20 minutes)
+          timeout 1200 aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_BACKEND }} || {
+            echo "❌ Backend service did not stabilize within 20 minutes"
+            echo "🔍 Final service status:"
+            aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE_BACKEND }} \
+              --query 'services[0].{serviceName: serviceName, runningCount: runningCount, desiredCount: desiredCount, pendingCount: pendingCount}' \
+              --output table
+            exit 1
+          }
 
       - name: Wait for Frontend deployment
         run: |
-          aws ecs wait services-stable \
+          echo "⏳ Waiting for Frontend service to be stable..."
+          
+          # Wait with timeout (10 minutes - frontend is lighter)
+          timeout 600 aws ecs wait services-stable \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_FRONTEND }}
+            --services ${{ env.ECS_SERVICE_FRONTEND }} || {
+            echo "❌ Frontend service did not stabilize within 10 minutes"
+            echo "🔍 Final service status:"
+            aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE_FRONTEND }} \
+              --query 'services[0].{serviceName: serviceName, runningCount: runningCount, desiredCount: desiredCount}' \
+              --output table
+            exit 1
+          }
 
       - name: Deployment complete
         run: |
-          echo "✅ Deployment complete!"
-          echo "🌐 Application: https://edutwin.online"
+          echo "✅ Deployment process completed!"
+          echo "🌐 Application: https://edutwin.online"  
           echo "📦 Backend image: ${{ env.ECR_BACKEND }}:${{ github.sha }}"
           echo "📦 Frontend image: ${{ env.ECR_FRONTEND }}:${{ github.sha }}"
+          echo ""
+          echo "🔍 Final service status:"
+          aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_BACKEND }} ${{ env.ECS_SERVICE_FRONTEND }} \
+            --query 'services[].[serviceName,status,runningCount,desiredCount]' \
+            --output table
