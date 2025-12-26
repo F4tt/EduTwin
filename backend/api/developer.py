@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from db import database, models
-from services import document_extractor
+from services.document_processor import process_uploaded_document
 from services.llm_provider import get_llm_provider
 from utils.session_utils import get_current_user, require_auth
 
@@ -204,7 +204,7 @@ async def upload_structure_document(
         )
     
     try:
-        original_content, extracted_summary, metadata = await document_extractor.process_uploaded_document(
+        original_content, extracted_summary, metadata = await process_uploaded_document(
             file_bytes=file,
             file_name=file_name,
             file_type=clean_file_type,

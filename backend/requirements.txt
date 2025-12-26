@@ -24,6 +24,22 @@ openpyxl
 scikit-learn
 scipy
 numpy
+numexpr
+
+# ===== AI/LLM DEPENDENCIES =====
+sentence-transformers
+wikipedia
+langchain
+langchain-core
+langchain-community
+langchain-google-genai
+numexpr
+sentence-transformers
+wikipedia
+langchain
+langchain-core
+langchain-community
+langchain-google-genai
 
 # ===== UTILITIES =====
 python-multipart

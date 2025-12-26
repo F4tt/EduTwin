@@ -152,12 +152,10 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
             
             logger.info(f"Searching documents for: {query}")
             
-            # Get user's documents
-            documents = db.query(models.Document).filter(
-                models.Document.user_id == user_id
-            ).order_by(models.Document.created_at.desc()).all()
+            # Get user's documents from uploaded_documents JSON field
+            user = db.query(models.User).filter(models.User.id == user_id).first()
             
-            if not documents:
+            if not user or not user.uploaded_documents:
                 if websocket_callback:
                     await websocket_callback({
                         'type': 'tool_progress',
@@ -166,25 +164,30 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
                     })
                 return "Bạn chưa tải lên tài liệu nào. Hãy upload tài liệu trước khi đặt câu hỏi."
             
+            documents = user.uploaded_documents
+            logger.info(f"Found {len(documents)} documents for user {user_id}")
+            
             # Simple keyword matching
             query_lower = query.lower()
-            query_keywords = [w for w in query_lower.split() if len(w) > 3]
+            query_keywords = [w for w in query_lower.split() if len(w) > 2]
             
             relevant_docs = []
             for doc in documents:
-                if not doc.content_text:
+                content = doc.get('content', '')
+                if not content:
                     continue
                 
-                content_lower = doc.content_text.lower()
+                content_lower = content.lower()
                 matches = sum(1 for kw in query_keywords if kw in content_lower)
                 
                 if matches > 0:
-                    preview = doc.content_text[:2000]
-                    if len(doc.content_text) > 2000:
-                        preview += "\n\n[...]"
+                    # Get more content for better context
+                    preview = content[:5000]
+                    if len(content) > 5000:
+                        preview += "\n\n[... còn nữa ...]"
                     
                     relevant_docs.append({
-                        'name': doc.filename,
+                        'name': doc.get('filename', 'Unknown'),
                         'content': preview,
                         'relevance': matches
                     })
@@ -193,6 +196,18 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
             relevant_docs = relevant_docs[:3]
             
             if not relevant_docs:
+                # If no keyword match, return first document content as fallback
+                if documents and documents[0].get('content'):
+                    first_doc = documents[0]
+                    content = first_doc.get('content', '')[:5000]
+                    if websocket_callback:
+                        await websocket_callback({
+                            'type': 'tool_progress',
+                            'tool': 'SearchUserDocuments',
+                            'message': f'📄 Sử dụng tài liệu: {first_doc.get("filename", "Unknown")}'
+                        })
+                    return f"[Tài liệu: {first_doc.get('filename', 'Unknown')}]\n{content}"
+                
                 if websocket_callback:
                     await websocket_callback({
                         'type': 'tool_progress',
@@ -412,25 +427,12 @@ Final Answer: [Câu trả lời chi tiết, có cấu trúc với bullet points]
             
             # ========== BƯỚC 0: TỰ ĐỘNG SEARCH DOCUMENTS TRƯỚC ==========
             doc_search_result = None
+            has_useful_content = False
             if 'SearchUserDocuments' in self.tool_map:
                 try:
                     logger.info("[ReAct Agent] Auto-searching user documents first...")
                     
-                    # Emit reasoning step for document search
-                    if self.websocket_callback:
-                        await self.websocket_callback({
-                            'type': 'reasoning',
-                            'step': 1,
-                            'status': 'executing',
-                            'description': f'Đang tìm kiếm trong tài liệu của bạn: "{query[:50]}..."',
-                            'tool_name': 'Tìm kiếm tài liệu người dùng',
-                            'tool_purpose': 'Ưu tiên tìm thông tin từ tài liệu bạn đã tải lên',
-                            'thought': 'Bước đầu tiên luôn là tìm kiếm trong tài liệu của người dùng',
-                            'action': 'SearchUserDocuments',
-                            'action_input': query
-                        })
-                    
-                    # Execute document search
+                    # Execute document search FIRST (không emit executing)
                     search_tool = self.tool_map['SearchUserDocuments']
                     import inspect
                     if inspect.iscoroutinefunction(search_tool.func):
@@ -455,7 +457,7 @@ Final Answer: [Câu trả lời chi tiết, có cấu trúc với bullet points]
                         status_msg = "⚠️ Không tìm thấy thông tin liên quan trong tài liệu"
                         result_quality = "not_found"
                     
-                    # Emit completed step
+                    # Emit CHỈ 1 event completed (không emit executing riêng)
                     if self.websocket_callback:
                         await self.websocket_callback({
                             'type': 'reasoning',
@@ -463,6 +465,8 @@ Final Answer: [Câu trả lời chi tiết, có cấu trúc với bullet points]
                             'status': 'completed',
                             'description': status_msg,
                             'result_quality': result_quality,
+                            'tool_name': 'Tìm kiếm tài liệu người dùng',
+                            'tool_purpose': 'Ưu tiên tìm thông tin từ tài liệu bạn đã tải lên',
                             'thought': 'Bước đầu tiên luôn là tìm kiếm trong tài liệu của người dùng',
                             'action': 'SearchUserDocuments',
                             'action_input': query,
@@ -476,28 +480,26 @@ Final Answer: [Câu trả lời chi tiết, có cấu trúc với bullet points]
                         'output': result_str[:500]
                     })
                     
-                    # Add to conversation context with strong instruction
+                    # Add to conversation context
                     if has_useful_content:
                         messages.append(AIMessage(content=f"Thought: Tôi sẽ tìm kiếm trong tài liệu của người dùng trước.\nAction: SearchUserDocuments\nAction Input: {query}"))
                         messages.append(HumanMessage(content=f"""Observation: {doc_search_result}
 
 ⚠️ QUAN TRỌNG: Tài liệu của người dùng đã có {len(result_str)} ký tự thông tin liên quan!
-BẠN PHẢI sử dụng thông tin này để trả lời ngay. KHÔNG tìm kiếm thêm trừ khi thực sự cần thiết.
-Hãy đưa ra Final Answer dựa trên tài liệu trên."""))
+Dựa trên thông tin này, hãy tổng hợp câu trả lời CHẤT LƯỢNG CAO cho user:
+- Giải thích rõ ràng, dễ hiểu
+- Có cấu trúc (bullet points nếu cần)
+- Dùng công thức LaTeX nếu có toán học: $...$
+- Trích dẫn nguồn từ tài liệu khi phù hợp
+
+Hãy đưa ra Final Answer ngay."""))
                     
                     logger.info(f"[ReAct Agent] Document search result: {result_quality} ({len(result_str)} chars)")
-                    
-                    # ========== KHÔNG FORCE ANSWER - ĐỂ AGENT TỰ QUYẾT ĐỊNH ==========
-                    # Agent sẽ tự quyết định dựa trên:
-                    # - Nếu document có đủ thông tin → trả lời ngay
-                    # - Nếu document không đủ/không liên quan → search Wikipedia
-                    # - Nếu user yêu cầu tìm thêm → search Wikipedia
                     
                 except Exception as e:
                     logger.error(f"[ReAct Agent] Error in auto document search: {e}")
             
-            # ========== TIẾP TỤC ReAct LOOP ==========
-            # ReAct loop (bắt đầu từ step 2 nếu đã search documents)
+            # ========== TIẾP TỤC ReAct LOOP - LLM sẽ synthesize response ==========
             start_step = 2 if doc_search_result else 1
             for iteration in range(max_iterations):
                 logger.info(f"[ReAct Agent] Iteration {iteration + 1}/{max_iterations}")
@@ -573,55 +575,37 @@ Hãy đưa ra Final Answer dựa trên tài liệu trên."""))
                 action_name = action_match.group(1).strip()
                 action_input = input_match.group(1).strip()
                 
-                # Emit reasoning step START với mô tả CHI TIẾT
-                if self.websocket_callback:
-                    # Mô tả chi tiết mục đích và công cụ
-                    tool_descriptions = {
-                        'SearchUserDocuments': {
-                            'name': 'Tìm kiếm tài liệu người dùng',
-                            'purpose': 'Tìm kiếm thông tin trong các tài liệu đã tải lên của bạn',
-                            'action': 'Đang tìm kiếm'
-                        },
-                        'Wikipedia': {
-                            'name': 'Tra cứu Wikipedia', 
-                            'purpose': 'Tra cứu kiến thức tổng quát trên Wikipedia',
-                            'action': 'Đang tra cứu'
-                        },
-                        'Calculator': {
-                            'name': 'Máy tính',
-                            'purpose': 'Thực hiện các phép tính toán học',
-                            'action': 'Đang tính toán'
-                        },
-                        'PythonREPL': {
-                            'name': 'Python REPL',
-                            'purpose': 'Chạy code Python để xử lý dữ liệu phức tạp',
-                            'action': 'Đang chạy code'
-                        }
+                # Tool descriptions for UI display
+                tool_descriptions = {
+                    'SearchUserDocuments': {
+                        'name': 'Tìm kiếm tài liệu người dùng',
+                        'purpose': 'Tìm kiếm thông tin trong các tài liệu đã tải lên của bạn',
+                        'action': 'Đang tìm kiếm'
+                    },
+                    'Wikipedia': {
+                        'name': 'Tra cứu Wikipedia', 
+                        'purpose': 'Tra cứu kiến thức tổng quát trên Wikipedia',
+                        'action': 'Đang tra cứu'
+                    },
+                    'Calculator': {
+                        'name': 'Máy tính',
+                        'purpose': 'Thực hiện các phép tính toán học',
+                        'action': 'Đang tính toán'
+                    },
+                    'PythonREPL': {
+                        'name': 'Python REPL',
+                        'purpose': 'Chạy code Python để xử lý dữ liệu phức tạp',
+                        'action': 'Đang chạy code'
                     }
-                    
-                    tool_info = tool_descriptions.get(action_name, {
-                        'name': action_name,
-                        'purpose': f'Sử dụng công cụ {action_name}',
-                        'action': 'Đang xử lý'
-                    })
-                    
-                    description = f"{tool_info['action']}: {action_input[:100]}"
-                    if len(action_input) > 100:
-                        description += "..."
-                    
-                    await self.websocket_callback({
-                        'type': 'reasoning',
-                        'step': start_step + iteration,
-                        'status': 'executing',
-                        'description': description,
-                        'tool_name': tool_info['name'],
-                        'tool_purpose': tool_info['purpose'],
-                        'thought': thought,
-                        'action': action_name,
-                        'action_input': action_input[:300]
-                    })
+                }
                 
-                # Execute tool
+                tool_info = tool_descriptions.get(action_name, {
+                    'name': action_name,
+                    'purpose': f'Sử dụng công cụ {action_name}',
+                    'action': 'Đang xử lý'
+                })
+                
+                # Execute tool FIRST, then emit completed (không emit executing riêng)
                 if action_name in self.tool_map:
                     tool = self.tool_map[action_name]
                     logger.info(f"[ReAct Agent] Executing tool: {action_name}")
@@ -634,7 +618,7 @@ Hãy đưa ra Final Answer dựa trên tài liệu trên."""))
                             observation = tool.func(action_input)
                         tools_used.add(action_name)
                         
-                        # Emit reasoning step COMPLETED với kết quả CHI TIẾT
+                        # Emit CHỈ 1 event completed (sau khi tool xong)
                         if self.websocket_callback:
                             obs_str = str(observation).strip()
                             result_preview = obs_str[:200]
@@ -833,9 +817,7 @@ Trả lời bằng JSON: {{"type": "loại", "needs_tools": true/false}}"""
             messages = [{"role": "user", "content": classification_prompt}]
             response = await self.llm_provider.chat(
                 messages=messages, 
-                temperature=0.1,
-                user_id=self.user_id,
-                db_session=self.db
+                temperature=0.1
             )
             
             if response:
@@ -886,9 +868,7 @@ Trả lời bằng JSON: {{"type": "loại", "needs_tools": true/false}}"""
             
             response = await self.llm_provider.chat(
                 messages=messages, 
-                temperature=0.7,
-                user_id=self.user_id,
-                db_session=self.db
+                temperature=0.7
             )
             
             if response:
@@ -918,9 +898,7 @@ FORMAT CÔNG THỨC TOÁN HỌC:
             
             response = await self.llm_provider.chat(
                 messages=messages, 
-                temperature=0.5,
-                user_id=self.user_id,
-                db_session=self.db
+                temperature=0.5
             )
             
             if response:

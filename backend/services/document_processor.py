@@ -63,8 +63,8 @@ def extract_text_from_docx(file_content: bytes) -> str:
 def extract_text_from_pdf(file_content: bytes) -> str:
     """Extract text from .pdf file"""
     try:
-        import pypdf
-        pdf_reader = pypdf.PdfReader(io.BytesIO(file_content))
+        import PyPDF2
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
         text_parts = []
         
         for page in pdf_reader.pages:
@@ -74,7 +74,7 @@ def extract_text_from_pdf(file_content: bytes) -> str:
         
         return '\n\n'.join(text_parts)
     except ImportError:
-        raise ValueError("pypdf library not installed. Install with: pip install pypdf")
+        raise ValueError("PyPDF2 library not installed. Install with: pip install PyPDF2")
     except Exception as e:
         logger.error(f"Error extracting text from PDF: {e}")
         raise ValueError(f"Failed to extract text from PDF file: {e}")
@@ -360,3 +360,78 @@ Hãy trích xuất thông tin quan trọng:"""
             "error": str(e)
         }
         return summary, metadata
+
+
+async def process_document(file_content: bytes, filename: str) -> str:
+    """
+    Main function to process uploaded documents
+    Returns extracted text content
+    """
+    try:
+        file_ext = '.' + filename.split('.')[-1].lower() if '.' in filename else ''
+        
+        if file_ext == '.txt':
+            text_content = extract_text_from_txt(file_content)
+        elif file_ext == '.docx':
+            text_content = extract_text_from_docx(file_content)
+        elif file_ext == '.pdf':
+            text_content = extract_text_from_pdf(file_content)
+        else:
+            raise ValueError(f"Unsupported file type: {file_ext}")
+        
+        # Basic validation
+        if not text_content.strip():
+            raise ValueError("No text content extracted from file")
+        
+        logger.info(f"Processed document: {filename} ({len(text_content)} chars)")
+        return text_content
+        
+    except Exception as e:
+        logger.error(f"Document processing failed for {filename}: {e}")
+        raise ValueError(f"Failed to process document: {e}")
+
+
+async def process_uploaded_document(
+    file_bytes: bytes,
+    file_name: str,
+    file_type: str,
+    structure_name: str = ""
+) -> tuple:
+    """
+    Process an uploaded document for custom teaching structures.
+    Returns: (original_content, extracted_summary, metadata)
+    
+    This replaces the old document_extractor.process_uploaded_document function.
+    """
+    try:
+        # Extract text based on file type
+        file_ext = f".{file_type.lower()}"
+        
+        if file_ext == '.txt':
+            original_content = extract_text_from_txt(file_bytes)
+        elif file_ext in ['.docx', '.doc']:
+            original_content = extract_text_from_docx(file_bytes)
+        elif file_ext == '.pdf':
+            original_content = extract_text_from_pdf(file_bytes)
+        else:
+            raise ValueError(f"Unsupported file type: {file_ext}")
+        
+        if not original_content.strip():
+            raise ValueError("No text content extracted from file")
+        
+        # Generate summary using LLM
+        summary, metadata = await generate_document_summary(original_content, file_name)
+        
+        # Add structure context to metadata
+        metadata['structure_name'] = structure_name
+        metadata['original_length'] = len(original_content)
+        metadata['summary_length'] = len(summary)
+        metadata['compression_ratio'] = round(len(summary) / max(len(original_content), 1), 2)
+        
+        logger.info(f"Processed uploaded document: {file_name} ({len(original_content)} -> {len(summary)} chars)")
+        
+        return original_content, summary, metadata
+        
+    except Exception as e:
+        logger.error(f"Failed to process uploaded document {file_name}: {e}")
+        raise ValueError(f"Document processing failed: {e}")

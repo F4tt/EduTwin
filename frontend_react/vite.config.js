@@ -29,5 +29,10 @@ export default defineConfig({
     // Dev server settings
     host: true,
     port: 5173,
+    hmr: {
+      // Fix HMR WebSocket connection when behind Docker port mapping
+      clientPort: 3000,
+      host: 'localhost',
+    },
   },
 })

@@ -365,9 +365,9 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
                         subjects[s["subject"]] = []
                     subjects[s["subject"]].append(f"{s['time_point']}={s['value']}{s['marker']}")
                 for subj, scores in subjects.items():
-                    past_lines.append(f"  • {subj}: {', '.join(scores[:4])}")
+                    past_lines.append(f"  • {subj}: {', '.join(scores)}")
                 context_parts.append("🔙 QUÁ KHỨ:")
-                context_parts.extend(past_lines[:5])  # Limit to 5 subjects
+                context_parts.extend(past_lines)  # No limit - include all subjects
             
             # Format current scores
             if current_scores:
@@ -376,7 +376,7 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
                     status = f"({s['type']})" if s['type'] == 'dự đoán' else ""
                     curr_lines.append(f"  • {s['subject']}: {s['value']}{s['marker']} {status}")
                 context_parts.append("📍 HIỆN TẠI:")
-                context_parts.extend(curr_lines[:8])  # Limit to 8 subjects
+                context_parts.extend(curr_lines)  # No limit - include all subjects
             
             # Format future predictions
             if future_scores:
@@ -387,9 +387,9 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
                         subjects[s["subject"]] = []
                     subjects[s["subject"]].append(f"{s['time_point']}={s['value']}{s['marker']}")
                 for subj, scores in subjects.items():
-                    fut_lines.append(f"  • {subj}: {', '.join(scores[:4])}")
+                    fut_lines.append(f"  • {subj}: {', '.join(scores)}")
                 context_parts.append("TƯƠNG LAI (dự đoán):")
-                context_parts.extend(fut_lines[:5])  # Limit to 5 subjects
+                context_parts.extend(fut_lines)  # No limit - include all subjects
             
             # Add legend
             if past_scores or current_scores or future_scores:
@@ -445,8 +445,8 @@ def _build_prompt(
             
             if active_structure:
                 # Build structure-aware context
-                subjects_str = ", ".join(active_structure.subject_labels[:10])  # Limit to first 10
-                time_points_str = ", ".join(active_structure.time_point_labels[:10])
+                subjects_str = ", ".join(active_structure.subject_labels)  # No limit - include all
+                time_points_str = ", ".join(active_structure.time_point_labels)  # No limit - include all
                 
                 custom_structure_info = (
                     f"\n\n📚 HỆ THỐNG ĐÁNH GIÁ HIỆN TẠI:\n"

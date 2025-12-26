@@ -10,7 +10,7 @@ from sqlalchemy import text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from db import models, database
-from api import auth, developer, chatbot, custom_model
+from api import auth, developer, chatbot, custom_model, learning
 from api import user
 # REMOVED: vector_store_provider import (no longer used)
 from core.logging_config import setup_logging, get_logger
@@ -110,7 +110,13 @@ async def startup_event():
                     ADD COLUMN IF NOT EXISTS age VARCHAR,
                     ADD COLUMN IF NOT EXISTS current_grade VARCHAR,
                     ADD COLUMN IF NOT EXISTS role VARCHAR DEFAULT 'user',
-                    ADD COLUMN IF NOT EXISTS preferences JSON
+                    ADD COLUMN IF NOT EXISTS preferences JSON,
+                    ADD COLUMN IF NOT EXISTS uploaded_documents JSON
+                """))
+                
+                conn.execute(text("""
+                    ALTER TABLE chat_sessions
+                    ADD COLUMN IF NOT EXISTS mode VARCHAR DEFAULT 'chat'
                 """))
             logger.info("Database tables created successfully")
             
@@ -137,6 +143,7 @@ async def startup_event():
 app.include_router(auth.router)
 app.include_router(developer.router)
 app.include_router(chatbot.router)
+app.include_router(learning.router)
 app.include_router(user.router)
 app.include_router(custom_model.router)
 

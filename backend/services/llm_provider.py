@@ -64,7 +64,7 @@ class LLMProvider:
                 while True:
                     attempt += 1
                     try:
-                        if self.provider == "gemini":
+                        if self.provider in ("gemini", "google"):
                             # Official Google Generative AI API format (v1beta generateContent)
                             # Converts OpenAI-like messages (role/content) into Google's contents format (role/parts)
                             # See: https://ai.google.dev/api/rest/v1beta/models/generateContent

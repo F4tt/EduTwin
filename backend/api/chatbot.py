@@ -229,6 +229,9 @@ async def chatbot_endpoint(
     if current_user and sess_id:
         import asyncio
         
+        # Capture logger reference for nested async function
+        _logger = logging.getLogger("uvicorn.error")
+        
         async def async_hybrid_learning():
             learning_db = database.SessionLocal()
             try:
@@ -240,7 +243,7 @@ async def chatbot_endpoint(
                     
                     # Trigger every 3 messages (more frequent personalization updates)
                     if msg_count % 3 == 0 and msg_count >= 3:
-                        logger.info(f"[HYBRID] Starting personalization learning for user {current_user.get('user_id')} after {msg_count} messages")
+                        _logger.info(f"[HYBRID] Starting personalization learning for user {current_user.get('user_id')} after {msg_count} messages")
                         
                         from services.hybrid_personalization_learner import update_user_personalization_hybrid
                         result = await update_user_personalization_hybrid(
@@ -250,10 +253,10 @@ async def chatbot_endpoint(
                         )
                         
                         if result.get("updated"):
-                            logger.info(f"[HYBRID] Updated preferences: {result.get('categories_updated')}")
+                            _logger.info(f"[HYBRID] Updated preferences: {result.get('categories_updated')}")
                         
             except Exception as e:
-                logger.exception(f"Error in hybrid personalization learning: {e}")
+                _logger.exception(f"Error in hybrid personalization learning: {e}")
                 learning_db.rollback()
             finally:
                 learning_db.close()
@@ -445,18 +448,29 @@ def create_chat_session(request: Request, payload: dict = Body(default={}), db: 
 
 @router.get("/chatbot/sessions")
 @require_auth
-def list_chat_sessions(request: Request, db: Session = Depends(get_db)):
+def list_chat_sessions(request: Request, mode: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    List chat sessions for the current user.
+    
+    Args:
+        mode: Optional filter - 'chat' or 'learning'. If not provided, returns 'chat' mode sessions (default)
+    """
     current_user = get_current_user(request)
     if not current_user:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập.")
 
-    sessions = (
-        db.query(models.ChatSession)
-        .filter(models.ChatSession.user_id == current_user.get("user_id"))
-        .order_by(models.ChatSession.updated_at.desc())
-        .all()
-    )
-    return [{"id": s.id, "title": s.title, "created_at": s.created_at, "updated_at": s.updated_at} for s in sessions]
+    # Build query with user filter
+    query = db.query(models.ChatSession).filter(models.ChatSession.user_id == current_user.get("user_id"))
+    
+    # Filter by mode - default to 'chat' if mode column exists
+    if mode:
+        query = query.filter(models.ChatSession.mode == mode)
+    else:
+        # Default: only show 'chat' sessions (exclude learning sessions)
+        query = query.filter((models.ChatSession.mode == 'chat') | (models.ChatSession.mode == None))
+    
+    sessions = query.order_by(models.ChatSession.updated_at.desc()).all()
+    return [{"id": s.id, "title": s.title, "created_at": s.created_at, "updated_at": s.updated_at, "mode": s.mode or 'chat'} for s in sessions]
 
 
 @router.put("/chatbot/sessions/{session_id}")
@@ -691,9 +705,9 @@ Hãy phân tích dữ liệu học sinh như một chuyên gia thực thụ - v�
             if current_grade:
                 system_prompt_parts.append(f"- Mốc thời gian hiện tại: {current_grade}")
             if subjects:
-                system_prompt_parts.append(f"- Các môn học: {', '.join(subjects[:10])}")
+                system_prompt_parts.append(f"- Các môn học: {', '.join(subjects)}")
             if time_points:
-                system_prompt_parts.append(f"- Các mốc thời gian: {', '.join(time_points[:6])}")
+                system_prompt_parts.append(f"- Các mốc thời gian: {', '.join(time_points)}")
         
         if document_summary:
             system_prompt_parts.append(f"\nTài liệu tham khảo về cách đánh giá và phân tích:")

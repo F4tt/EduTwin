@@ -107,7 +107,11 @@ const Learning = () => {
         const latestMessage = chatMessages[chatMessages.length - 1];
         
         // Check if message belongs to current session
-        if (String(latestMessage.session_id) !== String(currentSessionId)) return;
+        // Allow messages if session is draft (new session) or if session_id matches
+        const isDraftSession = String(currentSessionId).startsWith('draft');
+        const isMatchingSession = String(latestMessage.session_id) === String(currentSessionId);
+        
+        if (!isDraftSession && !isMatchingSession) return;
         
         // Handle tool_progress - update current step's progress
         if (latestMessage.type === 'tool_progress') {
@@ -167,37 +171,11 @@ const Learning = () => {
         if (latestMessage.type === 'agent_complete') {
             console.log('[Learning] agent_complete received');
             setIsAgentProcessing(false);
+            setIsReasoningCompleted(true);
             
-            // Display final answer AFTER reasoning is complete
-            if (latestMessage.final_answer) {
-                const finalMsg = {
-                    role: 'assistant',
-                    content: latestMessage.final_answer,
-                    complete: true
-                };
-                
-                // Check duplicate before adding
-                setMessages(prev => {
-                    const isDuplicate = prev.some(m => 
-                        m.content === finalMsg.content && 
-                        m.role === 'assistant' &&
-                        prev.indexOf(m) >= prev.length - 3
-                    );
-                    
-                    if (isDuplicate) {
-                        console.log('[Learning] Duplicate detected, skipping');
-                        return prev;
-                    }
-                    
-                    console.log('[Learning] Adding new message');
-                    return [...prev, finalMsg];
-                });
-            }
-            
-            // Clear reasoning steps after delay to let users see final state
-            setTimeout(() => {
-                setReasoningSteps([]);
-            }, 3000);
+            // DON'T add message here - let HTTP response handle it
+            // DON'T clear reasoning steps - keep them visible
+            // They will be cleared when user sends a new message
             return;
         }
     }, [chatMessages, currentSessionId]);
@@ -820,12 +798,13 @@ const Learning = () => {
                         );
                     })}
                     
-                    {/* Show reasoning steps while processing (before response arrives) */}
-                    {isAgentProcessing && reasoningSteps.length > 0 && (
+                    {/* Show reasoning steps ONLY while processing (before response arrives) */}
+                    {/* Once response is in messages, reasoning is shown with the message above */}
+                    {reasoningSteps.length > 0 && isAgentProcessing && (
                         <ReasoningDisplay 
                             steps={reasoningSteps}
                             isProcessing={isAgentProcessing}
-                            isCompleted={false}
+                            isCompleted={isReasoningCompleted}
                         />
                     )}
 

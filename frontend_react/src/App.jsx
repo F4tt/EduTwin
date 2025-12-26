@@ -6,7 +6,8 @@ import Layout from './components/Layout';
 
 // Lazy load pages for code splitting (reduce initial bundle size)
 const Auth = lazy(() => import('./pages/Auth'));
-const Chatbot = lazy(() => import('./pages/Chatbot'));
+const Chat = lazy(() => import('./pages/Chat'));
+const Learning = lazy(() => import('./pages/Learning'));
 const DataViz = lazy(() => import('./pages/DataViz'));
 const StudyUpdate = lazy(() => import('./pages/StudyUpdate'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -49,7 +50,12 @@ function AppRoutes() {
         <Route index element={<Navigate to="/chat" replace />} />
         <Route path="chat" element={
           <Suspense fallback={<PageLoader />}>
-            <Chatbot />
+            <Chat />
+          </Suspense>
+        } />
+        <Route path="learning" element={
+          <Suspense fallback={<PageLoader />}>
+            <Learning />
           </Suspense>
         } />
         <Route path="data" element={
