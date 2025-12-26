@@ -1,7 +1,5 @@
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import json
 import asyncio
 import logging
@@ -45,8 +43,6 @@ class CreateSessionPayload(BaseModel):
 class UpdateSessionPayload(BaseModel):
     title: Optional[str] = None
 
-
-from typing import List
 
 class SectionPrompt(BaseModel):
     section: str

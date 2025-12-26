@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from db.database import get_db
 from db.models import User, ChatSession, ChatMessage
 from core.websocket_manager import sio
-from services.learning_agent import LearningAgent
+# from services.learning_agent import LearningAgent  # Temporarily disabled due to dependencies
 from services.document_processor import process_document
 from services.vector_service import get_vector_service
 
@@ -98,12 +98,12 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
                 logger.error(f"[WS] Failed to send message: {e}")
 
         # Initialize learning agent
-        learning_agent = LearningAgent(db=db, user_id=user_id, websocket_callback=websocket_callback)
+        # learning_agent = LearningAgent(db=db, user_id=user_id, websocket_callback=websocket_callback)
         
         # Process query with agent
         try:
-            result = await learning_agent.process_query(request.message)
-            response = result.get('response', 'Không có phản hồi từ agent')
+            # TODO: Restore LearningAgent when dependencies are fixed
+            response = "Learning mode tạm thời không khả dụng. Vui lòng sử dụng Chat mode."
             
             # Save agent response
             agent_message = ChatMessage(
