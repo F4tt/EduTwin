@@ -38,8 +38,6 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-        with:
-          retry-on-failure: true
 
       - name: Verify ECR repositories exist
         run: |
