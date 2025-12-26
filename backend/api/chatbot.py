@@ -21,6 +21,10 @@ from core.websocket_manager import emit_chat_message, emit_chat_typing
 
 router = APIRouter(tags=["Chatbot"])
 
+# Global state for tracking cancelled requests
+# These requests should not be saved to database even if LLM response completes
+cancelled_requests = set()
+
 
 def get_db():
     db = database.SessionLocal()
@@ -60,6 +64,10 @@ class CommentRequest(BaseModel):
     score_data: Optional[dict] = None     # Comprehensive score data from frontend
     document_context: Optional[dict] = None  # Document summaries from structure
     structure_id: Optional[int] = None    # Structure ID for filtering insights by structure
+
+
+class CancelRequest(BaseModel):
+    request_id: str
 
 
 @router.post("/chatbot")
@@ -200,11 +208,15 @@ async def chatbot_endpoint(
             logging.getLogger("uvicorn.error").exception(f"Error creating session in chatbot_endpoint: {e}")
             db.rollback()
 
+    # Extract request_id from payload for cancellation tracking
+    request_id = payload.get("request_id") if isinstance(payload, dict) else None
+
     response_payload = await generate_chat_response(
         db=db,
         user=current_user,
         message=msg_text,
         session_id=sess_id,
+        request_id=request_id,
     )
     
     # Emit message via WebSocket to chat session room
@@ -260,7 +272,29 @@ async def chatbot_endpoint(
         # Run async task in background
         asyncio.create_task(async_hybrid_learning())
     
+    # Check if request was cancelled - if so, mark response as cancelled
+    request_id = payload.get("request_id") if payload else None
+    if request_id and request_id in cancelled_requests:
+        logger.info(f"[CANCEL] Request {request_id} was cancelled - not saving to DB")
+        cancelled_requests.discard(request_id)  # Remove from set
+        response_payload["cancelled"] = True
+        return JSONResponse(content=response_payload)
+    
     return JSONResponse(content=response_payload)
+
+
+@router.post("/chatbot/cancel")
+async def cancel_chat_request(payload: dict = Body(...)):
+    """
+    Mark a chat request as cancelled.
+    Even if the LLM response completes, it will not be saved to database or displayed.
+    """
+    request_id = payload.get("request_id")
+    if request_id:
+        cancelled_requests.add(request_id)
+        logger.info(f"[CANCEL] Marked request {request_id} as cancelled")
+        return {"status": "cancelled", "request_id": request_id}
+    return {"status": "error", "message": "No request_id provided"}
 
 
 @router.post("/chatbot/stream")

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight, Square } from 'lucide-react';
+import { Send, Plus, MessageSquare, Trash2, ChevronLeft, ChevronRight, Square } from 'lucide-react';
 import axiosClient from '../api/axiosClient';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
@@ -10,13 +10,12 @@ import MarkdownWithMath from '../components/MarkdownWithMath';
 const Chat = () => {
     const { user } = useAuth();
     const { connected, chatMessages, isTyping, joinChatSession, leaveChatSession, clearChatMessages } = useWebSocket();
-    
+
     const [sessions, setSessions] = useState([]);
     const [currentSessionId, setCurrentSessionId] = useState(null);
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
-    const [pendingScore, setPendingScore] = useState(null);
     const [preferenceCount, setPreferenceCount] = useState(0);
     const [collapsed, setCollapsed] = useState(() => {
         try {
@@ -25,7 +24,7 @@ const Chat = () => {
             return false;
         }
     });
-    
+
     const messagesEndRef = useRef(null);
     const abortControllerRef = useRef(null);
     const cancelledRequestRef = useRef(false);
@@ -58,7 +57,7 @@ const Chat = () => {
             console.error('Failed to fetch preference count:', e);
         }
     };
-    
+
     const fetchSessions = async () => {
         try {
             const res = await axiosClient.get('/chatbot/sessions', {
@@ -101,13 +100,13 @@ const Chat = () => {
                 message: latestMessage.message?.substring(0, 50),
                 cancelled: cancelledRequestRef.current
             });
-            
+
             // Ignore WebSocket messages if request was cancelled
             if (cancelledRequestRef.current) {
                 console.log('[Chat] Ignoring WebSocket message - request was cancelled');
                 return;
             }
-            
+
             if ((latestMessage.session_id === currentSessionId || latestMessage.session_id === String(currentSessionId)) && latestMessage.mode === 'chat') {
                 const newMsg = {
                     role: latestMessage.role || 'assistant',
@@ -173,12 +172,12 @@ const Chat = () => {
 
     const createNewSession = async () => {
         try {
-            const res = await axiosClient.post('/chatbot/sessions', { 
+            const res = await axiosClient.post('/chatbot/sessions', {
                 title: 'Phiên mới',
                 mode: 'chat'
             });
-            const newSession = { 
-                id: res.data.id, 
+            const newSession = {
+                id: res.data.id,
                 title: res.data.title || 'Phiên mới',
                 mode: 'chat'
             };
@@ -189,8 +188,8 @@ const Chat = () => {
         } catch (e) {
             console.error('Failed to create session:', e);
             const draftId = `draft-${Date.now()}`;
-            const newSession = { 
-                id: draftId, 
+            const newSession = {
+                id: draftId,
                 title: 'Phiên mới',
                 mode: 'chat'
             };
@@ -213,18 +212,17 @@ const Chat = () => {
         setMessages(prev => [...prev, userMsg]);
         setInput('');
         setLoading(true);
-        setPendingScore(null);
 
         // Reset cancelled flag and create new AbortController for this request
         cancelledRequestRef.current = false;
         abortControllerRef.current = new AbortController();
-        
+
         // Generate unique request ID for cancel support
         const requestId = generateRequestId();
         currentRequestIdRef.current = requestId;
 
         try {
-            const payload = { 
+            const payload = {
                 message: userMsg.content,
                 request_id: requestId,
             };
@@ -237,7 +235,7 @@ const Chat = () => {
                 signal: abortControllerRef.current.signal,
             });
             const data = res.data;
-            
+
             // If request was cancelled on backend, don't show response
             if (data.cancelled) {
                 return;
@@ -248,10 +246,6 @@ const Chat = () => {
                 content: data.answer || data.response || '(Không có phản hồi)'
             };
             setMessages(prev => [...prev, botMsg]);
-
-            if (data.pending_score_update) {
-                setPendingScore(data.pending_score_update);
-            }
 
             if (data.session_id && String(currentSessionId).startsWith('draft')) {
                 const realId = data.session_id;
@@ -279,7 +273,7 @@ const Chat = () => {
     const handleCancel = async () => {
         if (abortControllerRef.current) {
             cancelledRequestRef.current = true;
-            
+
             // Notify backend to cancel the request (so it won't save to DB)
             const requestId = currentRequestIdRef.current;
             if (requestId) {
@@ -290,26 +284,12 @@ const Chat = () => {
                     console.warn('[Chat] Failed to send cancel to backend:', err);
                 }
             }
-            
+
             abortControllerRef.current.abort();
         }
     };
 
-    const handleConfirmScore = async () => {
-        if (!pendingScore) return;
-        try {
-            await axiosClient.post('/chatbot/confirm-update', {
-                update_id: pendingScore.id
-            });
-            setPendingScore(null);
-            setMessages(prev => [...prev, { role: 'assistant', content: '✅ Đã cập nhật điểm thành công!' }]);
 
-            const { emitStudyScoresUpdated } = await import('../utils/eventBus');
-            emitStudyScoresUpdated({ source: 'chatbot' });
-        } catch (e) {
-            alert('Lỗi cập nhật: ' + e.message);
-        }
-    };
 
     return (
         <div className="container chat-container">
@@ -457,9 +437,9 @@ const Chat = () => {
                             <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>
                                 Trợ lý ảo EduTwin
                             </h3>
-                            <p style={{ 
-                                margin: 0, 
-                                fontSize: '0.8rem', 
+                            <p style={{
+                                margin: 0,
+                                fontSize: '0.8rem',
                                 color: 'var(--text-tertiary)',
                                 marginTop: '0.2rem'
                             }}>
@@ -584,32 +564,15 @@ const Chat = () => {
                         </div>
                     )}
 
-                    {pendingScore && (
-                        <div className="animate-fade-in pending-score-card">
-                            <h4 className="pending-score-title">
-                                ⚠️ Phát hiện thay đổi điểm số
-                            </h4>
-                            <p className="pending-score-text">
-                                Môn <b>{pendingScore.subject}</b> học kỳ <b>{pendingScore.semester}</b> lớp <b>{pendingScore.grade_level}</b>: <span style={{ textDecoration: 'line-through', opacity: 0.7 }}>{pendingScore.old_score || '?'}</span> → <b style={{ color: '#059669' }}>{pendingScore.new_score}</b>
-                            </p>
-                            <div style={{ display: 'flex', gap: '1rem' }}>
-                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: '#059669', borderColor: '#059669' }} onClick={handleConfirmScore}>
-                                    <Check size={16} /> Xác nhận
-                                </button>
-                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', color: '#dc2626', borderColor: '#dc2626' }} onClick={() => setPendingScore(null)}>
-                                    <X size={16} /> Bỏ qua
-                                </button>
-                            </div>
-                        </div>
-                    )}
+
 
                     <div ref={messagesEndRef} />
                 </div>
 
                 <div className="chat-input-area">
-                    <div style={{ 
-                        display: 'flex', 
-                        gap: '0.75rem', 
+                    <div style={{
+                        display: 'flex',
+                        gap: '0.75rem',
                         alignItems: 'center',
                         width: '100%'
                     }}>

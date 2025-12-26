@@ -766,6 +766,7 @@ async def generate_chat_response(
     user: Optional[Dict[str, object]],
     message: str,
     session_id: Optional[str],
+    request_id: Optional[str] = None,
 ) -> Dict[str, object]:
     user_id = user.get("user_id") if user else None
     
@@ -838,8 +839,6 @@ async def generate_chat_response(
                 "Vui lòng thử lại sau hoặc liên hệ hỗ trợ nếu lỗi tiếp tục xảy ra."
             )
         contexts.append({"error": str(exc)})
-
-    pending_score_update = None
 
     # Detect non-sensitive personalization intents and auto-apply
     try:
@@ -1020,7 +1019,6 @@ async def generate_chat_response(
     return {
         "answer": answer,
         "contexts": contexts,
-        "pending_score_update": pending_score_update,
         "session_id": persisted_session_id,
     }
 
