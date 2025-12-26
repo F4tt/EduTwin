@@ -35,30 +35,62 @@ jobs:
       - name: Build and push Backend image
         working-directory: ./backend
         run: |
+          echo "🔨 Building backend image..."
           docker build -f Dockerfile.prod -t ${{ env.ECR_BACKEND }}:latest -t ${{ env.ECR_BACKEND }}:${{ github.sha }} .
+          
+          echo "📤 Pushing backend images to ECR..."
           docker push ${{ env.ECR_BACKEND }}:latest
           docker push ${{ env.ECR_BACKEND }}:${{ github.sha }}
+          
+          echo "✅ Backend images pushed successfully"
+          docker images | grep edutwin-backend
 
       - name: Build and push Frontend image
         working-directory: ./frontend_react
         run: |
+          echo "🔨 Building frontend image..."
           docker build -f Dockerfile.prod -t ${{ env.ECR_FRONTEND }}:latest -t ${{ env.ECR_FRONTEND }}:${{ github.sha }} .
+          
+          echo "📤 Pushing frontend images to ECR..."
           docker push ${{ env.ECR_FRONTEND }}:latest
           docker push ${{ env.ECR_FRONTEND }}:${{ github.sha }}
+          
+          echo "✅ Frontend images pushed successfully"
+          docker images | grep edutwin-frontend
+      
+      - name: Verify images in ECR
+        run: |
+          echo "🔍 Verifying backend image in ECR..."
+          aws ecr describe-images \
+            --repository-name edutwin-backend \
+            --image-ids imageTag=latest \
+            --query 'imageDetails[0].imageTags' \
+            --output text
+          
+          echo "🔍 Verifying frontend image in ECR..."
+          aws ecr describe-images \
+            --repository-name edutwin-frontend \
+            --image-ids imageTag=latest \
+            --query 'imageDetails[0].imageTags' \
+            --output text
 
       - name: Update ECS Backend Service
         run: |
+          echo "🚀 Updating ECS Backend Service..."
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_BACKEND }} \
-            --force-new-deployment
+            --force-new-deployment \
+            --output json | jq '.service | {serviceName: .serviceName, status: .status, desiredCount: .desiredCount, runningCount: .runningCount}'
 
-      - name: Update ECS Frontend Service
+      - name: Update ECS Frontend Service  
         run: |
+          echo "🚀 Updating ECS Frontend Service..."
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_FRONTEND }} \
-            --force-new-deployment
+            --force-new-deployment \
+            --output json | jq '.service | {serviceName: .serviceName, status: .status, desiredCount: .desiredCount, runningCount: .runningCount}'
 
       - name: Wait for Backend deployment
         run: |
