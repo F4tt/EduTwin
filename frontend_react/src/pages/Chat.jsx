@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight, History } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+import { Send, Plus, MessageSquare, Trash2, Check, X, ChevronLeft, ChevronRight, Square } from 'lucide-react';
 import axiosClient from '../api/axiosClient';
 import { useAuth } from '../context/AuthContext';
 import { useWebSocket } from '../context/WebSocketContext';
 import PreferenceVisualizer from '../components/PreferenceVisualizer';
-import { useIsMobile } from '../hooks/useIsMobile';
+import MarkdownWithMath from '../components/MarkdownWithMath';
 
-const Chatbot = () => {
+const Chat = () => {
     const { user } = useAuth();
     const { connected, chatMessages, isTyping, joinChatSession, leaveChatSession, clearChatMessages } = useWebSocket();
+    
     const [sessions, setSessions] = useState([]);
     const [currentSessionId, setCurrentSessionId] = useState(null);
     const [messages, setMessages] = useState([]);
@@ -25,13 +25,19 @@ const Chatbot = () => {
             return false;
         }
     });
+    
     const messagesEndRef = useRef(null);
+    const abortControllerRef = useRef(null);
+    const cancelledRequestRef = useRef(false);
+    const currentRequestIdRef = useRef(null);
     const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
-    const [showSessionsModal, setShowSessionsModal] = useState(false);
-    const isMobile = useIsMobile();
+
+    // Generate unique request ID
+    const generateRequestId = () => {
+        return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    };
 
     useEffect(() => {
-        // Find the portal target in Layout
         const target = document.getElementById('header-portal');
         if (target) {
             setHeaderPortalTarget(target);
@@ -52,21 +58,32 @@ const Chatbot = () => {
             console.error('Failed to fetch preference count:', e);
         }
     };
+    
+    const fetchSessions = async () => {
+        try {
+            const res = await axiosClient.get('/chatbot/sessions', {
+                params: { mode: 'chat' }
+            });
+            setSessions(res.data);
+            if (res.data.length > 0 && !currentSessionId) {
+                setCurrentSessionId(res.data[0].id);
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
     useEffect(() => {
         if (currentSessionId) {
             fetchMessages(currentSessionId);
 
-            // Join WebSocket room for this chat session
             if (!String(currentSessionId).startsWith('draft')) {
                 joinChatSession(currentSessionId);
             }
 
-            // Clear previous messages from WebSocket
             clearChatMessages();
         }
 
-        // Cleanup: leave room when session changes
         return () => {
             if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
                 leaveChatSession(currentSessionId);
@@ -74,23 +91,35 @@ const Chatbot = () => {
         };
     }, [currentSessionId, joinChatSession, leaveChatSession, clearChatMessages]);
 
-    // Listen for WebSocket chat messages
     useEffect(() => {
         if (chatMessages.length > 0) {
             const latestMessage = chatMessages[chatMessages.length - 1];
-            // Only add if it's for current session
-            if (latestMessage.session_id === currentSessionId || latestMessage.session_id === String(currentSessionId)) {
+            console.log('[Chat] WebSocket message received:', {
+                session_id: latestMessage.session_id,
+                currentSessionId,
+                mode: latestMessage.mode,
+                message: latestMessage.message?.substring(0, 50),
+                cancelled: cancelledRequestRef.current
+            });
+            
+            // Ignore WebSocket messages if request was cancelled
+            if (cancelledRequestRef.current) {
+                console.log('[Chat] Ignoring WebSocket message - request was cancelled');
+                return;
+            }
+            
+            if ((latestMessage.session_id === currentSessionId || latestMessage.session_id === String(currentSessionId)) && latestMessage.mode === 'chat') {
                 const newMsg = {
                     role: latestMessage.role || 'assistant',
                     content: latestMessage.message
                 };
-                // Avoid duplicates by checking if message already exists
                 setMessages(prev => {
                     const isDuplicate = prev.some(m =>
                         m.content === newMsg.content &&
                         m.role === newMsg.role &&
-                        prev.indexOf(m) >= prev.length - 2 // Check last 2 messages
+                        prev.indexOf(m) >= prev.length - 2
                     );
+                    console.log('[Chat] isDuplicate:', isDuplicate, 'current count:', prev.length);
                     if (isDuplicate) return prev;
                     return [...prev, newMsg];
                 });
@@ -106,31 +135,17 @@ const Chatbot = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
 
-    const fetchSessions = async () => {
-        try {
-            const res = await axiosClient.get('/chatbot/sessions');
-            setSessions(res.data);
-            if (res.data.length > 0 && !currentSessionId) {
-                setCurrentSessionId(res.data[0].id);
-            }
-        } catch (e) {
-            console.error(e);
-        }
-    };
-
     const handleDeleteSession = async (sessionId) => {
         if (!window.confirm('Bạn có chắc muốn xóa phiên này?')) return;
         try {
             await axiosClient.delete(`/chatbot/sessions/${sessionId}`);
             setSessions(prev => prev.filter(s => s.id !== sessionId));
-            // if deleted current session, fallback to first persisted or create a draft
             if (currentSessionId === sessionId) {
                 const remaining = sessions.filter(s => s.id !== sessionId);
                 if (remaining.length > 0) {
                     setCurrentSessionId(remaining[0].id);
                     fetchMessages(remaining[0].id);
                 } else {
-                    // create a local draft
                     const draftId = `draft-${Date.now()}`;
                     const newSession = { id: draftId, title: 'Phiên mới' };
                     setSessions([newSession]);
@@ -158,21 +173,27 @@ const Chatbot = () => {
 
     const createNewSession = async () => {
         try {
-            // Call backend to create session with initial greeting
-            const res = await axiosClient.post('/chatbot/sessions', { title: 'Phiên mới' });
-            const newSession = { id: res.data.id, title: res.data.title || 'Phiên mới' };
+            const res = await axiosClient.post('/chatbot/sessions', { 
+                title: 'Phiên mới',
+                mode: 'chat'
+            });
+            const newSession = { 
+                id: res.data.id, 
+                title: res.data.title || 'Phiên mới',
+                mode: 'chat'
+            };
 
-            // Add to sessions list and set as current
             setSessions([newSession, ...sessions]);
             setCurrentSessionId(newSession.id);
-
-            // Fetch messages to get the initial greeting
             fetchMessages(newSession.id);
         } catch (e) {
             console.error('Failed to create session:', e);
-            // Fallback to draft session on error
             const draftId = `draft-${Date.now()}`;
-            const newSession = { id: draftId, title: 'Phiên mới' };
+            const newSession = { 
+                id: draftId, 
+                title: 'Phiên mới',
+                mode: 'chat'
+            };
             setSessions([newSession, ...sessions]);
             setCurrentSessionId(draftId);
             setMessages([]);
@@ -194,18 +215,33 @@ const Chatbot = () => {
         setLoading(true);
         setPendingScore(null);
 
+        // Reset cancelled flag and create new AbortController for this request
+        cancelledRequestRef.current = false;
+        abortControllerRef.current = new AbortController();
+        
+        // Generate unique request ID for cancel support
+        const requestId = generateRequestId();
+        currentRequestIdRef.current = requestId;
+
         try {
-            const payload = { message: userMsg.content };
-            if (user) payload.client_user_id = user.user_id;
+            const payload = { 
+                message: userMsg.content,
+                request_id: requestId,
+            };
             if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
-                payload.session_id = currentSessionId;
+                payload.session_id = String(currentSessionId);
             }
 
-            // Use regular endpoint (faster than streaming for now)
             const res = await axiosClient.post('/chatbot', payload, {
-                timeout: 120000, // 120 seconds - allow enough time for LLM response
+                timeout: 120000,
+                signal: abortControllerRef.current.signal,
             });
             const data = res.data;
+            
+            // If request was cancelled on backend, don't show response
+            if (data.cancelled) {
+                return;
+            }
 
             const botMsg = {
                 role: 'assistant',
@@ -213,28 +249,49 @@ const Chatbot = () => {
             };
             setMessages(prev => [...prev, botMsg]);
 
-            // Handle side effects
             if (data.pending_score_update) {
                 setPendingScore(data.pending_score_update);
             }
 
-            // If session was draft, update ID
             if (data.session_id && String(currentSessionId).startsWith('draft')) {
                 const realId = data.session_id;
                 setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, id: realId, title: data.title || s.title } : s));
                 setCurrentSessionId(realId);
             }
 
-            // Refresh sessions to get updated titles if any
             fetchSessions();
-
-            // Refresh preference count (backend learns after every 5 messages)
             fetchPreferenceCount();
 
         } catch (e) {
-            setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối: ' + e.message }]);
+            // Don't show error message if request was cancelled
+            if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
+                setMessages(prev => [...prev, { role: 'assistant', content: '⏹️ Đã hủy yêu cầu.' }]);
+            } else {
+                setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối: ' + e.message }]);
+            }
         } finally {
             setLoading(false);
+            abortControllerRef.current = null;
+            currentRequestIdRef.current = null;
+        }
+    };
+
+    const handleCancel = async () => {
+        if (abortControllerRef.current) {
+            cancelledRequestRef.current = true;
+            
+            // Notify backend to cancel the request (so it won't save to DB)
+            const requestId = currentRequestIdRef.current;
+            if (requestId) {
+                try {
+                    await axiosClient.post('/chatbot/cancel', { request_id: requestId });
+                    console.log('[Chat] Cancel request sent to backend:', requestId);
+                } catch (err) {
+                    console.warn('[Chat] Failed to send cancel to backend:', err);
+                }
+            }
+            
+            abortControllerRef.current.abort();
         }
     };
 
@@ -245,10 +302,8 @@ const Chatbot = () => {
                 update_id: pendingScore.id
             });
             setPendingScore(null);
-            // Add system message
             setMessages(prev => [...prev, { role: 'assistant', content: '✅ Đã cập nhật điểm thành công!' }]);
 
-            // Trigger refresh in StudyUpdate page
             const { emitStudyScoresUpdated } = await import('../utils/eventBus');
             emitStudyScoresUpdated({ source: 'chatbot' });
         } catch (e) {
@@ -257,80 +312,13 @@ const Chatbot = () => {
     };
 
     return (
-        <div className={`container chat-container ${isMobile ? 'chat-container-mobile' : ''}`}>
-            {/* Render PreferenceVisualizer in the Header Portal */}
+        <div className="container chat-container">
             {headerPortalTarget && createPortal(
                 <PreferenceVisualizer preferenceCount={preferenceCount} />,
                 headerPortalTarget
             )}
 
-            {/* Mobile Sessions Modal */}
-            {isMobile && showSessionsModal && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: 'rgba(0,0,0,0.5)',
-                    zIndex: 2000,
-                    display: 'flex',
-                    alignItems: 'flex-end'
-                }} onClick={() => setShowSessionsModal(false)}>
-                    <div style={{
-                        background: 'var(--bg-surface)',
-                        width: '100%',
-                        maxHeight: '70vh',
-                        borderTopLeftRadius: '20px',
-                        borderTopRightRadius: '20px',
-                        padding: '1.5rem',
-                        animation: 'slideUp 0.3s ease'
-                    }} onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                            <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700' }}>Lịch sử chat</h3>
-                            <button onClick={() => setShowSessionsModal(false)} className="btn btn-ghost" style={{ padding: '4px' }}>
-                                <X size={24} />
-                            </button>
-                        </div>
-                        <button
-                            className="btn btn-primary"
-                            onClick={() => { createNewSession(); setShowSessionsModal(false); }}
-                            style={{ marginBottom: '1rem', width: '100%', justifyContent: 'center' }}
-                        >
-                            <Plus size={18} /> Cuộc trò chuyện mới
-                        </button>
-                        <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
-                            {sessions.map(sess => (
-                                <div
-                                    key={sess.id}
-                                    className={`session-item ${currentSessionId === sess.id ? 'active' : ''}`}
-                                    onClick={() => { setCurrentSessionId(sess.id); setShowSessionsModal(false); }}
-                                    style={{ padding: '0.75rem', marginBottom: '0.5rem' }}
-                                >
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1 }}>
-                                        <MessageSquare size={18} />
-                                        <span style={{ fontSize: '0.9rem', fontWeight: currentSessionId === sess.id ? '600' : '500' }}>
-                                            {sess.title || 'Phiên chat mới'}
-                                        </span>
-                                    </div>
-                                    {!String(sess.id).startsWith('draft') && (
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); handleDeleteSession(sess.id); }}
-                                            className="btn-ghost"
-                                            style={{ padding: '4px' }}
-                                        >
-                                            <Trash2 size={16} />
-                                        </button>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Desktop: Expand Button (Visible when sidebar is collapsed) */}
-            {!isMobile && collapsed && (
+            {collapsed && (
                 <div style={{ width: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     <button
                         onClick={toggleCollapsed}
@@ -352,8 +340,7 @@ const Chatbot = () => {
                 </div>
             )}
 
-            {/* Desktop: Sessions Sidebar */}
-            {!isMobile && !collapsed && (
+            {!collapsed && (
                 <div className="chat-sidebar">
                     <button
                         onClick={toggleCollapsed}
@@ -458,30 +445,31 @@ const Chatbot = () => {
                 </div>
             )}
 
-            {/* Chat Area */}
-            <div className="chat-main" style={isMobile ? { borderRadius: 0, border: 'none' } : {}}>
-                {/* Header */}
-                <div className="chat-header" style={isMobile ? { padding: '0.75rem 1rem' } : {}}>
-                    <div className="chat-header-avatar">
-                        <span>🤖</span>
+            <div className="chat-main">
+                <div className="chat-header" style={{
+                    background: 'linear-gradient(135deg, #e3f2fd 0%, #f1f8fd 100%)'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div className="chat-header-avatar">
+                            <span>🤖</span>
+                        </div>
+                        <div>
+                            <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>
+                                Trợ lý ảo EduTwin
+                            </h3>
+                            <p style={{ 
+                                margin: 0, 
+                                fontSize: '0.8rem', 
+                                color: 'var(--text-tertiary)',
+                                marginTop: '0.2rem'
+                            }}>
+                                Trò chuyện và phân tích
+                            </p>
+                        </div>
                     </div>
-                    <div style={{ flex: 1 }}>
-                        <h3 style={{ margin: 0, fontSize: isMobile ? '0.95rem' : '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>Trợ lý ảo EduTwin</h3>
-                    </div>
-                    {/* Mobile: History Button */}
-                    {isMobile && (
-                        <button
-                            onClick={() => setShowSessionsModal(true)}
-                            className="btn btn-ghost"
-                            style={{ padding: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                        >
-                            <History size={20} />
-                        </button>
-                    )}
                 </div>
 
-                {/* Messages */}
-                <div className="chat-messages" style={isMobile ? { padding: '1rem' } : {}}>
+                <div className="chat-messages">
                     {messages.length === 0 && (
                         <div style={{
                             display: 'flex',
@@ -491,11 +479,11 @@ const Chatbot = () => {
                             height: '100%',
                             color: 'var(--text-tertiary)',
                             textAlign: 'center',
-                            padding: isMobile ? '1rem' : '2rem'
+                            padding: '2rem'
                         }}>
-                            <div style={{ fontSize: isMobile ? '2.5rem' : '3rem', marginBottom: '1rem', opacity: 0.5 }}>💬</div>
-                            <h3 style={{ fontSize: isMobile ? '1rem' : '1.2rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Bắt đầu cuộc trò chuyện mới</h3>
-                            <p style={{ maxWidth: '400px', fontSize: isMobile ? '0.9rem' : '1rem' }}>Hãy hỏi tôi về điểm số, xu hướng học tập hoặc lời khuyên để cải thiện kết quả của bạn.</p>
+                            <div style={{ fontSize: '3rem', marginBottom: '1rem', opacity: 0.5 }}>💬</div>
+                            <h3 style={{ fontSize: '1.2rem', fontWeight: '600', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Bắt đầu cuộc trò chuyện mới</h3>
+                            <p style={{ maxWidth: '400px' }}>Hãy hỏi tôi về điểm số, xu hướng học tập hoặc lời khuyên để cải thiện kết quả của bạn.</p>
                         </div>
                     )}
 
@@ -506,32 +494,31 @@ const Chatbot = () => {
                                 display: 'flex',
                                 justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                                 alignItems: 'flex-end',
-                                gap: isMobile ? '0.5rem' : '0.75rem'
+                                gap: '0.75rem'
                             }}
                         >
                             {msg.role === 'assistant' && (
                                 <div style={{
-                                    width: isMobile ? '24px' : '28px',
-                                    height: isMobile ? '24px' : '28px',
+                                    width: '28px',
+                                    height: '28px',
                                     borderRadius: '50%',
                                     background: 'var(--primary-light)',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
-                                    fontSize: isMobile ? '0.8rem' : '0.9rem',
+                                    fontSize: '0.9rem',
                                     flexShrink: 0
                                 }}>🤖</div>
                             )}
 
-                            <div className={`chat-message ${msg.role}`} style={isMobile ? { maxWidth: '85%', fontSize: '0.9rem' } : {}}>
+                            <div className={`chat-message ${msg.role}`}>
                                 <div className="markdown-content">
-                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                    <MarkdownWithMath content={msg.content} />
                                 </div>
                             </div>
                         </div>
                     ))}
 
-                    {/* Typing Indicator from WebSocket */}
                     {isTyping && !loading && (
                         <div className="animate-fade-in" style={{
                             display: 'flex',
@@ -597,20 +584,19 @@ const Chatbot = () => {
                         </div>
                     )}
 
-                    {/* Pending Score Update Card */}
                     {pendingScore && (
-                        <div className="animate-fade-in pending-score-card" style={isMobile ? { maxWidth: '100%', padding: '0.75rem 1rem' } : {}}>
-                            <h4 className="pending-score-title" style={isMobile ? { fontSize: '0.9rem' } : {}}>
+                        <div className="animate-fade-in pending-score-card">
+                            <h4 className="pending-score-title">
                                 ⚠️ Phát hiện thay đổi điểm số
                             </h4>
-                            <p className="pending-score-text" style={isMobile ? { fontSize: '0.85rem' } : {}}>
+                            <p className="pending-score-text">
                                 Môn <b>{pendingScore.subject}</b> học kỳ <b>{pendingScore.semester}</b> lớp <b>{pendingScore.grade_level}</b>: <span style={{ textDecoration: 'line-through', opacity: 0.7 }}>{pendingScore.old_score || '?'}</span> → <b style={{ color: '#059669' }}>{pendingScore.new_score}</b>
                             </p>
-                            <div style={{ display: 'flex', gap: isMobile ? '0.5rem' : '1rem', flexWrap: 'wrap' }}>
-                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: '#059669', borderColor: '#059669', flex: isMobile ? 1 : 'none' }} onClick={handleConfirmScore}>
+                            <div style={{ display: 'flex', gap: '1rem' }}>
+                                <button className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: '#059669', borderColor: '#059669' }} onClick={handleConfirmScore}>
                                     <Check size={16} /> Xác nhận
                                 </button>
-                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', color: '#dc2626', borderColor: '#dc2626', flex: isMobile ? 1 : 'none' }} onClick={() => setPendingScore(null)}>
+                                <button className="btn btn-outline" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', color: '#dc2626', borderColor: '#dc2626' }} onClick={() => setPendingScore(null)}>
                                     <X size={16} /> Bỏ qua
                                 </button>
                             </div>
@@ -620,38 +606,54 @@ const Chatbot = () => {
                     <div ref={messagesEndRef} />
                 </div>
 
-                {/* Input Area */}
-                <div className="chat-input-area" style={isMobile ? { padding: '0.75rem' } : {}}>
-                    <input
-                        className="input-field"
-                        placeholder="Nhập câu hỏi của bạn..."
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                        disabled={loading}
-                        style={{ margin: 0, boxShadow: 'var(--shadow-sm)', fontSize: isMobile ? '0.95rem' : '1rem' }}
-                    />
-                    <button
-                        className="btn btn-primary"
-                        onClick={handleSend}
-                        disabled={loading || !input.trim()}
-                        style={{
-                            width: isMobile ? '44px' : '48px',
-                            height: isMobile ? '44px' : '48px',
-                            padding: 0,
-                            borderRadius: '12px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0
-                        }}
-                    >
-                        <Send size={isMobile ? 18 : 20} />
-                    </button>
+                <div className="chat-input-area">
+                    <div style={{ 
+                        display: 'flex', 
+                        gap: '0.75rem', 
+                        alignItems: 'center',
+                        width: '100%'
+                    }}>
+                        <input
+                            className="input-field"
+                            placeholder="Nhập câu hỏi của bạn..."
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    if (loading) {
+                                        handleCancel();
+                                    } else {
+                                        handleSend();
+                                    }
+                                }
+                            }}
+                            disabled={false}
+                            style={{ margin: 0, boxShadow: 'var(--shadow-sm)', flex: 1 }}
+                        />
+                        <button
+                            className={`btn ${loading ? 'btn-danger' : 'btn-primary'}`}
+                            onClick={loading ? handleCancel : handleSend}
+                            disabled={!loading && !input.trim()}
+                            title={loading ? 'Hủy yêu cầu (Enter)' : 'Gửi tin nhắn (Enter)'}
+                            style={{
+                                width: '48px',
+                                height: '48px',
+                                padding: 0,
+                                borderRadius: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                                transition: 'all 0.2s ease'
+                            }}
+                        >
+                            {loading ? <Square size={20} /> : <Send size={20} />}
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
     );
 };
 
-export default Chatbot;
+export default Chat;

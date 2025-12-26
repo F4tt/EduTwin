@@ -83,12 +83,16 @@ async def connect(sid, environ, auth):
         user_sessions[user_id].add(sid)
         session_users[sid] = user_id
         
-        logger.info(f"User {user_id} connected with session {sid}")
+        # Auto-join user room for receiving reasoning events
+        user_room = f"user_{user_id}"
+        await sio.enter_room(sid, user_room)
+        logger.info(f"User {user_id} connected with session {sid}, joined room {user_room}")
         
         # Send connection confirmation
         await sio.emit('connected', {
             'message': 'Connected to EduTwin WebSocket',
             'user_id': user_id,
+            'user_room': user_room,
             'timestamp': datetime.utcnow().isoformat()
         }, room=sid)
 

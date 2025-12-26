@@ -13,6 +13,59 @@ from services.pii_redaction import redact_message_content, prepare_safe_llm_prom
 # NOTE: educational_knowledge removed - now using Custom Structure documents for context
 
 
+# ========== Intent Detection Classes ==========
+
+class ScoreUpdateIntent:
+    """Represents a detected score update intent from user message."""
+    def __init__(self, subject: str, new_score: float, old_score: Optional[float] = None, confidence: float = 0.0):
+        self.subject = subject
+        self.new_score = new_score
+        self.old_score = old_score
+        self.confidence = confidence
+
+
+def detect_personalization_intent(message: str) -> Optional[Dict[str, object]]:
+    """
+    Detect personalization intent from user message using keyword matching.
+    Returns dict with 'field', 'value', 'confidence' if detected, else None.
+    
+    Detects patterns like:
+    - "Tôi thích học môn Toán" -> {field: 'favorite_subject', value: 'Toán', confidence: 0.8}
+    - "Tôi là học sinh lớp 12" -> {field: 'grade', value: '12', confidence: 0.9}
+    - "Tôi muốn học vào buổi tối" -> {field: 'study_time', value: 'evening', confidence: 0.7}
+    """
+    if not message:
+        return None
+    
+    message_lower = message.lower()
+    
+    # Detect grade level
+    grade_patterns = [
+        (r'lớp\s*(\d+)', 'grade'),
+        (r'khối\s*(\d+)', 'grade'),
+    ]
+    for pattern, field in grade_patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            return {'field': field, 'value': match.group(1), 'confidence': 0.9}
+    
+    # Detect favorite subject
+    subjects = ['toán', 'văn', 'anh', 'lý', 'hóa', 'sinh', 'sử', 'địa', 'gdcd', 'tin']
+    for subj in subjects:
+        if f'thích {subj}' in message_lower or f'thích môn {subj}' in message_lower:
+            return {'field': 'favorite_subject', 'value': subj.capitalize(), 'confidence': 0.8}
+    
+    # Detect study time preference
+    if 'buổi sáng' in message_lower or 'sáng sớm' in message_lower:
+        return {'field': 'study_time', 'value': 'morning', 'confidence': 0.7}
+    if 'buổi tối' in message_lower or 'tối' in message_lower:
+        return {'field': 'study_time', 'value': 'evening', 'confidence': 0.7}
+    if 'buổi chiều' in message_lower:
+        return {'field': 'study_time', 'value': 'afternoon', 'confidence': 0.7}
+    
+    return None
+
+
 def set_user_preference(db: Session, user_id: int, key: str, value) -> dict:
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
@@ -365,9 +418,9 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
                         subjects[s["subject"]] = []
                     subjects[s["subject"]].append(f"{s['time_point']}={s['value']}{s['marker']}")
                 for subj, scores in subjects.items():
-                    past_lines.append(f"  • {subj}: {', '.join(scores[:4])}")
+                    past_lines.append(f"  • {subj}: {', '.join(scores)}")
                 context_parts.append("🔙 QUÁ KHỨ:")
-                context_parts.extend(past_lines[:5])  # Limit to 5 subjects
+                context_parts.extend(past_lines)  # No limit - include all subjects
             
             # Format current scores
             if current_scores:
@@ -376,7 +429,7 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
                     status = f"({s['type']})" if s['type'] == 'dự đoán' else ""
                     curr_lines.append(f"  • {s['subject']}: {s['value']}{s['marker']} {status}")
                 context_parts.append("📍 HIỆN TẠI:")
-                context_parts.extend(curr_lines[:8])  # Limit to 8 subjects
+                context_parts.extend(curr_lines)  # No limit - include all subjects
             
             # Format future predictions
             if future_scores:
@@ -387,9 +440,9 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
                         subjects[s["subject"]] = []
                     subjects[s["subject"]].append(f"{s['time_point']}={s['value']}{s['marker']}")
                 for subj, scores in subjects.items():
-                    fut_lines.append(f"  • {subj}: {', '.join(scores[:4])}")
+                    fut_lines.append(f"  • {subj}: {', '.join(scores)}")
                 context_parts.append("TƯƠNG LAI (dự đoán):")
-                context_parts.extend(fut_lines[:5])  # Limit to 5 subjects
+                context_parts.extend(fut_lines)  # No limit - include all subjects
             
             # Add legend
             if past_scores or current_scores or future_scores:
@@ -445,8 +498,8 @@ def _build_prompt(
             
             if active_structure:
                 # Build structure-aware context
-                subjects_str = ", ".join(active_structure.subject_labels[:10])  # Limit to first 10
-                time_points_str = ", ".join(active_structure.time_point_labels[:10])
+                subjects_str = ", ".join(active_structure.subject_labels)  # No limit - include all
+                time_points_str = ", ".join(active_structure.time_point_labels)  # No limit - include all
                 
                 custom_structure_info = (
                     f"\n\n📚 HỆ THỐNG ĐÁNH GIÁ HIỆN TẠI:\n"

@@ -1,13 +1,11 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { MessageSquare, BarChart2, BookOpen, Settings, LogOut, Wrench } from 'lucide-react';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { MessageSquare, BarChart2, BookOpen, Settings, LogOut, Wrench, GraduationCap } from 'lucide-react';
 
 const Layout = () => {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
-    const isMobile = useIsMobile();
 
     const handleLogout = async () => {
         await logout();
@@ -15,98 +13,19 @@ const Layout = () => {
     };
 
     const navItems = [
-        { path: '/chat', icon: <MessageSquare size={20} />, label: 'Trò chuyện', shortLabel: 'Chat' },
-        { path: '/data', icon: <BarChart2 size={20} />, label: 'Phân tích', shortLabel: 'Phân tích' },
-        { path: '/study', icon: <BookOpen size={20} />, label: 'Điểm số', shortLabel: 'Điểm' },
-        { path: '/settings', icon: <Settings size={20} />, label: 'Cài đặt', shortLabel: 'Cài đặt' },
+        { path: '/chat', icon: <MessageSquare size={20} />, label: 'Trò chuyện' },
+        { path: '/learning', icon: <GraduationCap size={20} />, label: 'Học tập' },
+        { path: '/data', icon: <BarChart2 size={20} />, label: 'Phân tích' },
+        { path: '/study', icon: <BookOpen size={20} />, label: 'Điểm số' },
+        { path: '/settings', icon: <Settings size={20} />, label: 'Cài đặt' },
     ];
 
     // Add Developer Tools for privileged users
     const isDeveloper = user?.role === 'developer' || user?.role === 'admin';
     if (isDeveloper) {
-        navItems.push({ path: '/developer', icon: <Wrench size={20} />, label: 'Quản lý hệ thống', shortLabel: 'Admin' });
+        navItems.push({ path: '/developer', icon: <Wrench size={20} />, label: 'Quản lý hệ thống' });
     }
 
-    // Mobile Layout
-    if (isMobile) {
-        return (
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg-body)' }}>
-                {/* Mobile Header */}
-                <header style={{
-                    height: '56px',
-                    background: 'var(--bg-surface)',
-                    borderBottom: '1px solid var(--border-color)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '0 1rem',
-                    position: 'sticky',
-                    top: 0,
-                    zIndex: 100
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <div style={{
-                            width: '32px', height: '32px', background: 'var(--primary-color)', borderRadius: '8px',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', fontSize: '1rem'
-                        }}>
-                            E
-                        </div>
-                        <span style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--text-primary)' }}>EduTwin</span>
-                    </div>
-                    <div id="header-portal" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}></div>
-                </header>
-
-                {/* Main Content */}
-                <main style={{ flex: 1, overflowY: 'auto', paddingBottom: '72px' }}>
-                    <div style={{ padding: '1rem' }}>
-                        <Outlet />
-                    </div>
-                </main>
-
-                {/* Mobile Bottom Navigation */}
-                <nav style={{
-                    position: 'fixed',
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    height: '64px',
-                    background: 'var(--bg-surface)',
-                    borderTop: '1px solid var(--border-color)',
-                    display: 'flex',
-                    justifyContent: 'space-around',
-                    alignItems: 'center',
-                    zIndex: 1000,
-                    paddingBottom: 'env(safe-area-inset-bottom, 0px)'
-                }}>
-                    {navItems.map((item) => (
-                        <NavLink
-                            key={item.path}
-                            to={item.path}
-                            style={({ isActive }) => ({
-                                display: 'flex',
-                                flexDirection: 'column',
-                                alignItems: 'center',
-                                gap: '2px',
-                                padding: '8px 12px',
-                                borderRadius: '8px',
-                                color: isActive ? 'var(--primary-color)' : 'var(--text-secondary)',
-                                textDecoration: 'none',
-                                fontSize: '0.7rem',
-                                fontWeight: isActive ? '600' : '500',
-                                transition: 'all 0.2s',
-                                minWidth: '56px'
-                            })}
-                        >
-                            {React.cloneElement(item.icon, { size: 22 })}
-                            <span>{item.shortLabel}</span>
-                        </NavLink>
-                    ))}
-                </nav>
-            </div>
-        );
-    }
-
-    // Desktop Layout (existing)
     return (
         <div style={{ display: 'flex', height: '100vh', background: 'var(--bg-background)' }}>
             {/* Sidebar */}
