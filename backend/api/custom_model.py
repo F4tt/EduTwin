@@ -31,7 +31,7 @@ def _trigger_prediction_for_structure(db: Session, user_id: int, structure_id: i
     ).first()
     
     if not structure:
-        return {"success": False, "message": "Structure not found"}
+        return {"success": False, "message": "Không tìm thấy cấu trúc"}
     
     # Check reference dataset exists
     reference_count = db.query(models.CustomDatasetSample).filter(
@@ -39,7 +39,7 @@ def _trigger_prediction_for_structure(db: Session, user_id: int, structure_id: i
     ).count()
     
     if reference_count == 0:
-        return {"success": False, "message": "No reference dataset"}
+        return {"success": False, "message": "Chưa có dữ liệu mẫu. Vui lòng liên hệ quản trị viên để tải lên dữ liệu."}
     
     # Check user scores exist
     user_score_count = db.query(models.CustomUserScore).filter(
@@ -49,7 +49,7 @@ def _trigger_prediction_for_structure(db: Session, user_id: int, structure_id: i
     ).count()
     
     if user_score_count == 0:
-        return {"success": False, "message": "No user scores"}
+        return {"success": False, "message": "Bạn chưa nhập điểm số nào. Hãy nhập điểm để hệ thống có thể dự đoán."}
     
     # Auto-enable pipeline if has both reference data and user scores
     if not structure.pipeline_enabled:
@@ -72,7 +72,7 @@ def _trigger_prediction_for_structure(db: Session, user_id: int, structure_id: i
             current_tp = tp
     
     if not current_tp:
-        return {"success": False, "message": "No valid current time point"}
+        return {"success": False, "message": "Chưa chọn mốc thời gian hiện tại. Vui lòng chọn học kỳ hiện tại."}
     
     # Load model config and parameters from database
     try:
@@ -119,7 +119,7 @@ def _trigger_prediction_for_structure(db: Session, user_id: int, structure_id: i
     except Exception as e:
         return {
             "success": False,
-            "message": f"Prediction failed: {str(e)}"
+            "message": f"Dự đoán thất bại: {str(e)}"
         }
 
 
@@ -216,7 +216,7 @@ async def get_all_teaching_structures(
     """Get all teaching structures (admin only)"""
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins can view structures")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể xem cấu trúc")
     
     print(f"[DEBUG] Admin {current_user.id} fetching all structures")
     
@@ -258,7 +258,7 @@ async def activate_structure(
     """Activate a specific teaching structure (admin only, global)"""
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins can activate structures")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể kích hoạt cấu trúc")
     
     # Find the structure (global, no user_id check)
     structure = db.query(models.CustomTeachingStructure).filter(
@@ -287,7 +287,7 @@ async def delete_structure(
     """Delete a teaching structure (admin only)"""
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins can delete structures")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể xóa cấu trúc")
     
     structure = db.query(models.CustomTeachingStructure).filter(
         models.CustomTeachingStructure.id == structure_id
@@ -311,7 +311,7 @@ async def save_teaching_structure(
     """Save new teaching structure (admin only, global)"""
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins can create structures")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể tạo cấu trúc mới")
     
     # Validate that labels match counts
     if len(structure.time_point_labels) != structure.num_time_points:
@@ -394,7 +394,7 @@ async def toggle_pipeline(
     """Toggle custom model pipeline on/off for globally active structure (admin only)"""
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins can toggle pipeline")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể bật/tắt pipeline")
     
     structure = db.query(models.CustomTeachingStructure).filter(
         models.CustomTeachingStructure.is_active == True
@@ -456,7 +456,7 @@ async def upload_custom_dataset(
     """Upload custom dataset for a specific structure (admin only)"""
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins can upload datasets")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể tải lên dữ liệu")
     
     # Invalidate cache for this structure since reference data is changing
     invalidate_evaluation_cache(structure_id=structure_id)
@@ -634,7 +634,7 @@ async def get_dataset_stats_for_structure(
     ).first()
     
     if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy cấu trúc")
     
     # Get reference dataset count
     reference_count = db.query(models.CustomDatasetSample).filter(
@@ -674,7 +674,7 @@ async def save_user_scores(
     ).first()
     
     if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy cấu trúc")
     
     saved_count = 0
     
@@ -787,7 +787,7 @@ async def get_user_scores(
     ).first()
     
     if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy cấu trúc")
     
     scores = db.query(models.CustomUserScore).filter(
         models.CustomUserScore.user_id == current_user.id,
@@ -819,7 +819,7 @@ async def predict_custom_scores(
     current_time_point = body.get("current_time_point")
     
     if not current_time_point:
-        raise HTTPException(status_code=400, detail="current_time_point is required")
+        raise HTTPException(status_code=400, detail="Vui lòng chọn mốc thời gian hiện tại")
     
     # Verify structure exists
     structure = db.query(models.CustomTeachingStructure).filter(
@@ -827,10 +827,10 @@ async def predict_custom_scores(
     ).first()
     
     if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy cấu trúc")
     
     if current_time_point not in structure.time_point_labels:
-        raise HTTPException(status_code=400, detail="Invalid current_time_point")
+        raise HTTPException(status_code=400, detail="Mốc thời gian không hợp lệ")
     
     # Check if reference dataset exists
     reference_count = db.query(models.CustomDatasetSample).filter(
@@ -838,7 +838,7 @@ async def predict_custom_scores(
     ).count()
     
     if reference_count == 0:
-        raise HTTPException(status_code=400, detail="No reference dataset uploaded")
+        raise HTTPException(status_code=400, detail="Chưa có dữ liệu mẫu. Vui lòng liên hệ quản trị viên để tải lên.")
     
     # Load model config and parameters from database
     config = db.query(models.MLModelConfig).first()
@@ -957,19 +957,19 @@ async def evaluate_models(
     """
     # Require admin/developer role
     if current_user.role not in ['admin', 'developer']:
-        raise HTTPException(status_code=403, detail="Only admins/developers can evaluate models")
+        raise HTTPException(status_code=403, detail="Chỉ quản trị viên mới có thể đánh giá mô hình")
     
     structure = db.query(models.CustomTeachingStructure).filter(
         models.CustomTeachingStructure.id == request.structure_id
     ).first()
     
     if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found")
+        raise HTTPException(status_code=404, detail="Không tìm thấy cấu trúc")
     
     # Validate timepoint labels
     for tp in request.input_timepoints + request.output_timepoints:
         if tp not in structure.time_point_labels:
-            raise HTTPException(status_code=400, detail=f"Invalid timepoint: {tp}")
+            raise HTTPException(status_code=400, detail=f"Mốc thời gian không hợp lệ: {tp}")
     
     # Check if there's enough reference data
     reference_count = db.query(models.CustomDatasetSample).filter(

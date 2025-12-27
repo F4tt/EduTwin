@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import axiosClient from '../api/axiosClient';
 import { validateProfileFields } from '../utils/validation';
+import { translateError } from '../utils/errorMessages';
 import { Save, Sparkles } from 'lucide-react';
 
 const Settings = () => {
@@ -94,7 +95,7 @@ const Settings = () => {
             setMessage('Đã lưu thông tin thành công!');
             setTimeout(() => setMessage(''), 3000);
         } catch (e) {
-            setError('Lỗi: ' + (e.response?.data?.detail || e.message));
+            setError(translateError(e.response?.data?.detail || e.message));
         }
     };
 

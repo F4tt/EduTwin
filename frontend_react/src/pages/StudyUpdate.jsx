@@ -4,6 +4,7 @@ import axiosClient from '../api/axiosClient';
 import { Save, Trash2, Download, Upload, FileText, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { getScaleMin, getScaleMax, getScaleStep, isValidScore, formatScore } from '../utils/scaleUtils';
+import { translateError, formatPipelineError } from '../utils/errorMessages';
 import {
     emitStudyScoresUpdated,
     emitMlPipelineProcessing,
@@ -220,7 +221,7 @@ const StudyUpdate = () => {
             }
             const detail = event?.detail || {};
             if (detail.error) {
-                setPipelineBanner({ type: 'error', text: detail.error });
+                setPipelineBanner({ type: 'error', text: formatPipelineError(detail.error) });
             } else {
                 const stats = detail.stats || detail.pipeline || {};
                 const processed = stats.processed_users ? ` (${stats.processed_users} người dùng)` : '';
@@ -339,7 +340,7 @@ const StudyUpdate = () => {
                     }, 5000);
                 } catch (pipelineErr) {
                     console.error('[StudyUpdate] Pipeline error:', pipelineErr);
-                    setPipelineBanner({ type: 'error', text: 'Lỗi pipeline: ' + (pipelineErr.response?.data?.detail || pipelineErr.message) });
+                    setPipelineBanner({ type: 'error', text: '⚠️ ' + formatPipelineError(pipelineErr.response?.data?.detail || pipelineErr.message) });
                 }
             }
 
@@ -349,7 +350,7 @@ const StudyUpdate = () => {
             notifyScoresUpdated();
         } catch (e) {
             console.error('[StudyUpdate] Error in handleSaveGrade:', e);
-            setMessage({ type: 'error', text: 'Lỗi lưu: ' + e.message });
+            setMessage({ type: 'error', text: translateError(e.response?.data?.detail || e.message) });
         }
     };
 
@@ -417,8 +418,8 @@ const StudyUpdate = () => {
             notifyScoresUpdated();
         } catch (e) {
             console.error('[handleSave] Error:', e);
-            setMessage({ type: 'error', text: 'Lỗi lưu dữ liệu: ' + (e.response?.data?.detail || e.message) });
-            emitMlPipelineCompleted({ error: e?.response?.data?.detail || e.message || 'Hệ thống gặp lỗi khi đồng bộ.' });
+            setMessage({ type: 'error', text: translateError(e.response?.data?.detail || e.message) });
+            emitMlPipelineCompleted({ error: translateError(e?.response?.data?.detail || e.message || 'Hệ thống gặp lỗi khi đồng bộ.') });
         }
     };
 
@@ -529,7 +530,7 @@ const StudyUpdate = () => {
             setMessage({ type: 'success', text: `Đã tải lên ${updated} điểm từ file. Nhấn "Lưu điểm số" để cập nhật.` });
         } catch (e) {
             console.error('[Upload Error]', e);
-            setMessage({ type: 'error', text: 'Lỗi đọc file: ' + (e.response?.data?.detail || e.message) });
+            setMessage({ type: 'error', text: translateError(e.response?.data?.detail || e.message) });
         } finally {
             setUploading(false);
         }

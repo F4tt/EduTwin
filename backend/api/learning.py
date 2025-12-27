@@ -212,7 +212,7 @@ async def upload_document(
         if file_ext not in allowed_types:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Unsupported file type: {file_ext}. Allowed: {', '.join(allowed_types)}"
+                detail=f"Định dạng file '{file_ext}' không được hỗ trợ. Chỉ chấp nhận: {', '.join(allowed_types)}"
             )
         
         # Read file content
@@ -228,7 +228,7 @@ async def upload_document(
         # Get user (default user_id=1 for now)
         user = db.query(User).filter(User.id == 1).first()
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
         # Add to user's documents
         if not user.uploaded_documents:
@@ -293,7 +293,7 @@ async def upload_documents_batch(
         # Get or create user
         user = db.query(User).filter(User.id == 1).first()
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
         uploaded_documents = []
         errors = []
@@ -306,21 +306,21 @@ async def upload_documents_batch(
                 file_ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
                 
                 if file_ext not in allowed_types:
-                    errors.append({"filename": file.filename, "error": f"Unsupported type: {file_ext}"})
+                    errors.append({"filename": file.filename, "error": f"Định dạng không hỗ trợ: {file_ext}"})
                     continue
                 
                 # Read file content
                 content = await file.read()
                 
                 if len(content) > 20 * 1024 * 1024:  # 20MB limit
-                    errors.append({"filename": file.filename, "error": "File too large (max 20MB)"})
+                    errors.append({"filename": file.filename, "error": "File quá lớn (tối đa 20MB)"})
                     continue
                 
                 # Process document
                 text_content = await process_document(content, file.filename)
                 
                 if not text_content.strip():
-                    errors.append({"filename": file.filename, "error": "No content extracted"})
+                    errors.append({"filename": file.filename, "error": "Không thể trích xuất nội dung từ file"})
                     continue
                 
                 # Generate document ID
@@ -362,7 +362,7 @@ async def upload_documents_batch(
             "success": True,
             "uploaded_documents": uploaded_documents,
             "errors": errors,
-            "message": f"Uploaded {len(uploaded_documents)}/{len(files)} documents"
+            "message": f"Đã tải lên {len(uploaded_documents)}/{len(files)} tài liệu"
         }
         
     except HTTPException:
@@ -381,7 +381,7 @@ async def delete_document(doc_id: str, db: Session = Depends(get_db)):
         # Get user (default user_id=1 for now)
         user = db.query(User).filter(User.id == 1).first()
         if not user or not user.uploaded_documents:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
         
         # Find and remove document
         updated_docs = []
@@ -390,13 +390,13 @@ async def delete_document(doc_id: str, db: Session = Depends(get_db)):
             if doc.get("id") == doc_id:
                 # Don't allow deleting admin documents
                 if doc.get("uploaded_by_admin", False):
-                    raise HTTPException(status_code=403, detail="Cannot delete admin documents")
+                    raise HTTPException(status_code=403, detail="Không thể xóa tài liệu do quản trị viên tải lên")
                 found = True
             else:
                 updated_docs.append(doc)
         
         if not found:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
         
         user.uploaded_documents = updated_docs
         db.commit()
@@ -408,7 +408,7 @@ async def delete_document(doc_id: str, db: Session = Depends(get_db)):
         except Exception as e:
             logger.warning(f"[Learning API] Failed to remove from vector store: {e}")
         
-        return {"success": True, "message": "Document deleted"}
+        return {"success": True, "message": "Đã xóa tài liệu thành công"}
         
     except HTTPException:
         raise
