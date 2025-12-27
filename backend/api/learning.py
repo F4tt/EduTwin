@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from db.database import get_db
 from db.models import User, ChatSession, ChatMessage
 from core.websocket_manager import sio
-# from services.learning_agent import LearningAgent  # Temporarily disabled due to dependencies
+from services.learning_agent import LearningAgent
 from services.document_processor import process_document
 from services.vector_service import get_vector_service
 
@@ -26,6 +26,8 @@ router = APIRouter(prefix="/learning", tags=["learning"])
 class LearningRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+
+
 
 class DocumentUploadResponse(BaseModel):
     success: bool
@@ -98,12 +100,25 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
                 logger.error(f"[WS] Failed to send message: {e}")
 
         # Initialize learning agent
-        # learning_agent = LearningAgent(db=db, user_id=user_id, websocket_callback=websocket_callback)
+        learning_agent = LearningAgent(db=db, user_id=user_id, websocket_callback=websocket_callback)
         
         # Process query with agent
         try:
-            # TODO: Restore LearningAgent when dependencies are fixed
-            response = "Learning mode tạm thời không khả dụng. Vui lòng sử dụng Chat mode."
+            # Get conversation history
+            conversation_context = []
+            for msg in session.messages:
+                conversation_context.append({
+                    'role': msg.role,
+                    'content': msg.content
+                })
+            
+            # Process with agent
+            result = await learning_agent.process_query(
+                user_query=request.message,
+                conversation_context=conversation_context
+            )
+            
+            response = result.get('response', 'Không có phản hồi')
             
             # Save agent response
             agent_message = ChatMessage(
@@ -114,12 +129,7 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
             db.add(agent_message)
             db.commit()
             
-            # Send completion signal
-            await websocket_callback({
-                'type': 'agent_complete',
-                'status': 'completed',
-                'final_answer': response
-            })
+            # Completion signal sent by agent via WebSocket
             
             logger.info(f"[Learning API] Response generated: {len(response)} chars")
             return {

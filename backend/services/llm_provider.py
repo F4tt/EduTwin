@@ -11,6 +11,7 @@ import logging
 
 from core.logging_config import get_logger
 from core.metrics import track_tokens, llm_requests_total, llm_request_duration_seconds, llm_errors_total, llm_retries_total
+from core.cloudwatch_metrics import track_llm_tokens
 
 logger = get_logger(__name__)
 
@@ -19,7 +20,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "generic").lower()
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 
 
 class LLMProvider:
@@ -264,6 +265,15 @@ class LLMProvider:
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens
                     )
+                    # Also track to CloudWatch for AWS production
+                    track_llm_tokens(
+                        provider=self.provider,
+                        model=self.model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        request_type="chat"
+                    )
                     return
             
             # Google Gemini format
@@ -288,6 +298,15 @@ class LLMProvider:
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens
+                    )
+                    # Also track to CloudWatch for AWS production
+                    track_llm_tokens(
+                        provider=self.provider,
+                        model=self.model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        request_type="chat"
                     )
                     return
             

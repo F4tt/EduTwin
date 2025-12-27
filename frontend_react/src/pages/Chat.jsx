@@ -27,14 +27,9 @@ const Chat = () => {
 
     const messagesEndRef = useRef(null);
     const abortControllerRef = useRef(null);
-    const cancelledRequestRef = useRef(false);
     const currentRequestIdRef = useRef(null);
+    const cancelledRequestRef = useRef(false);
     const [headerPortalTarget, setHeaderPortalTarget] = useState(null);
-
-    // Generate unique request ID
-    const generateRequestId = () => {
-        return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    };
 
     useEffect(() => {
         const target = document.getElementById('header-portal');
@@ -153,7 +148,7 @@ const Chat = () => {
                 }
             }
         } catch (e) {
-            alert('Lỗi xóa phiên: ' + (e.message || e));
+            alert('❌ Không thể xóa phiên. Vui lòng thử lại sau.');
         }
     };
 
@@ -213,18 +208,9 @@ const Chat = () => {
         setInput('');
         setLoading(true);
 
-        // Reset cancelled flag and create new AbortController for this request
-        cancelledRequestRef.current = false;
-        abortControllerRef.current = new AbortController();
-
-        // Generate unique request ID for cancel support
-        const requestId = generateRequestId();
-        currentRequestIdRef.current = requestId;
-
         try {
             const payload = {
                 message: userMsg.content,
-                request_id: requestId,
             };
             if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
                 payload.session_id = String(currentSessionId);
@@ -232,14 +218,8 @@ const Chat = () => {
 
             const res = await axiosClient.post('/chatbot', payload, {
                 timeout: 120000,
-                signal: abortControllerRef.current.signal,
             });
             const data = res.data;
-
-            // If request was cancelled on backend, don't show response
-            if (data.cancelled) {
-                return;
-            }
 
             const botMsg = {
                 role: 'assistant',
@@ -261,31 +241,12 @@ const Chat = () => {
             if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
                 setMessages(prev => [...prev, { role: 'assistant', content: '⏹️ Đã hủy yêu cầu.' }]);
             } else {
-                setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối: ' + e.message }]);
+                setMessages(prev => [...prev, { role: 'assistant', content: '❌ Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối mạng và thử lại.' }]);
             }
         } finally {
             setLoading(false);
             abortControllerRef.current = null;
             currentRequestIdRef.current = null;
-        }
-    };
-
-    const handleCancel = async () => {
-        if (abortControllerRef.current) {
-            cancelledRequestRef.current = true;
-
-            // Notify backend to cancel the request (so it won't save to DB)
-            const requestId = currentRequestIdRef.current;
-            if (requestId) {
-                try {
-                    await axiosClient.post('/chatbot/cancel', { request_id: requestId });
-                    console.log('[Chat] Cancel request sent to backend:', requestId);
-                } catch (err) {
-                    console.warn('[Chat] Failed to send cancel to backend:', err);
-                }
-            }
-
-            abortControllerRef.current.abort();
         }
     };
 
@@ -582,22 +543,18 @@ const Chat = () => {
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                    if (loading) {
-                                        handleCancel();
-                                    } else {
-                                        handleSend();
-                                    }
+                                if (e.key === 'Enter' && !loading && input.trim()) {
+                                    handleSend();
                                 }
                             }}
-                            disabled={false}
+                            disabled={loading}
                             style={{ margin: 0, boxShadow: 'var(--shadow-sm)', flex: 1 }}
                         />
                         <button
-                            className={`btn ${loading ? 'btn-danger' : 'btn-primary'}`}
-                            onClick={loading ? handleCancel : handleSend}
-                            disabled={!loading && !input.trim()}
-                            title={loading ? 'Hủy yêu cầu (Enter)' : 'Gửi tin nhắn (Enter)'}
+                            className="btn btn-primary"
+                            onClick={handleSend}
+                            disabled={loading || !input.trim()}
+                            title="Gửi tin nhắn (Enter)"
                             style={{
                                 width: '48px',
                                 height: '48px',
@@ -607,10 +564,11 @@ const Chat = () => {
                                 alignItems: 'center',
                                 justifyContent: 'center',
                                 flexShrink: 0,
-                                transition: 'all 0.2s ease'
+                                transition: 'all 0.2s ease',
+                                opacity: loading ? 0.6 : 1
                             }}
                         >
-                            {loading ? <Square size={20} /> : <Send size={20} />}
+                            <Send size={20} />
                         </button>
                     </div>
                 </div>

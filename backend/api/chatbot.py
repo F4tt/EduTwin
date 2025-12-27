@@ -21,10 +21,6 @@ from core.websocket_manager import emit_chat_message, emit_chat_typing
 
 router = APIRouter(tags=["Chatbot"])
 
-# Global state for tracking cancelled requests
-# These requests should not be saved to database even if LLM response completes
-cancelled_requests = set()
-
 
 def get_db():
     db = database.SessionLocal()
@@ -204,19 +200,14 @@ async def chatbot_endpoint(
                 except Exception:
                     db.rollback()
         except Exception as e:
-            import logging
-            logging.getLogger("uvicorn.error").exception(f"Error creating session in chatbot_endpoint: {e}")
+            logger.exception(f"Error creating session in chatbot_endpoint: {e}")
             db.rollback()
-
-    # Extract request_id from payload for cancellation tracking
-    request_id = payload.get("request_id") if isinstance(payload, dict) else None
 
     response_payload = await generate_chat_response(
         db=db,
         user=current_user,
         message=msg_text,
         session_id=sess_id,
-        request_id=request_id,
     )
     
     # Emit message via WebSocket to chat session room
@@ -229,16 +220,12 @@ async def chatbot_endpoint(
                 'timestamp': datetime.utcnow().isoformat()
             })
         except Exception as e:
-            import logging
-            logging.getLogger("uvicorn.error").warning(f"Failed to emit WebSocket message: {e}")
+            logger.warning(f"Failed to emit WebSocket message: {e}")
     
     # Auto-learn personalization AFTER response (non-blocking)
     # Uses HYBRID approach: keyword detection + LLM analysis
     if current_user and sess_id:
         import asyncio
-        
-        # Capture logger reference for nested async function
-        _logger = logging.getLogger("uvicorn.error")
         
         async def async_hybrid_learning():
             learning_db = database.SessionLocal()
@@ -281,21 +268,6 @@ async def chatbot_endpoint(
         return JSONResponse(content=response_payload)
     
     return JSONResponse(content=response_payload)
-
-
-@router.post("/chatbot/cancel")
-async def cancel_chat_request(payload: dict = Body(...)):
-    """
-    Mark a chat request as cancelled.
-    Even if the LLM response completes, it will not be saved to database or displayed.
-    """
-    request_id = payload.get("request_id")
-    if request_id:
-        cancelled_requests.add(request_id)
-        logger.info(f"[CANCEL] Marked request {request_id} as cancelled")
-        return {"status": "cancelled", "request_id": request_id}
-    return {"status": "error", "message": "No request_id provided"}
-
 
 @router.post("/chatbot/stream")
 async def chatbot_stream_endpoint(

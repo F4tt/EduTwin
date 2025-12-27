@@ -28,6 +28,8 @@ from pydantic import BaseModel, Field
 
 from db import models
 from services.llm_provider import get_llm_provider
+from core.metrics import track_tokens
+from core.cloudwatch_metrics import track_llm_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +140,36 @@ def create_wikipedia_tool(websocket_callback=None):
 
 
 def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = None, websocket_callback=None):
-    """Simple document search - use text content directly (like ChatGPT/Gemini)"""
+    """Smart document search - returns RELEVANT sections based on query keywords"""
+    
+    def extract_keywords(text: str) -> List[str]:
+        """Extract meaningful keywords from query (remove stop words)"""
+        stop_words = {
+            'là', 'gì', 'như', 'thế', 'nào', 'có', 'được', 'của', 'và', 'hay',
+            'cho', 'với', 'từ', 'trong', 'về', 'bằng', 'để', 'ở', 'tại', 'này',
+            'kia', 'đó', 'mà', 'thì', 'nếu', 'vì', 'sao', 'ai', 'đâu', 'nên'
+        }
+        words = text.lower().split()
+        keywords = [w for w in words if len(w) > 2 and w not in stop_words]
+        return keywords
+    
+    def calculate_relevance(paragraph: str, keywords: List[str]) -> float:
+        """Calculate relevance score based on keyword density"""
+        if not paragraph.strip():
+            return 0.0
+        
+        para_lower = paragraph.lower()
+        matches = sum(para_lower.count(kw) for kw in keywords)
+        word_count = len(paragraph.split())
+        
+        # Relevance = (matches * 100) / word_count
+        # Boost score if multiple keywords appear
+        density = (matches * 100) / max(word_count, 1)
+        
+        return density
     
     async def search_user_docs(query: str, subject: Optional[str] = None) -> str:
-        """Search in user's uploaded documents using simple text matching"""
+        """Search in user's uploaded documents using keyword relevance"""
         try:
             if websocket_callback:
                 await websocket_callback({
@@ -167,67 +195,79 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
             documents = user.uploaded_documents
             logger.info(f"Found {len(documents)} documents for user {user_id}")
             
-            # Simple keyword matching
-            query_lower = query.lower()
-            query_keywords = [w for w in query_lower.split() if len(w) > 2]
+            # Extract keywords from query
+            query_keywords = extract_keywords(query)
+            logger.info(f"Query keywords: {query_keywords}")
             
-            relevant_docs = []
+            if not query_keywords:
+                # Fallback to first document if no keywords
+                if documents and documents[0].get('content'):
+                    content = documents[0]['content'][:3000]
+                    return f"[Tài liệu: {documents[0].get('filename', 'Unknown')}]\n{content}"
+                return "Không thể trích xuất từ khóa từ câu hỏi."
+            
+            # Score all paragraphs across all documents
+            relevant_sections = []
+            
             for doc in documents:
                 content = doc.get('content', '')
                 if not content:
                     continue
                 
-                content_lower = content.lower()
-                matches = sum(1 for kw in query_keywords if kw in content_lower)
+                filename = doc.get('filename', 'Unknown')
                 
-                if matches > 0:
-                    # Get more content for better context
-                    preview = content[:5000]
-                    if len(content) > 5000:
-                        preview += "\n\n[... còn nữa ...]"
+                # Split into paragraphs (by double newline or single newline)
+                paragraphs = re.split(r'\n\n+|\n', content)
+                
+                for para in paragraphs:
+                    para = para.strip()
+                    if len(para) < 50:  # Skip very short paragraphs
+                        continue
                     
-                    relevant_docs.append({
-                        'name': doc.get('filename', 'Unknown'),
-                        'content': preview,
-                        'relevance': matches
-                    })
-            
-            relevant_docs.sort(key=lambda x: x['relevance'], reverse=True)
-            relevant_docs = relevant_docs[:3]
-            
-            if not relevant_docs:
-                # If no keyword match, return first document content as fallback
-                if documents and documents[0].get('content'):
-                    first_doc = documents[0]
-                    content = first_doc.get('content', '')[:5000]
-                    if websocket_callback:
-                        await websocket_callback({
-                            'type': 'tool_progress',
-                            'tool': 'SearchUserDocuments',
-                            'message': f'📄 Sử dụng tài liệu: {first_doc.get("filename", "Unknown")}'
+                    score = calculate_relevance(para, query_keywords)
+                    
+                    if score > 1.0:  # Threshold: at least 1% keyword density
+                        relevant_sections.append({
+                            'filename': filename,
+                            'content': para,
+                            'score': score
                         })
-                    return f"[Tài liệu: {first_doc.get('filename', 'Unknown')}]\n{content}"
-                
+            
+            if not relevant_sections:
                 if websocket_callback:
                     await websocket_callback({
                         'type': 'tool_progress',
                         'tool': 'SearchUserDocuments',
-                        'message': '❌ Không tìm thấy thông tin trong tài liệu'
+                        'message': '⚠️ Không tìm thấy thông tin liên quan trong tài liệu'
                     })
                 return "Không tìm thấy thông tin liên quan trong tài liệu đã tải lên."
+            
+            # Sort by relevance score and take top 3
+            relevant_sections.sort(key=lambda x: x['score'], reverse=True)
+            top_sections = relevant_sections[:3]
             
             if websocket_callback:
                 await websocket_callback({
                     'type': 'tool_progress',
                     'tool': 'SearchUserDocuments',
-                    'message': f'✅ Tìm thấy trong {len(relevant_docs)} tài liệu'
+                    'message': f'✅ Tìm thấy {len(top_sections)} đoạn văn liên quan (từ {len(documents)} tài liệu)'
                 })
             
+            # Format output with source info
             formatted = []
-            for doc in relevant_docs:
-                formatted.append(f"[Tài liệu: {doc['name']}]\n{doc['content']}")
+            for section in top_sections:
+                # Limit each section to 1000 chars
+                content = section['content'][:1000]
+                if len(section['content']) > 1000:
+                    content += "\n[...]"
+                
+                formatted.append(
+                    f"[Tài liệu: {section['filename']}, Liên quan: {section['score']:.1f}%]\n{content}"
+                )
             
-            return "\n\n---\n\n".join(formatted)
+            result = "\n\n---\n\n".join(formatted)
+            logger.info(f"Returning {len(formatted)} relevant sections ({len(result)} chars total)")
+            return result
             
         except Exception as e:
             logger.error(f"Error searching docs: {e}")
@@ -372,7 +412,7 @@ class ReActLearningAgent:
             tools_used = set()
             max_iterations = 5
             
-            system_prompt = f"""Bạn là một trợ lý học tập thông minh sử dụng ReAct (Reasoning + Acting).
+            system_prompt = f"""Bạn là một trợ lý học tập thông minh sử dụng ReAct + Self-Reflection.
 
 BẠN CÓ CÁC CÔNG CỤ SAU:
 {self._get_tool_descriptions()}
@@ -382,42 +422,65 @@ BẠN CÓ CÁC CÔNG CỤ SAU:
 1. **BƯỚC 1 (ĐÃ TỰ ĐỘNG)**: Tìm kiếm tài liệu của user - Xem kết quả trong Observation đầu tiên
 
 2. **PHÂN TÍCH KẾT QUẢ TÀI LIỆU**:
-   - Nếu tài liệu có ĐỊNH NGHĨA, GIẢI THÍCH CHI TIẾT về câu hỏi → Dùng ngay để trả lời
+   - Nếu tài liệu có ĐỊNH NGHĨA, GIẢI THÍCH CHI TIẾT về câu hỏi → Đánh giá chất lượng
    - Nếu tài liệu chỉ NHẮC TÊN/ĐỀ CẬP mà không giải thích → Cần search Wikipedia
-   - Nếu user YÊU CẦU TÌM THÊM ("tìm thông tin", "tra cứu", "search") → Phải search Wikipedia
+   - Nếu user YÊU CẦU TÌM THÊM ("tìm thông tin", "tra cứu") → Phải search Wikipedia
 
-3. **KHI NÀO DÙNG WIKIPEDIA**:
+3. **ĐÁNH GIÁ CHẤT LƯỢNG (Self-Evaluation)**:
+   Sau mỗi Observation, BẮT BUỘNG đánh giá:
+   
+   Self-Evaluation:
+   - Có đủ thông tin? [Yes/No]
+   - Độ chính xác: [High/Medium/Low]
+   - Thiếu gì: [nếu có]
+   
+   **Quyết định:**
+   - Nếu độ chính xác = High VÀ đủ thông tin → Final Answer
+   - Nếu độ chính xác < High HOẶC thiếu thông tin → Tiếp tục tìm kiếm
+
+4. **KHI NÀO DÙNG WIKIPEDIA**:
    ✅ Tài liệu chỉ đề cập tên mà không giải thích khái niệm
    ✅ User hỏi định nghĩa mà tài liệu không có
    ✅ User yêu cầu tìm thêm thông tin
    ✅ Cần thông tin tổng quát mà tài liệu không đủ
    
-4. **KHI NÀO KHÔNG CẦN WIKIPEDIA**:
-   ❌ Tài liệu đã có định nghĩa và giải thích chi tiết
-   ❌ Câu hỏi về nội dung cụ thể trong tài liệu (bài tập, ví dụ)
-
 5. **Calculator/PythonREPL**: Chỉ dùng khi cần tính toán
 
 📝 FORMAT CÔNG THỨC TOÁN:
 - Inline: $...$ (VD: $x^2 + y^2 = z^2$)
 - Block: $$...$$ 
-- Phân số: $\\frac{{a}}{{b}}$, Căn: $\\sqrt{{x}}$, Tích phân: $\\int_{{a}}^{{b}} f(x) dx$
+- Phân số: $\\frac{{a}}{{b}}$, Căn: $\\sqrt{{x}}$
 
 📌 FORMAT TRẢ LỜI:
-Thought: [Phân tích kết quả từ tài liệu - có đủ thông tin không?]
-Action: [Tool name nếu cần] hoặc không có Action nếu đủ thông tin
+
+Thought: [Phân tích câu hỏi]
+Action: [Tool name]
 Action Input: [input cho tool]
 ...
-Final Answer: [Câu trả lời chi tiết, có cấu trúc với bullet points]
+Observation: [Kết quả từ tool]
+
+Self-Evaluation:
+- Có đủ thông tin? [Yes/No]
+- Độ chính xác: [High/Medium/Low]
+- Thiếu gì: [nếu có]
+
+[Nếu cần tiếp tục]
+Thought: [Quyết định tìm thêm thông tin]
+Action: [Tool tiếp theo]
+...
+
+[Khi đã đủ thông tin và chất lượng cao]
+Final Answer: [Câu trả lời chi tiết, có cấu trúc, dễ hiểu]
 
 ⚠️ QUAN TRỌNG: 
-- Nếu tài liệu chỉ NHẮC TÊN mà không GIẢI THÍCH → Phải dùng Wikipedia
+- BẮT BUỘC có Self-Evaluation sau mỗi Observation
+- Chỉ đưa Final Answer khi độ chính xác = High
 - Trả lời bằng tiếng Việt
 - BẮT BUỘC kết thúc bằng "Final Answer:" """
 
             messages = [SystemMessage(content=system_prompt)]
             if conversation_history:
-                for msg in conversation_history[-10:]:
+                for msg in conversation_history[-20:]:
                     if msg['role'] == 'user':
                         messages.append(HumanMessage(content=msg['content']))
                     elif msg['role'] == 'assistant':
@@ -507,6 +570,30 @@ Hãy đưa ra Final Answer ngay."""))
                 response = await self.llm.ainvoke(messages)
                 response_content = response.content
                 
+                # Track token usage for learning agent
+                if hasattr(response, 'response_metadata'):
+                    metadata = response.response_metadata or {}
+                    usage = metadata.get('usage_metadata', {})
+                    prompt_tokens = usage.get('prompt_token_count', 0)
+                    completion_tokens = usage.get('candidates_token_count', 0)
+                    total_tokens = usage.get('total_token_count', 0)
+                    if total_tokens > 0:
+                        track_tokens(
+                            provider='gemini',
+                            model=self.llm.model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens
+                        )
+                        track_llm_tokens(
+                            provider='gemini',
+                            model=self.llm.model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                            request_type='learning'
+                        )
+                
                 if isinstance(response_content, list):
                     response_text = '\n\n'.join(str(item) for item in response_content)
                 else:
@@ -517,6 +604,34 @@ Hãy đưa ra Final Answer ngay."""))
                 # Extract Thought
                 thought_match = re.search(r'Thought:\s*(.+?)(?:\n|Action:|Final Answer:|$)', response_text, re.DOTALL)
                 thought = thought_match.group(1).strip() if thought_match else ""
+                
+                # DETECT SELF-EVALUATION (after LLM sees Observation)
+                if re.search(r'Self-Evaluation:', response_text, re.IGNORECASE):
+                    logger.info(f"[ReAct] Self-Evaluation detected in step {iteration + 1}")
+                    
+                    eval_data = {'step': iteration + 1}
+                    
+                    # Parse components
+                    enough_match = re.search(r'Có đủ thông tin\?[:\s]*\[?(Yes|No)\]?', response_text, re.IGNORECASE)
+                    if enough_match:
+                        eval_data['has_enough'] = enough_match.group(1)
+                    
+                    quality_match = re.search(r'Độ chính xác:[:\s]*\[?(High|Medium|Low)\]?', response_text, re.IGNORECASE)
+                    if quality_match:
+                        eval_data['quality'] = quality_match.group(1)
+                    
+                    missing_match = re.search(r'Thiếu gì:[:\s]*(.+?)(?:\n|$)', response_text, re.DOTALL)
+                    if missing_match:
+                        eval_data['missing'] = missing_match.group(1).strip()[:100]
+                    
+                    # Emit self-reflection to frontend
+                    if self.websocket_callback:
+                        await self.websocket_callback({
+                            'type': 'self_reflection',
+                            **eval_data
+                        })
+                    
+                    logger.info(f"[ReAct] Quality: {eval_data.get('quality', 'N/A')}, Enough: {eval_data.get('has_enough', 'N/A')}")
                 
                 # Check for Action FIRST (higher priority than Final Answer)
                 action_match = re.search(r'Action:\s*(\w+)', response_text)
@@ -605,6 +720,20 @@ Hãy đưa ra Final Answer ngay."""))
                     'action': 'Đang xử lý'
                 })
                 
+                # Emit tool executing event
+                if self.websocket_callback:
+                    await self.websocket_callback({
+                        'type': 'reasoning',
+                        'step': start_step + iteration,
+                        'status': 'executing',
+                        'description': tool_info['action'],
+                        'tool_name': tool_info['name'],
+                        'tool_purpose': tool_info['purpose'],
+                        'thought': thought,
+                        'action': action_name,
+                        'action_input': action_input[:300]
+                    })
+                
                 # Execute tool FIRST, then emit completed (không emit executing riêng)
                 if action_name in self.tool_map:
                     tool = self.tool_map[action_name]
@@ -649,6 +778,16 @@ Hãy đưa ra Final Answer ngay."""))
                                 'observation': obs_str[:500],
                                 'result_preview': result_preview,
                                 'result_length': len(obs_str)
+                            })
+                            
+                            await self.websocket_callback({
+                                'type': 'tool_completed',
+                                'tool_name': tool_info['name'],
+                                'tool': action_name,
+                                'status': status_msg,
+                                'result_quality': result_quality,
+                                'result_preview': result_preview,
+                                'step': iteration + 1
                             })
                         
                         reasoning_steps.append({

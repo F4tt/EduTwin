@@ -4,6 +4,8 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, field_validator, StringConstraints
 from typing import Annotated
 import logging
+import hashlib
+import base64
 from datetime import datetime
 
 from db import models, database
@@ -12,6 +14,18 @@ from utils.session_utils import SessionManager, require_auth, get_current_user
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger("uvicorn.error")
+
+
+def _prepare_password(password: str) -> str:
+    """Ensure password stays within bcrypt's 72-byte limit.
+    
+    Bcrypt silently truncates passwords longer than 72 bytes. Newer passlib versions
+    may raise an error instead. We explicitly truncate to 72 bytes to ensure
+    consistent behavior across all passlib/bcrypt versions.
+    """
+    # Encode to UTF-8 and truncate to 72 bytes max
+    password_bytes = password.encode('utf-8')[:72]
+    return password_bytes.decode('utf-8', errors='ignore')
 
 class UserRegister(BaseModel):
     first_name: str
@@ -116,8 +130,8 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
 
-    # Hash password
-    hashed_pw = pwd_context.hash(user_data.password)
+    # Hash password (pre-hash if too long for bcrypt)
+    hashed_pw = pwd_context.hash(_prepare_password(user_data.password))
     new_user = models.User(
         username=user_data.username,
         hashed_password=hashed_pw,
@@ -134,7 +148,7 @@ def login(user_data: UserLogin, response: Response, db: Session = Depends(get_db
     if not user_data.username.isascii() or not user_data.password.isascii():
         raise HTTPException(status_code=400, detail="Tên đăng nhập và mật khẩu chỉ được dùng ký tự tiếng Anh")
     user = db.query(models.User).filter(models.User.username == user_data.username).first()
-    if not user or not pwd_context.verify(user_data.password, user.hashed_password):
+    if not user or not pwd_context.verify(_prepare_password(user_data.password), user.hashed_password):
         raise HTTPException(status_code=401, detail="Tên đăng nhập hoặc mật khẩu không đúng")
 
     # Tạo session thay vì JWT token
@@ -284,11 +298,11 @@ def change_password(request: Request, payload: ChangePassword, db: Session = Dep
         raise HTTPException(status_code=404, detail='Không tìm thấy người dùng')
 
     # verify current password
-    if not pwd_context.verify(payload.current_password, user.hashed_password):
+    if not pwd_context.verify(_prepare_password(payload.current_password), user.hashed_password):
         raise HTTPException(status_code=400, detail='Mật khẩu hiện tại không đúng')
 
     # set new password
-    user.hashed_password = pwd_context.hash(payload.new_password)
+    user.hashed_password = pwd_context.hash(_prepare_password(payload.new_password))
     db.commit()
 
     return {"message": "Đổi mật khẩu thành công"}

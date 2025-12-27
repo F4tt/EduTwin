@@ -1,0 +1,106 @@
+﻿docker :   File 
+"/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 
+427, in app
+At line:1 char:1
++ docker logs --tail 60 edutwin_backend 2>&1 | Out-File -Encoding 
+utf8  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (  File "/usr/lo...ine 42 
+   7, in app:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", 
+line 315, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/starlette/concurrency.py", 
+line 32, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/anyio/to_thread.py", 
+line 61, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/anyio/_backends/_async
+io.py", line 2525, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/anyio/_backends/_async
+io.py", line 986, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/api/auth.py", line 137, in register
+    hashed_pw = 
+pwd_context.hash(_prepare_password(user_data.password))
+                
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/site-packages/passlib/context.py", 
+line 2258, in hash
+    return record.hash(secret, **kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 779, in hash
+    self.checksum = self._calc_checksum(secret)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/handlers/bcrypt.py", 
+line 591, in _calc_checksum
+    self._stub_requires_backend()
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 2254, in _stub_requires_backend
+    cls.set_backend()
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 2156, in set_backend
+    return owner.set_backend(name, dryrun=dryrun)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 2163, in set_backend
+    return cls.set_backend(name, dryrun=dryrun)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 2188, in set_backend
+    cls._set_backend(name, dryrun)
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 2311, in _set_backend
+    super(SubclassBackendMixin, cls)._set_backend(name, dryrun)
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 2224, in _set_backend
+    ok = loader(**kwds)
+         ^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/handlers/bcrypt.py", 
+line 626, in _load_backend_mixin
+    return mixin_cls._finalize_backend_mixin(name, dryrun)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/handlers/bcrypt.py", 
+line 421, in _finalize_backend_mixin
+    if detect_wrap_bug(IDENT_2A):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/handlers/bcrypt.py", 
+line 380, in detect_wrap_bug
+    if verify(secret, bug_hash):
+       ^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/utils/handlers.py", 
+line 792, in verify
+    return consteq(self._calc_checksum(secret), chk)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File 
+"/usr/local/lib/python3.11/site-packages/passlib/handlers/bcrypt.py", 
+line 655, in _calc_checksum
+    hash = _bcrypt.hashpw(secret, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: password cannot be longer than 72 bytes, truncate 
+manually if necessary (e.g. my_password[:72])

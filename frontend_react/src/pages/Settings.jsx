@@ -100,20 +100,39 @@ const Settings = () => {
 
     const handlePwdChange = (e) => setPwdForm({ ...pwdForm, [e.target.name]: e.target.value });
 
+    // Translate common API validation messages to Vietnamese
+    const translateValidationMsg = (msg, fieldName) => {
+        if (!msg) return 'Dữ liệu không hợp lệ';
+
+        // Pattern matching for common messages
+        if (msg.includes('at least 6 characters')) return 'phải có ít nhất 6 ký tự';
+        if (msg.includes('at least 1 character')) return 'không được để trống';
+        if (msg.includes('too short')) return 'quá ngắn';
+        if (msg.includes('too long')) return 'quá dài';
+        if (msg.includes('ASCII')) return 'chỉ được chứa chữ cái và số tiếng Anh';
+        if (msg.includes('invalid')) return 'không hợp lệ';
+
+        return msg;
+    };
+
     const handleChangePassword = async () => {
         setPwdMsg('');
         if (!pwdForm.current_password || !pwdForm.new_password || !pwdForm.confirm_password) {
-            setPwdMsg('Vui lòng điền đầy đủ các trường.');
+            setPwdMsg('⚠️ Vui lòng điền đầy đủ tất cả các trường mật khẩu.');
+            return;
+        }
+        if (pwdForm.new_password.length < 6) {
+            setPwdMsg('⚠️ Mật khẩu mới phải có ít nhất 6 ký tự.');
             return;
         }
         if (pwdForm.new_password !== pwdForm.confirm_password) {
-            setPwdMsg('Mật khẩu mới và nhập lại không khớp.');
+            setPwdMsg('⚠️ Mật khẩu mới và xác nhận mật khẩu không khớp nhau.');
             return;
         }
         // Basic ascii validation (as in Streamlit)
         const isAscii = (s) => /^[\x00-\x7F]*$/.test(s);
         if (!isAscii(pwdForm.current_password) || !isAscii(pwdForm.new_password)) {
-            setPwdMsg('Mật khẩu chỉ được chứa ký tự ASCII.');
+            setPwdMsg('⚠️ Mật khẩu chỉ được chứa chữ cái và số tiếng Anh (không có dấu).');
             return;
         }
 
@@ -122,11 +141,33 @@ const Settings = () => {
                 current_password: pwdForm.current_password,
                 new_password: pwdForm.new_password
             });
-            setPwdMsg('Đã đổi mật khẩu thành công.');
+            setPwdMsg('✅ Đổi mật khẩu thành công!');
             setPwdForm({ current_password: '', new_password: '', confirm_password: '' });
             setTimeout(() => setPwdMsg(''), 4000);
         } catch (e) {
-            setPwdMsg('Lỗi: ' + (e.response?.data?.detail || e.message));
+            // Handle FastAPI validation errors (422) which return detail as array
+            const detail = e.response?.data?.detail;
+            if (Array.isArray(detail) && detail.length > 0) {
+                // Extract validation message from first error
+                const firstError = detail[0];
+                const fieldName = firstError.loc?.[1] || 'field';
+                const fieldLabels = {
+                    'new_password': 'Mật khẩu mới',
+                    'current_password': 'Mật khẩu hiện tại'
+                };
+                const label = fieldLabels[fieldName] || fieldName;
+                const translatedMsg = translateValidationMsg(firstError.msg, fieldName);
+                setPwdMsg(`❌ ${label} ${translatedMsg}.`);
+            } else if (typeof detail === 'string') {
+                // Handle string error messages
+                if (detail.includes('không đúng')) {
+                    setPwdMsg('❌ Mật khẩu hiện tại không đúng. Vui lòng kiểm tra lại.');
+                } else {
+                    setPwdMsg('❌ ' + detail);
+                }
+            } else {
+                setPwdMsg('❌ Có lỗi xảy ra. Vui lòng thử lại sau.');
+            }
         }
     };
 

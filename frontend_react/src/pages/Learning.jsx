@@ -9,7 +9,7 @@ import MarkdownWithMath from '../components/MarkdownWithMath';
 const Learning = () => {
     const { user } = useAuth();
     const { connected, chatMessages, isTyping, joinChatSession, leaveChatSession, clearChatMessages } = useWebSocket();
-    
+
     const [sessions, setSessions] = useState([]);
     const [currentSessionId, setCurrentSessionId] = useState(null);
     const [messages, setMessages] = useState([]);
@@ -22,23 +22,23 @@ const Learning = () => {
             return false;
         }
     });
-    
+
     const [documents, setDocuments] = useState([]);
     const [uploadingDoc, setUploadingDoc] = useState(false);
     const [showDocumentPanel, setShowDocumentPanel] = useState(false);
-    
+    const [abortController, setAbortController] = useState(null);
+
     // Reasoning steps from agent
     const [reasoningSteps, setReasoningSteps] = useState([]);
     const [isAgentProcessing, setIsAgentProcessing] = useState(false);
     const [isReasoningCompleted, setIsReasoningCompleted] = useState(false);
-    const [abortController, setAbortController] = useState(null);
-    
+
     // Use ref to track latest reasoning steps for saving with messages
     const reasoningStepsRef = useRef([]);
-    
+
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
-    
+
     // Cleanup on unmount to prevent crashes when switching pages
     useEffect(() => {
         return () => {
@@ -53,7 +53,7 @@ const Learning = () => {
         fetchSessions();
         fetchDocuments();
     }, []);
-    
+
     // Sync reasoning steps with ref for use in async handlers
     useEffect(() => {
         reasoningStepsRef.current = reasoningSteps;
@@ -72,7 +72,7 @@ const Learning = () => {
             console.error(e);
         }
     };
-    
+
     const fetchDocuments = async () => {
         try {
             const res = await axiosClient.get('/learning/documents');
@@ -103,16 +103,16 @@ const Learning = () => {
     // Single useEffect to handle ALL chatMessages events
     useEffect(() => {
         if (chatMessages.length === 0) return;
-        
+
         const latestMessage = chatMessages[chatMessages.length - 1];
-        
+
         // Check if message belongs to current session
         // Allow messages if session is draft (new session) or if session_id matches
         const isDraftSession = String(currentSessionId).startsWith('draft');
         const isMatchingSession = String(latestMessage.session_id) === String(currentSessionId);
-        
+
         if (!isDraftSession && !isMatchingSession) return;
-        
+
         // Handle tool_progress - update current step's progress
         if (latestMessage.type === 'tool_progress') {
             setReasoningSteps(prev => {
@@ -129,20 +129,20 @@ const Learning = () => {
             });
             return;
         }
-        
+
         // Handle reasoning event - UPDATE hoặc ADD step
         if (latestMessage.type === 'reasoning' && latestMessage.step !== undefined) {
             setIsAgentProcessing(true);
-            
+
             setReasoningSteps(prev => {
                 const stepIndex = latestMessage.step - 1;
                 const newSteps = [...prev];
-                
+
                 // Ensure array is large enough
                 while (newSteps.length <= stepIndex) {
                     newSteps.push({ step: newSteps.length + 1, status: 'pending' });
                 }
-                
+
                 // MERGE all data from this event into the step
                 const existingStep = newSteps[stepIndex] || {};
                 newSteps[stepIndex] = {
@@ -161,18 +161,18 @@ const Learning = () => {
                     result_quality: latestMessage.result_quality || existingStep.result_quality,
                     error: latestMessage.error || existingStep.error
                 };
-                
+
                 return newSteps;
             });
             return;
         }
-        
+
         // Handle agent_complete
         if (latestMessage.type === 'agent_complete') {
             console.log('[Learning] agent_complete received');
             setIsAgentProcessing(false);
             setIsReasoningCompleted(true);
-            
+
             // DON'T add message here - let HTTP response handle it
             // DON'T clear reasoning steps - keep them visible
             // They will be cleared when user sends a new message
@@ -207,7 +207,7 @@ const Learning = () => {
                 }
             }
         } catch (e) {
-            alert('Lỗi xóa phiên: ' + (e.message || e));
+            alert('❌ Không thể xóa phiên. Vui lòng thử lại sau.');
         }
     };
 
@@ -226,12 +226,12 @@ const Learning = () => {
 
     const createNewSession = async () => {
         try {
-            const res = await axiosClient.post('/chatbot/sessions', { 
+            const res = await axiosClient.post('/chatbot/sessions', {
                 title: 'Phiên học tập mới',
                 mode: 'learning'
             });
-            const newSession = { 
-                id: res.data.id, 
+            const newSession = {
+                id: res.data.id,
                 title: res.data.title || 'Phiên học tập mới',
                 mode: 'learning'
             };
@@ -242,8 +242,8 @@ const Learning = () => {
         } catch (e) {
             console.error('Failed to create session:', e);
             const draftId = `draft-${Date.now()}`;
-            const newSession = { 
-                id: draftId, 
+            const newSession = {
+                id: draftId,
                 title: 'Phiên học tập mới',
                 mode: 'learning'
             };
@@ -266,7 +266,7 @@ const Learning = () => {
         setMessages(prev => [...prev, userMsg]);
         setInput('');
         setLoading(true);
-        
+
         // Clear previous reasoning steps when starting new question
         setReasoningSteps([]);
         setIsAgentProcessing(true);
@@ -276,26 +276,30 @@ const Learning = () => {
         const controller = new AbortController();
         setAbortController(controller);
 
+        // Generate request_id for cancel tracking
+        const requestId = `learning_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
         try {
-            const payload = { message: userMsg.content };
+            const payload = {
+                message: userMsg.content,
+                request_id: requestId
+            };
             if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
                 payload.session_id = String(currentSessionId);
             }
 
             const res = await axiosClient.post('/learning/chat', payload, {
                 timeout: 120000,
-                signal: controller.signal
             });
             const data = res.data;
 
-            // Save reasoning steps with the message (use ref to get latest)
             const botMsg = {
                 role: 'assistant',
                 content: data.answer || data.response || '(Không có phản hồi)',
-                reasoningSteps: [...reasoningStepsRef.current] // Use ref to get latest steps
+                reasoningSteps: [...reasoningStepsRef.current]
             };
             setMessages(prev => [...prev, botMsg]);
-            
+
             // Agent finished - mark reasoning as completed but DON'T clear steps yet
             setIsAgentProcessing(false);
             setIsReasoningCompleted(true);
@@ -311,13 +315,13 @@ const Learning = () => {
         } catch (e) {
             if (e.name === 'CanceledError' || e.name === 'AbortError') {
                 // Request was cancelled
-                setMessages(prev => [...prev, { 
-                    role: 'assistant', 
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
                     content: '⚠️ Yêu cầu đã bị hủy bởi người dùng.',
                     cancelled: true
                 }]);
             } else {
-                setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối: ' + e.message }]);
+                setMessages(prev => [...prev, { role: 'assistant', content: '❌ Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối mạng và thử lại.' }]);
             }
             setIsAgentProcessing(false);
             setIsReasoningCompleted(true);
@@ -326,73 +330,65 @@ const Learning = () => {
             setAbortController(null);
         }
     };
-    
-    // Cancel request handler
-    const handleCancel = () => {
-        if (abortController) {
-            abortController.abort();
-            setAbortController(null);
-        }
-    };
-    
+
     const handleFileUpload = async (event) => {
         const files = Array.from(event.target.files);
         if (!files || files.length === 0) return;
-        
+
         const allowedTypes = ['.txt', '.docx', '.pdf'];
         const maxFileSize = 20 * 1024 * 1024; // 20MB per file
-        
+
         // Validate all files first
         for (const file of files) {
             const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
             if (!allowedTypes.includes(fileExt)) {
-                alert(`File "${file.name}" không được hỗ trợ. Chỉ chấp nhận .txt, .docx, .pdf`);
+                alert(`⚠️ File "${file.name}" không được hỗ trợ.\n\nVui lòng chọn file dạng: .txt, .docx hoặc .pdf`);
                 return;
             }
-            
+
             if (file.size > maxFileSize) {
-                alert(`File "${file.name}" quá lớn. Kích thước tối đa: 20MB`);
+                alert(`⚠️ File "${file.name}" quá lớn.\n\nKích thước tối đa cho phép là 20MB.`);
                 return;
             }
         }
-        
+
         // Calculate total size
         const totalSize = files.reduce((sum, file) => sum + file.size, 0);
         const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
-        
+
         const confirmMsg = `Bạn muốn tải lên ${files.length} file (tổng ${totalSizeMB}MB)?`;
         if (!window.confirm(confirmMsg)) {
             return;
         }
-        
+
         setUploadingDoc(true);
-        
+
         try {
             console.log(`⏳ Đang xử lý ${files.length} file (${totalSizeMB}MB)... Vui lòng đợi.`);
-            
+
             const formData = new FormData();
             files.forEach(file => {
                 formData.append('files', file);
             });
-            
+
             const res = await axiosClient.post('/learning/upload-documents-batch', formData, {
                 headers: {
                     'Content-Type': 'multipart/form-data'
                 },
                 timeout: 300000 // 5 minutes for large files
             });
-            
+
             const successCount = res.data.uploaded_documents?.length || 0;
             alert(`Đã tải lên thành công ${successCount}/${files.length} file!\n\nTài liệu đã sẵn sàng để sử dụng trong trò chuyện học tập.`);
             fetchDocuments();
-            
+
         } catch (e) {
             console.error('Upload error:', e);
             if (e.code === 'ECONNABORTED' || e.message.includes('timeout')) {
                 alert('⚠️ Upload timeout!\n\nFile quá lớn hoặc mất quá nhiều thời gian xử lý.\n\nGợi ý:\n• Chia nhỏ file thành nhiều phần\n• Chỉ upload file dưới 10MB mỗi lần\n• Kiểm tra kết nối mạng');
             } else {
                 const errorMsg = e.response?.data?.detail || e.message;
-                alert('Lỗi tải tài liệu: ' + errorMsg);
+                alert('❌ Không thể tải tài liệu lên. Vui lòng thử lại sau.');
             }
         } finally {
             setUploadingDoc(false);
@@ -401,16 +397,16 @@ const Learning = () => {
             }
         }
     };
-    
+
     const handleDeleteDocument = async (docId) => {
         if (!window.confirm('Bạn có chắc muốn xóa tài liệu này?')) return;
-        
+
         try {
             await axiosClient.delete(`/learning/documents/${docId}`);
-            alert('Đã xóa tài liệu thành công');
+            alert('✅ Đã xóa tài liệu thành công!');
             fetchDocuments();
         } catch (e) {
-            alert('Lỗi xóa tài liệu: ' + (e.response?.data?.detail || e.message));
+            alert('❌ Không thể xóa tài liệu. Vui lòng thử lại sau.');
         }
     };
 
@@ -487,7 +483,7 @@ const Learning = () => {
                     >
                         <Plus size={18} /> <span style={{ marginLeft: '0.5rem' }}>Phiên học tập mới</span>
                     </button>
-                    
+
                     <div style={{
                         marginBottom: '1rem',
                         padding: '0.75rem',
@@ -495,9 +491,9 @@ const Learning = () => {
                         borderRadius: '8px',
                         border: '1px solid var(--border-color)'
                     }}>
-                        <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
                             justifyContent: 'space-between',
                             marginBottom: '0.5rem'
                         }}>
@@ -512,7 +508,7 @@ const Learning = () => {
                                 {showDocumentPanel ? 'Ẩn' : 'Xem'}
                             </button>
                         </div>
-                        
+
                         <input
                             type="file"
                             ref={fileInputRef}
@@ -521,7 +517,7 @@ const Learning = () => {
                             multiple
                             style={{ display: 'none' }}
                         />
-                        
+
                         <button
                             className="btn btn-outline"
                             onClick={() => fileInputRef.current?.click()}
@@ -538,7 +534,7 @@ const Learning = () => {
                                 {uploadingDoc ? 'Đang tải...' : 'Tải tài liệu lên'}
                             </span>
                         </button>
-                        
+
                         {showDocumentPanel && (
                             <div style={{
                                 marginTop: '0.75rem',
@@ -546,9 +542,9 @@ const Learning = () => {
                                 overflowY: 'auto'
                             }}>
                                 {documents.length === 0 ? (
-                                    <p style={{ 
-                                        fontSize: '0.8rem', 
-                                        color: 'var(--text-tertiary)', 
+                                    <p style={{
+                                        fontSize: '0.8rem',
+                                        color: 'var(--text-tertiary)',
                                         textAlign: 'center',
                                         margin: '0.5rem 0'
                                     }}>
@@ -573,15 +569,15 @@ const Learning = () => {
                                             }}>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, overflow: 'hidden' }}>
                                                     <FileText size={14} />
-                                                    <span style={{ 
-                                                        overflow: 'hidden', 
+                                                    <span style={{
+                                                        overflow: 'hidden',
                                                         textOverflow: 'ellipsis',
                                                         whiteSpace: 'nowrap'
                                                     }}>
                                                         {doc.filename}
                                                     </span>
                                                     {doc.uploaded_by_admin && (
-                                                        <span style={{ 
+                                                        <span style={{
                                                             fontSize: '0.7rem',
                                                             background: '#3b82f6',
                                                             color: 'white',
@@ -681,9 +677,9 @@ const Learning = () => {
                             <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: '600', color: 'var(--text-primary)' }}>
                                 Trợ lý học tập EduTwin
                             </h3>
-                            <p style={{ 
-                                margin: 0, 
-                                fontSize: '0.8rem', 
+                            <p style={{
+                                margin: 0,
+                                fontSize: '0.8rem',
                                 color: 'var(--text-tertiary)',
                                 marginTop: '0.2rem'
                             }}>
@@ -713,21 +709,21 @@ const Learning = () => {
 
                     {messages.map((msg, idx) => {
                         // Check if this is the last assistant message and we have reasoning steps
-                        const isLastAssistantMsg = msg.role === 'assistant' && 
-                            idx === messages.length - 1 && 
+                        const isLastAssistantMsg = msg.role === 'assistant' &&
+                            idx === messages.length - 1 &&
                             reasoningSteps.length > 0;
-                        
+
                         // If this is the last assistant message with reasoning, show reasoning before it
                         if (isLastAssistantMsg) {
                             return (
                                 <div key={idx}>
                                     {/* Show reasoning steps BEFORE final response */}
-                                    <ReasoningDisplay 
+                                    <ReasoningDisplay
                                         steps={reasoningSteps}
                                         isProcessing={isAgentProcessing}
                                         isCompleted={isReasoningCompleted}
                                     />
-                                    
+
                                     {/* Final response */}
                                     <div style={{
                                         display: 'flex',
@@ -755,13 +751,13 @@ const Learning = () => {
                                 </div>
                             );
                         }
-                        
+
                         // Normal message rendering
                         return (
                             <div key={idx}>
                                 {/* Show reasoning steps saved with this message */}
                                 {msg.role === 'assistant' && msg.reasoningSteps && msg.reasoningSteps.length > 0 && (
-                                    <ReasoningDisplay 
+                                    <ReasoningDisplay
                                         steps={msg.reasoningSteps}
                                         isProcessing={false}
                                         isCompleted={true}
@@ -797,11 +793,11 @@ const Learning = () => {
                             </div>
                         );
                     })}
-                    
+
                     {/* Show reasoning steps ONLY while processing (before response arrives) */}
                     {/* Once response is in messages, reasoning is shown with the message above */}
                     {reasoningSteps.length > 0 && isAgentProcessing && (
-                        <ReasoningDisplay 
+                        <ReasoningDisplay
                             steps={reasoningSteps}
                             isProcessing={isAgentProcessing}
                             isCompleted={isReasoningCompleted}
@@ -877,9 +873,9 @@ const Learning = () => {
                 </div>
 
                 <div className="chat-input-area">
-                    <div style={{ 
-                        display: 'flex', 
-                        gap: '0.75rem', 
+                    <div style={{
+                        display: 'flex',
+                        gap: '0.75rem',
                         alignItems: 'center',
                         width: '100%'
                     }}>
@@ -888,50 +884,29 @@ const Learning = () => {
                             placeholder="Gửi câu hỏi hoặc bài tập..."
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && !loading && handleSend()}
+                            onKeyDown={(e) => e.key === 'Enter' && !loading && input.trim() && handleSend()}
                             disabled={loading}
                             style={{ margin: 0, boxShadow: 'var(--shadow-sm)', flex: 1 }}
                         />
-                        {loading ? (
-                            <button
-                                className="btn"
-                                onClick={handleCancel}
-                                title="Dừng"
-                                style={{
-                                    width: '48px',
-                                    height: '48px',
-                                    padding: 0,
-                                    borderRadius: '12px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    flexShrink: 0,
-                                    background: 'var(--danger-color)',
-                                    color: 'white',
-                                    border: 'none'
-                                }}
-                            >
-                                <Square size={18} fill="white" />
-                            </button>
-                        ) : (
-                            <button
-                                className="btn btn-primary"
-                                onClick={handleSend}
-                                disabled={!input.trim()}
-                                style={{
-                                    width: '48px',
-                                    height: '48px',
-                                    padding: 0,
-                                    borderRadius: '12px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    flexShrink: 0
-                                }}
-                            >
-                                <Send size={20} />
-                            </button>
-                        )}
+                        <button
+                            className="btn btn-primary"
+                            onClick={handleSend}
+                            disabled={loading || !input.trim()}
+                            title="Gửi tin nhắn (Enter)"
+                            style={{
+                                width: '48px',
+                                height: '48px',
+                                padding: 0,
+                                borderRadius: '12px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                                opacity: loading ? 0.6 : 1
+                            }}
+                        >
+                            <Send size={20} />
+                        </button>
                     </div>
                 </div>
             </div>

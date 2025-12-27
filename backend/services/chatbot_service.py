@@ -134,7 +134,7 @@ def extract_relevant_sections(document_content: str, keywords: List[str], max_to
 LLM_API_URL = os.getenv("LLM_API_URL")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 
 
 async def _call_remote_llm(messages: List[Dict[str, str]], temperature: float = 0.2) -> Optional[str]:
@@ -314,7 +314,7 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
         .join(models.ChatSession, models.ChatMessage.session_id == models.ChatSession.id)\
         .filter(models.ChatSession.user_id == user_id)\
         .order_by(models.ChatMessage.created_at.desc())\
-        .limit(3)\
+        .limit(5)\
         .all()
     
     # Compress chat history into single context block
@@ -512,7 +512,7 @@ def _build_prompt(
                 # Add structure documents if available (with smart extraction)
                 structure_docs = db.query(models.CustomStructureDocument).filter(
                     models.CustomStructureDocument.structure_id == active_structure.id
-                ).limit(5).all()  # Get up to 5 docs but filter by relevance
+                ).limit(6).all()  # Get up to 6 docs but filter by relevance
                 
                 if structure_docs:
                     # Extract keywords from user message for document filtering
@@ -524,7 +524,7 @@ def _build_prompt(
                     custom_structure_info += "\n📄 TÀI LIỆU THAM KHẢO:\n"
                     docs_included = 0
                     for doc in structure_docs:
-                        if docs_included >= 2:  # Limit to 2 most relevant docs
+                        if docs_included >= 5:  # Limit to 5 most relevant docs
                             break
                         
                         # Use extracted_summary (optimized) instead of full content
@@ -533,7 +533,7 @@ def _build_prompt(
                             relevant_text = extract_relevant_sections(
                                 doc.extracted_summary, 
                                 message_keywords, 
-                                max_tokens=200
+                                max_tokens=300
                             )
                             if relevant_text and relevant_text != "...[đã rút gọn]":
                                 custom_structure_info += f"- {doc.file_name}: {relevant_text}\n"
@@ -797,7 +797,7 @@ async def generate_chat_response(
 
     # REMOVED: context_optimizer (service deleted)
     # Use last 5 messages from conversation history (simplified optimization)
-    optimized_history = (conversation_messages[-5:] if len(conversation_messages) > 5 else conversation_messages)
+    optimized_history = (conversation_messages[-15:] if len(conversation_messages) > 15 else conversation_messages)
     
     # Redact PII from current user message before sending to LLM
     safe_message = redact_message_content(message)

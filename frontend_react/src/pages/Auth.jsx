@@ -39,7 +39,7 @@ const Auth = () => {
                 return;
             }
             if (formData.password !== formData.confirmPassword) {
-                setError('Mật khẩu không khớp');
+                setError('Mật khẩu và xác nhận mật khẩu không khớp nhau. Vui lòng kiểm tra lại.');
                 return;
             }
 
@@ -52,7 +52,7 @@ const Auth = () => {
             if (res.success) {
                 setIsLogin(true);
                 setError('');
-                alert('Đăng ký thành công! Vui lòng đăng nhập.');
+                alert('✅ Đăng ký thành công!\n\nVui lòng đăng nhập để bắt đầu sử dụng.');
             } else {
                 setError(res.message);
             }

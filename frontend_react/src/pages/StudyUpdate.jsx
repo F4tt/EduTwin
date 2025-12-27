@@ -435,7 +435,7 @@ const StudyUpdate = () => {
             await fetchScores();
             notifyScoresUpdated();
         } catch (e) {
-            alert('Lỗi xóa: ' + e.message);
+            alert('❌ Không thể xóa. Vui lòng thử lại sau.');
         }
     };
 
@@ -944,7 +944,7 @@ const StudyUpdate = () => {
                                                                                 await fetchScores();
                                                                                 notifyScoresUpdated();
                                                                             } catch (e) {
-                                                                                alert('Lỗi xóa: ' + e.message);
+                                                                                alert('❌ Không thể xóa. Vui lòng thử lại sau.');
                                                                             }
                                                                         }
                                                                     }

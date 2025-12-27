@@ -24,6 +24,28 @@ logger = get_logger(__name__)
 
 app = FastAPI()
 
+# CORS origins từ environment (cho production) hoặc defaults (cho development)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else [
+    "http://localhost:3000",
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+]
+
+# Add CORS middleware FIRST to ensure proper handling of cross-origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add Prometheus middleware
+app.add_middleware(PrometheusMiddleware)
+
 # Request timing middleware (log slow requests)
 @app.middleware("http")
 async def log_request_time(request: Request, call_next):
@@ -50,27 +72,6 @@ async def log_request_time(request: Request, call_next):
     # Add timing header for debugging
     response.headers["X-Process-Time"] = str(round(duration, 3))
     return response
-
-# Add Prometheus middleware first
-app.add_middleware(PrometheusMiddleware)
-
-# CORS origins từ environment (cho production) hoặc defaults (cho development)
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else [
-    "http://localhost:3000",
-    "http://localhost:5173",  # Vite dev server
-    "http://localhost:8000",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8000",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Custom exception handler for validation errors
 @app.exception_handler(RequestValidationError)
