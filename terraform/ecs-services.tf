@@ -5,8 +5,8 @@ resource "aws_ecs_task_definition" "backend" {
   family                   = "${var.project_name}-backend"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"   # 0.5 vCPU - needed for ML processing
-  memory                   = "1024"  # 1 GB - needed for file uploads and ML
+  cpu                      = "1024"  # 1 vCPU - scaled for 40-50 concurrent users
+  memory                   = "2048"  # 2 GB - scaled for concurrent ML processing
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
@@ -29,7 +29,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "LLM_MODEL", value = "gemini-2.5-flash" },
         { name = "LLM_API_URL", value = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" },
         { name = "LLM_TIMEOUT_SECONDS", value = "120" },
-        { name = "LLM_CONCURRENCY", value = "6" },
+        { name = "LLM_CONCURRENCY", value = "10" },
         { name = "LOG_LEVEL", value = "INFO" },
         { name = "CORS_ORIGINS", value = "https://${var.domain_name},https://www.${var.domain_name},http://${aws_lb.main.dns_name}" }
       ]

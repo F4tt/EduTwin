@@ -199,7 +199,7 @@ resource "aws_db_instance" "main" {
   identifier             = "${var.project_name}-db"
   engine                 = "postgres"
   engine_version         = "15.7"
-  instance_class         = "db.t3.micro"
+  instance_class         = "db.t3.small"  # Scaled for 40-50 users
   allocated_storage      = 20
   storage_type           = "gp2"
   db_name                = var.project_name
@@ -262,6 +262,7 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
+  idle_timeout       = 3600  # 1 hour for WebSocket connections
 
   tags = {
     Name = "${var.project_name}-alb"
@@ -275,6 +276,13 @@ resource "aws_lb_target_group" "backend" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
+
+  # Stickiness required for Socket.IO WebSocket connections
+  stickiness {
+    type            = "lb_cookie"
+    cookie_duration = 86400  # 24 hours
+    enabled         = true
+  }
 
   health_check {
     enabled             = true

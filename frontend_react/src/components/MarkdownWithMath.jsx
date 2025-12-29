@@ -9,7 +9,11 @@ import 'katex/dist/katex.min.css';
  * Block: $$\int_a^b f(x) dx$$
  */
 const MarkdownWithMath = ({ content }) => {
+  if (!content) return null;
+
   // Preprocess content to extract and replace math with placeholders
+  const mathBlocksRef = React.useRef([]);
+
   const preprocessMath = (text) => {
     const mathBlocks = [];
     let processedText = text;
@@ -28,134 +32,106 @@ const MarkdownWithMath = ({ content }) => {
       return `<<<MATH_INLINE_${index}>>>`;
     });
 
-    return { processedText, mathBlocks };
+    mathBlocksRef.current = mathBlocks;
+    return processedText;
   };
 
-  const { processedText, mathBlocks } = preprocessMath(content);
+  const processedText = preprocessMath(content);
+  const mathBlocks = mathBlocksRef.current;
 
-  // Custom renderer to restore math components
-  const components = {
-    p: ({ children }) => {
-      const processChildren = (child) => {
-        if (typeof child === 'string') {
-          // Replace placeholders with actual math components
-          const parts = [];
-          let remaining = child;
-          let key = 0;
+  // Helper function to process any text and replace math placeholders
+  const replaceMathPlaceholders = (text, keyPrefix = '') => {
+    if (typeof text !== 'string') return text;
 
-          // Match block math placeholders
-          const blockRegex = /<<<MATH_BLOCK_(\d+)>>>/g;
-          let lastIndex = 0;
-          let match;
+    const parts = [];
+    let remaining = text;
+    let key = 0;
+    let lastIndex = 0;
 
-          while ((match = blockRegex.exec(child)) !== null) {
-            if (match.index > lastIndex) {
-              parts.push(child.substring(lastIndex, match.index));
-            }
-            const blockIndex = parseInt(match[1]);
-            const mathBlock = mathBlocks[blockIndex];
-            parts.push(
-              <div key={`block-${key++}`} style={{ margin: '12px 0' }}>
-                <BlockMath math={mathBlock.math} />
-              </div>
-            );
-            lastIndex = match.index + match[0].length;
-          }
+    // Combined regex for both block and inline math
+    const mathRegex = /<<<MATH_(BLOCK|INLINE)_(\d+)>>>/g;
+    let match;
 
-          if (lastIndex < child.length) {
-            remaining = child.substring(lastIndex);
-          } else {
-            remaining = '';
-          }
+    while ((match = mathRegex.exec(text)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        parts.push(text.substring(lastIndex, match.index));
+      }
 
-          // Match inline math placeholders in remaining text
-          const inlineRegex = /<<<MATH_INLINE_(\d+)>>>/g;
-          lastIndex = 0;
+      const mathIndex = parseInt(match[2]);
+      const mathBlock = mathBlocks[mathIndex];
 
-          while ((match = inlineRegex.exec(remaining)) !== null) {
-            if (match.index > lastIndex) {
-              parts.push(remaining.substring(lastIndex, match.index));
-            }
-            const inlineIndex = parseInt(match[1]);
-            const mathBlock = mathBlocks[inlineIndex];
-            parts.push(
-              <InlineMath key={`inline-${key++}`} math={mathBlock.math} />
-            );
-            lastIndex = match.index + match[0].length;
-          }
-
-          if (lastIndex < remaining.length) {
-            parts.push(remaining.substring(lastIndex));
-          }
-
-          return parts.length > 0 ? parts : child;
-        }
-        return child;
-      };
-
-      const processed = React.Children.map(children, processChildren);
-      return <p>{processed}</p>;
-    },
-    
-    text: ({ value }) => {
-      // Process text nodes directly
-      if (typeof value === 'string') {
-        const parts = [];
-        let remaining = value;
-        let key = 0;
-
-        // Block math
-        const blockRegex = /<<<MATH_BLOCK_(\d+)>>>/g;
-        let lastIndex = 0;
-        let match;
-
-        while ((match = blockRegex.exec(value)) !== null) {
-          if (match.index > lastIndex) {
-            parts.push(value.substring(lastIndex, match.index));
-          }
-          const blockIndex = parseInt(match[1]);
-          const mathBlock = mathBlocks[blockIndex];
+      if (mathBlock) {
+        if (match[1] === 'BLOCK') {
           parts.push(
-            <div key={`block-${key++}`} style={{ margin: '12px 0' }}>
+            <div key={`${keyPrefix}block-${key++}`} style={{ margin: '12px 0' }}>
               <BlockMath math={mathBlock.math} />
             </div>
           );
-          lastIndex = match.index + match[0].length;
-        }
-
-        if (lastIndex < value.length) {
-          remaining = value.substring(lastIndex);
         } else {
-          remaining = '';
-        }
-
-        // Inline math
-        const inlineRegex = /<<<MATH_INLINE_(\d+)>>>/g;
-        lastIndex = 0;
-
-        while ((match = inlineRegex.exec(remaining)) !== null) {
-          if (match.index > lastIndex) {
-            parts.push(remaining.substring(lastIndex, match.index));
-          }
-          const inlineIndex = parseInt(match[1]);
-          const mathBlock = mathBlocks[inlineIndex];
           parts.push(
-            <InlineMath key={`inline-${key++}`} math={mathBlock.math} />
+            <InlineMath key={`${keyPrefix}inline-${key++}`} math={mathBlock.math} />
           );
-          lastIndex = match.index + match[0].length;
         }
-
-        if (lastIndex < remaining.length) {
-          parts.push(remaining.substring(lastIndex));
-        }
-
-        return parts.length > 0 ? <>{parts}</> : value;
+      } else {
+        // If mathBlock not found, keep the original placeholder text
+        parts.push(match[0]);
       }
-      return value;
-    },
-    
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Add remaining text after last match
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : text;
+  };
+
+  // Recursive function to process React children
+  const processChildren = (children, keyPrefix = '') => {
+    return React.Children.map(children, (child, index) => {
+      if (typeof child === 'string') {
+        return replaceMathPlaceholders(child, `${keyPrefix}${index}-`);
+      }
+      if (React.isValidElement(child) && child.props.children) {
+        return React.cloneElement(child, {
+          ...child.props,
+          children: processChildren(child.props.children, `${keyPrefix}${index}-`)
+        });
+      }
+      return child;
+    });
+  };
+
+  // Custom components that process math placeholders
+  const createMathAwareComponent = (Component) => {
+    return ({ children, ...props }) => {
+      const processed = processChildren(children);
+      return <Component {...props}>{processed}</Component>;
+    };
+  };
+
+  const components = {
+    p: createMathAwareComponent('p'),
+    li: createMathAwareComponent('li'),
+    td: createMathAwareComponent('td'),
+    th: createMathAwareComponent('th'),
+    strong: createMathAwareComponent('strong'),
+    em: createMathAwareComponent('em'),
+    span: createMathAwareComponent('span'),
+    div: createMathAwareComponent('div'),
+    blockquote: createMathAwareComponent('blockquote'),
+    h1: createMathAwareComponent('h1'),
+    h2: createMathAwareComponent('h2'),
+    h3: createMathAwareComponent('h3'),
+    h4: createMathAwareComponent('h4'),
+    h5: createMathAwareComponent('h5'),
+    h6: createMathAwareComponent('h6'),
+
     code: ({ node, inline, className, children, ...props }) => {
-      // Don't process code blocks
+      // Don't process code blocks - keep them as-is
       return inline ? (
         <code className={className} {...props}>
           {children}
@@ -177,7 +153,7 @@ const MarkdownWithMath = ({ content }) => {
       <ReactMarkdown components={components}>
         {processedText}
       </ReactMarkdown>
-      
+
       <style>{`
         .markdown-with-math .katex {
           font-size: 1.05em;

@@ -68,7 +68,14 @@ def create_calculator_tool(websocket_callback=None):
                     'message': f'🧮 Đang tính toán: {expression}'
                 })
             
-            result = numexpr.evaluate(expression).item()
+            # Preprocessing: Convert common math notations
+            # Replace ^ with ** (power operator)
+            processed_expr = expression.replace('^', '**')
+            # Handle sqrt() - numexpr doesn't support it directly
+            import re
+            processed_expr = re.sub(r'sqrt\(([^)]+)\)', r'(\1)**0.5', processed_expr)
+            
+            result = numexpr.evaluate(processed_expr).item()
             
             if websocket_callback:
                 await websocket_callback({
@@ -188,9 +195,9 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
                     await websocket_callback({
                         'type': 'tool_progress',
                         'tool': 'SearchUserDocuments',
-                        'message': '❌ Bạn chưa tải lên tài liệu nào'
+                        'message': '📭 Không có tài liệu của người dùng'
                     })
-                return "Bạn chưa tải lên tài liệu nào. Hãy upload tài liệu trước khi đặt câu hỏi."
+                return "NO_USER_DOCUMENTS: Người dùng chưa tải lên tài liệu nào. Hãy tìm kiếm thông tin từ nguồn bên ngoài (Wikipedia, Calculator, PythonREPL)."
             
             documents = user.uploaded_documents
             logger.info(f"Found {len(documents)} documents for user {user_id}")
@@ -304,25 +311,52 @@ def create_python_repl_tool(websocket_callback=None):
             import numpy as np
             import scipy
             
+            # Create safe builtins with commonly needed functions
+            safe_builtins = {
+                # Basic builtins
+                'abs': abs,
+                'round': round,
+                'sum': sum,
+                'len': len,
+                'max': max,
+                'min': min,
+                'range': range,
+                'list': list,
+                'dict': dict,
+                'tuple': tuple,
+                'set': set,
+                'str': str,
+                'int': int,
+                'float': float,
+                'bool': bool,
+                'print': print,
+                'sorted': sorted,
+                'reversed': reversed,
+                'enumerate': enumerate,
+                'zip': zip,
+                'map': map,
+                'filter': filter,
+                # Math functions directly available
+                'pow': pow,
+                'sqrt': math.sqrt,
+                'sin': math.sin,
+                'cos': math.cos,
+                'tan': math.tan,
+                'log': math.log,
+                'log10': math.log10,
+                'exp': math.exp,
+                'pi': math.pi,
+                'e': math.e,
+            }
+            
             namespace = {
                 'math': math,
                 'np': np,
+                'numpy': np,
                 'scipy': scipy,
-                '__builtins__': {
-                    'abs': abs,
-                    'round': round,
-                    'sum': sum,
-                    'len': len,
-                    'max': max,
-                    'min': min,
-                    'range': range,
-                    'list': list,
-                    'dict': dict,
-                    'str': str,
-                    'int': int,
-                    'float': float,
-                    'print': print
-                }
+                '__builtins__': safe_builtins,
+                # Also make math functions directly accessible
+                **{k: v for k, v in safe_builtins.items() if callable(v) or isinstance(v, (int, float))}
             }
             
             exec(code, namespace)
@@ -419,15 +453,18 @@ BẠN CÓ CÁC CÔNG CỤ SAU:
 
 📋 QUY TẮC XỬ LÝ:
 
-1. **BƯỚC 1 (ĐÃ TỰ ĐỘNG)**: Tìm kiếm tài liệu của user - Xem kết quả trong Observation đầu tiên
+1. **BƯỚC 1 (ĐÃ TỰ ĐỘNG)**: Tìm kiếm tài liệu của user
+   - Nếu thấy "NO_USER_DOCUMENTS" → Người dùng chưa có tài liệu, hãy tìm từ nguồn bên ngoài (Wikipedia, Calculator, PythonREPL)
+   - Nếu có kết quả tài liệu → Sử dụng thông tin này
 
-2. **PHÂN TÍCH KẾT QUẢ TÀI LIỆU**:
-   - Nếu tài liệu có ĐỊNH NGHĨA, GIẢI THÍCH CHI TIẾT về câu hỏi → Đánh giá chất lượng
-   - Nếu tài liệu chỉ NHẮC TÊN/ĐỀ CẬP mà không giải thích → Cần search Wikipedia
-   - Nếu user YÊU CẦU TÌM THÊM ("tìm thông tin", "tra cứu") → Phải search Wikipedia
+2. **⚠️ BẮT BUỘC DÙNG CALCULATOR/PYTHON CHO TÍNH TOÁN**:
+   - Mọi phép tính số học (cộng, trừ, nhân, chia, lũy thừa) → PHẢI dùng Calculator hoặc PythonREPL
+   - KHÔNG BAO GIỜ tự tính trong đầu - luôn dùng công cụ để có kết quả chính xác
+   - Calculator hỗ trợ: +, -, *, /, ^ (lũy thừa), sqrt(), sin(), cos(), log()
+   - PythonREPL: Dùng khi cần tính phức tạp hơn, lưu kết quả vào biến 'result'
 
 3. **ĐÁNH GIÁ CHẤT LƯỢNG (Self-Evaluation)**:
-   Sau mỗi Observation, BẮT BUỘNG đánh giá:
+   Sau mỗi Observation, BẮT BUỘC đánh giá:
    
    Self-Evaluation:
    - Có đủ thông tin? [Yes/No]
@@ -439,17 +476,15 @@ BẠN CÓ CÁC CÔNG CỤ SAU:
    - Nếu độ chính xác < High HOẶC thiếu thông tin → Tiếp tục tìm kiếm
 
 4. **KHI NÀO DÙNG WIKIPEDIA**:
+   ✅ Không có tài liệu người dùng (NO_USER_DOCUMENTS)
    ✅ Tài liệu chỉ đề cập tên mà không giải thích khái niệm
    ✅ User hỏi định nghĩa mà tài liệu không có
    ✅ User yêu cầu tìm thêm thông tin
-   ✅ Cần thông tin tổng quát mà tài liệu không đủ
    
-5. **Calculator/PythonREPL**: Chỉ dùng khi cần tính toán
-
-📝 FORMAT CÔNG THỨC TOÁN:
-- Inline: $...$ (VD: $x^2 + y^2 = z^2$)
-- Block: $$...$$ 
-- Phân số: $\\frac{{a}}{{b}}$, Căn: $\\sqrt{{x}}$
+5. **QUAN TRỌNG VỀ SỐ LIỆU**:
+   - KHÔNG BAO GIỜ tự ước tính hoặc suy luận số liệu
+   - Nếu cần kết quả số → PHẢI dùng Calculator hoặc PythonREPL
+   - Đây là quy tắc BẮT BUỘC để tránh sai số
 
 📌 FORMAT TRẢ LỜI:
 
@@ -464,19 +499,15 @@ Self-Evaluation:
 - Độ chính xác: [High/Medium/Low]
 - Thiếu gì: [nếu có]
 
-[Nếu cần tiếp tục]
-Thought: [Quyết định tìm thêm thông tin]
-Action: [Tool tiếp theo]
-...
-
 [Khi đã đủ thông tin và chất lượng cao]
 Final Answer: [Câu trả lời chi tiết, có cấu trúc, dễ hiểu]
 
 ⚠️ QUAN TRỌNG: 
-- BẮT BUỘC có Self-Evaluation sau mỗi Observation
-- Chỉ đưa Final Answer khi độ chính xác = High
+- Nếu "NO_USER_DOCUMENTS" → Tiếp tục với Wikipedia/Calculator
+- BẮT BUỘC dùng Calculator cho mọi phép tính
 - Trả lời bằng tiếng Việt
 - BẮT BUỘC kết thúc bằng "Final Answer:" """
+
 
             messages = [SystemMessage(content=system_prompt)]
             if conversation_history:
@@ -507,15 +538,20 @@ Final Answer: [Câu trả lời chi tiết, có cấu trúc, dễ hiểu]
                     
                     # Evaluate result
                     result_str = str(doc_search_result).strip()
+                    is_no_documents = 'NO_USER_DOCUMENTS' in result_str
                     has_useful_content = (
                         len(result_str) > 50 and 
                         'không tìm thấy' not in result_str.lower() and
-                        'chưa tải lên' not in result_str.lower()
+                        'chưa tải lên' not in result_str.lower() and
+                        not is_no_documents
                     )
                     
                     if has_useful_content:
                         status_msg = f"✅ Tìm thấy {len(result_str)} ký tự từ tài liệu của bạn"
                         result_quality = "good"
+                    elif is_no_documents:
+                        status_msg = "📭 Không có tài liệu người dùng → Tìm từ nguồn bên ngoài"
+                        result_quality = "no_documents"
                     else:
                         status_msg = "⚠️ Không tìm thấy thông tin liên quan trong tài liệu"
                         result_quality = "not_found"
@@ -552,10 +588,22 @@ Final Answer: [Câu trả lời chi tiết, có cấu trúc, dễ hiểu]
 Dựa trên thông tin này, hãy tổng hợp câu trả lời CHẤT LƯỢNG CAO cho user:
 - Giải thích rõ ràng, dễ hiểu
 - Có cấu trúc (bullet points nếu cần)
-- Dùng công thức LaTeX nếu có toán học: $...$
+- Nếu có phép tính → PHẢI dùng Calculator
 - Trích dẫn nguồn từ tài liệu khi phù hợp
 
 Hãy đưa ra Final Answer ngay."""))
+                    else:
+                        # No documents or no relevant content - tell agent to use external sources
+                        messages.append(AIMessage(content=f"Thought: Tôi sẽ tìm kiếm trong tài liệu của người dùng trước.\nAction: SearchUserDocuments\nAction Input: {query}"))
+                        messages.append(HumanMessage(content=f"""Observation: {doc_search_result}
+
+📭 Không có tài liệu người dùng hoặc không tìm thấy thông tin liên quan.
+Hãy tiếp tục tìm kiếm từ nguồn bên ngoài:
+- Nếu cần kiến thức/định nghĩa → Dùng Wikipedia
+- Nếu cần tính toán → PHẢI dùng Calculator hoặc PythonREPL
+- KHÔNG BAO GIỜ tự suy luận số liệu, luôn dùng công cụ tính toán
+
+Tiếp tục với Action tiếp theo."""))
                     
                     logger.info(f"[ReAct Agent] Document search result: {result_quality} ({len(result_str)} chars)")
                     

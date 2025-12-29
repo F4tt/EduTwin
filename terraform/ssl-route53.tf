@@ -155,7 +155,7 @@ resource "aws_lb_listener_rule" "backend_https_api" {
 
   condition {
     path_pattern {
-      values = ["/user/*", "/developer/*", "/custom-model/*", "/chatbot*"]
+      values = ["/user/*", "/developer/*", "/custom-model/*", "/chatbot*", "/learning/*"]
     }
   }
 }

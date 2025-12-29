@@ -31,7 +31,7 @@ resource "aws_elasticache_cluster" "main" {
   cluster_id           = "${var.project_name}-redis"
   engine               = "redis"
   engine_version       = "7.0"
-  node_type            = "cache.t3.micro"  # Cost-optimized, Free Tier eligible
+  node_type            = "cache.t3.small"  # Scaled for 40-50 users
   num_cache_nodes      = 1
   parameter_group_name = "default.redis7"
   port                 = 6379
