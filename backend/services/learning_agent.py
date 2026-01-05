@@ -447,7 +447,7 @@ class ReActLearningAgent:
         self.websocket_callback = websocket_callback
         
         api_key = os.getenv("LLM_API_KEY")
-        model_name = os.getenv("LLM_MODEL", "gemini-2.0-flash-exp")
+        model_name = os.getenv("LLM_MODEL", "gemini-2.5-flash")
         
         self.llm = ChatGoogleGenerativeAI(
             model=model_name,
