@@ -811,17 +811,7 @@ const StudyUpdate = () => {
                         </div>
                     </div>
                 )}
-                {/* Legend: actual vs predicted */}
-                <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.5rem', alignItems: 'center', paddingBottom: '1rem', borderBottom: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <div style={{ width: '12px', height: '12px', background: 'var(--text-primary)', borderRadius: '3px' }} />
-                        <div style={{ fontSize: '0.9rem', color: 'var(--text-primary)', fontWeight: '500' }}>Thực tế</div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <div style={{ width: '12px', height: '12px', background: 'var(--text-tertiary)', borderRadius: '3px' }} />
-                        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: '500' }}>Dự đoán</div>
-                    </div>
-                </div>
+
 
                 {loadingStructure ? (
                     <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>

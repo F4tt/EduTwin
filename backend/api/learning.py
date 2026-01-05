@@ -17,6 +17,7 @@ from core.websocket_manager import sio
 from services.learning_agent import LearningAgent
 from services.document_processor import process_document
 from services.vector_service import get_vector_service
+from utils.session_utils import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,15 @@ class DocumentUploadResponse(BaseModel):
 # ============================================================================
 
 @router.post("/chat")
-async def learning_chat(request: LearningRequest, db: Session = Depends(get_db)):
+async def learning_chat(request: LearningRequest, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
     Main learning endpoint using ReAct agent
     """
     try:
         logger.info(f"[Learning API] Processing query: {request.message[:100]}...")
+        
+        # Get actual user ID from session
+        user_id = current_user.id
         
         # Get or create session
         if request.session_id:
@@ -58,7 +62,7 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
                 session = ChatSession(
                     title=f"Learning: {request.message[:50]}...",
                     mode='learning',
-                    user_id=1  # Default user for now
+                    user_id=user_id
                 )
                 db.add(session)
                 db.commit()
@@ -68,14 +72,13 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
             session = ChatSession(
                 title=f"Learning: {request.message[:50]}...",
                 mode='learning', 
-                user_id=1  # Default user for now
+                user_id=user_id
             )
             db.add(session)
             db.commit()
             db.refresh(session)
 
         session_id = str(session.id)
-        user_id = 1  # Default user for now
         user_room = f"user_{user_id}"
         logger.info(f"[Learning API] Using session: {session_id}, user_room: {user_room}")
 
@@ -166,13 +169,13 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db))
 # ============================================================================
 
 @router.get("/documents")
-async def get_user_documents(db: Session = Depends(get_db)):
+async def get_user_documents(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
     Get list of user's uploaded documents
     """
     try:
-        # For now, get documents for default user (user_id=1)
-        user = db.query(User).filter(User.id == 1).first()
+        # Get documents for current logged-in user
+        user = db.query(User).filter(User.id == current_user.id).first()
         if not user:
             return {"documents": []}
         
@@ -197,7 +200,8 @@ async def get_user_documents(db: Session = Depends(get_db)):
 @router.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
 ):
     """
     Upload and process a document for learning
@@ -225,8 +229,8 @@ async def upload_document(
             # Use document processor for PDF/DOCX
             text_content = await process_document(file_content, file.filename)
         
-        # Get user (default user_id=1 for now)
-        user = db.query(User).filter(User.id == 1).first()
+        # Get current logged-in user
+        user = db.query(User).filter(User.id == current_user.id).first()
         if not user:
             raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
@@ -282,7 +286,8 @@ async def upload_document(
 @router.post("/upload-documents-batch")
 async def upload_documents_batch(
     files: List[UploadFile] = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
 ):
     """
     Upload multiple documents at once for learning mode
@@ -290,8 +295,8 @@ async def upload_documents_batch(
     try:
         logger.info(f"[Learning API] Batch uploading {len(files)} documents")
         
-        # Get or create user
-        user = db.query(User).filter(User.id == 1).first()
+        # Get current logged-in user
+        user = db.query(User).filter(User.id == current_user.id).first()
         if not user:
             raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
@@ -373,13 +378,13 @@ async def upload_documents_batch(
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str, db: Session = Depends(get_db)):
+async def delete_document(doc_id: str, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """
     Delete a user document
     """
     try:
-        # Get user (default user_id=1 for now)
-        user = db.query(User).filter(User.id == 1).first()
+        # Get current logged-in user
+        user = db.query(User).filter(User.id == current_user.id).first()
         if not user or not user.uploaded_documents:
             raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
         

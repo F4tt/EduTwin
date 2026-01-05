@@ -128,11 +128,16 @@ async def authenticate(sid, data):
         user_sessions[user_id].add(sid)
         session_users[sid] = user_id
         
-        logger.info(f"User {user_id} authenticated session {sid}")
+        # Join user room for receiving reasoning events (critical for learning mode)
+        user_room = f"user_{user_id}"
+        await sio.enter_room(sid, user_room)
+        
+        logger.info(f"User {user_id} authenticated session {sid}, joined room {user_room}")
         
         await sio.emit('authenticated', {
             'message': 'Authentication successful',
-            'user_id': user_id
+            'user_id': user_id,
+            'user_room': user_room
         }, room=sid)
         
     except Exception as e:

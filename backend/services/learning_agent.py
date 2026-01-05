@@ -223,22 +223,52 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
                 
                 filename = doc.get('filename', 'Unknown')
                 
-                # Split into paragraphs (by double newline or single newline)
-                paragraphs = re.split(r'\n\n+|\n', content)
+                # Split into paragraphs (by double newline for better sections)
+                paragraphs = re.split(r'\n\n+', content)
+                # If still too few, split by single newline
+                if len(paragraphs) < 5:
+                    paragraphs = re.split(r'\n+', content)
                 
-                for para in paragraphs:
+                # Track which paragraph indices have been used for context
+                used_indices = set()
+                
+                for idx, para in enumerate(paragraphs):
                     para = para.strip()
-                    if len(para) < 50:  # Skip very short paragraphs
+                    if len(para) < 30:  # Skip very short paragraphs (reduced from 50)
+                        continue
+                    
+                    # Skip if already used in another section's context
+                    if idx in used_indices:
                         continue
                     
                     score = calculate_relevance(para, query_keywords)
                     
-                    if score > 1.0:  # Threshold: at least 1% keyword density
-                        relevant_sections.append({
-                            'filename': filename,
-                            'content': para,
-                            'score': score
-                        })
+                    # Lowered threshold to 0.5% for better recall
+                    if score > 0.5:
+                        # CONTEXT EXPANSION: include 1 paragraph before and 1 after
+                        context_start = max(0, idx - 1)
+                        context_end = min(len(paragraphs), idx + 2)  # +2 to include idx+1
+                        
+                        # Build expanded context from surrounding paragraphs
+                        context_parts = []
+                        for ctx_idx in range(context_start, context_end):
+                            ctx_para = paragraphs[ctx_idx].strip()
+                            if ctx_para and len(ctx_para) >= 20:
+                                context_parts.append(ctx_para)
+                                used_indices.add(ctx_idx)
+                        
+                        expanded_content = '\n\n'.join(context_parts)
+                        
+                        if expanded_content and len(expanded_content) > 50:
+                            # Recalculate score for expanded content
+                            expanded_score = calculate_relevance(expanded_content, query_keywords)
+                            
+                            relevant_sections.append({
+                                'filename': filename,
+                                'content': expanded_content,
+                                'score': max(score, expanded_score),  # Use higher score
+                                'match_idx': idx
+                            })
             
             if not relevant_sections:
                 if websocket_callback:
@@ -249,27 +279,28 @@ def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = 
                     })
                 return "Không tìm thấy thông tin liên quan trong tài liệu đã tải lên."
             
-            # Sort by relevance score and take top 3
+            # Sort by relevance score and take top 6 sections
             relevant_sections.sort(key=lambda x: x['score'], reverse=True)
-            top_sections = relevant_sections[:3]
+            top_sections = relevant_sections[:6]
+            
+            total_chars = sum(len(s['content']) for s in top_sections)
             
             if websocket_callback:
                 await websocket_callback({
                     'type': 'tool_progress',
                     'tool': 'SearchUserDocuments',
-                    'message': f'✅ Tìm thấy {len(top_sections)} đoạn văn liên quan (từ {len(documents)} tài liệu)'
+                    'message': f'✅ Tìm thấy {len(top_sections)} đoạn văn liên quan ({total_chars} ký tự)'
                 })
             
-            # Format output with source info
+            # Format output with source info - 2500 chars per section max
             formatted = []
             for section in top_sections:
-                # Limit each section to 1000 chars
-                content = section['content'][:1000]
-                if len(section['content']) > 1000:
-                    content += "\n[...]"
+                content = section['content'][:2500]
+                if len(section['content']) > 2500:
+                    content += "\n[... còn nữa]"
                 
                 formatted.append(
-                    f"[Tài liệu: {section['filename']}, Liên quan: {section['score']:.1f}%]\n{content}"
+                    f"[Tài liệu: {section['filename']}, Độ liên quan: {section['score']:.1f}%]\n{content}"
                 )
             
             result = "\n\n---\n\n".join(formatted)
