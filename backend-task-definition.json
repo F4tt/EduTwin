@@ -34,6 +34,10 @@
           "value": "gemini-2.5-flash"
         },
         {
+          "name": "LLM_API_URL",
+          "value": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        },
+        {
           "name": "LLM_TIMEOUT_SECONDS",
           "value": "120"
         },

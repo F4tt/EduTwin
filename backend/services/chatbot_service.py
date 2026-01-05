@@ -333,9 +333,77 @@ def _build_context_blocks(user_id: Optional[int], message: str, db: Optional[Ses
             "metadata": {"type": "chat_history"}
         })
     
-    # Get scores only if message mentions subjects/grades
-    score_keywords = ['điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd', 'học kỳ', 'lớp', 'kết quả', 'thành tích', 'thi', 'kiểm tra', 'dự đoán']
-    if any(kw in message.lower() for kw in score_keywords):
+    # Smart score context detection - much more intelligent than simple keywords
+    def _should_include_score_context(msg: str) -> bool:
+        """
+        Intelligently detect if message is related to academic performance.
+        Uses multiple strategies:
+        1. Direct subject/score mentions
+        2. Question patterns about performance
+        3. Possessive patterns (của tôi, của em, của con)
+        4. Temporal academic terms
+        5. Self-reference academic questions
+        """
+        msg_lower = msg.lower()
+        
+        # Strategy 1: Direct academic terms (high confidence)
+        direct_terms = [
+            'điểm', 'toán', 'lý', 'hóa', 'văn', 'anh', 'sinh', 'sử', 'địa', 'gdcd',
+            'công dân', 'vật lý', 'hóa học', 'sinh học', 'lịch sử', 'địa lý',
+            'tiếng anh', 'ngữ văn', 'môn', 'kỳ 1', 'kỳ 2', 'học kỳ', 'cuối kỳ'
+        ]
+        if any(term in msg_lower for term in direct_terms):
+            return True
+        
+        # Strategy 2: Question patterns about personal status/performance
+        question_patterns = [
+            # "tôi/em/mình + verb + như thế nào/ra sao/thế nào"
+            (r'(tôi|em|mình|con|của tôi|của em).*(như thế nào|ra sao|thế nào|sao rồi)', True),
+            # "học lực/thành tích/kết quả + của/hiện tại"
+            (r'(học lực|thành tích|kết quả|performance|tiến bộ|tiến triển)', True),
+            # Performance state questions
+            (r'(đang|hiện|bây giờ).*(học|làm|tiến).*(sao|nào|gì)', True),
+            # Comparison questions
+            (r'(so với|hơn|kém|bằng).*(trước|kỳ|năm|tháng|tuần)', True),
+            # Ranking/level questions
+            (r'(xếp loại|xếp hạng|đứng|rank|top|giỏi|khá|yếu|kém|trung bình|xuất sắc)', True),
+            # Improvement questions
+            (r'(cải thiện|tiến bộ|tốt hơn|kém đi|giảm|tăng)', True),
+            # Self-status questions
+            (r'(tôi|em|mình).*(ổn|tốt|giỏi|yếu|khá|kém).*không', True),
+            # General status with học/tập
+            (r'(học|học tập|việc học).*(của|hiện).*(tôi|em|mình|sao|nào)', True),
+            # Predictions
+            (r'(dự đoán|dự báo|predict|forecast)', True),
+            # Academic evaluations
+            (r'(đánh giá|nhận xét|comment|review).*(học|tôi|em)', True),
+        ]
+        
+        import re
+        for pattern, should_include in question_patterns:
+            if re.search(pattern, msg_lower):
+                return should_include
+        
+        # Strategy 3: Possessive + academic context
+        possessives = ['của tôi', 'của em', 'của mình', 'của con', 'em', 'tôi']
+        academic_context = ['học', 'tập', 'kết quả', 'thành tích', 'tiến', 'cải thiện']
+        has_possessive = any(p in msg_lower for p in possessives)
+        has_academic = any(a in msg_lower for a in academic_context)
+        if has_possessive and has_academic:
+            return True
+        
+        # Strategy 4: Question words + academic indicators
+        question_words = ['sao', 'nào', 'gì', 'bao nhiêu', 'mấy', 'có', 'được', 'chưa']
+        academic_verbs = ['học', 'thi', 'làm bài', 'kiểm tra', 'đánh giá', 'xếp', 'đứng']
+        has_question = any(q in msg_lower for q in question_words)
+        has_academic_verb = any(v in msg_lower for v in academic_verbs)
+        if has_question and has_academic_verb:
+            return True
+        
+        return False
+    
+    # Use smart detection instead of simple keyword matching
+    if _should_include_score_context(message):
         # Get active structure
         active_structure = db.query(models.CustomTeachingStructure).filter(
             models.CustomTeachingStructure.is_active == True
