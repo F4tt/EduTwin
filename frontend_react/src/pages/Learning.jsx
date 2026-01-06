@@ -86,6 +86,11 @@ const Learning = () => {
         if (currentSessionId) {
             fetchMessages(currentSessionId);
 
+            // FIX: Clear reasoning from previous session when switching sessions
+            setReasoningSteps([]);
+            setIsAgentProcessing(false);
+            setIsReasoningCompleted(false);
+
             if (!String(currentSessionId).startsWith('draft')) {
                 joinChatSession(currentSessionId);
             }
@@ -111,7 +116,12 @@ const Learning = () => {
         const isDraftSession = String(currentSessionId).startsWith('draft');
         const isMatchingSession = String(latestMessage.session_id) === String(currentSessionId);
 
-        if (!isDraftSession && !isMatchingSession) return;
+        // FIX: Allow reasoning events when loading (session ID may not match yet due to race condition)
+        // In production, WebSocket events may arrive before HTTP response updates currentSessionId
+        const isReasoningOrAgentEvent = ['reasoning', 'tool_progress', 'agent_complete', 'self_reflection'].includes(latestMessage.type);
+
+        // If loading AND this is a reasoning event, accept it even if session doesn't match yet
+        if (!isDraftSession && !isMatchingSession && !(loading && isReasoningOrAgentEvent)) return;
 
         // Handle tool_progress - update current step's progress
         if (latestMessage.type === 'tool_progress') {
@@ -178,7 +188,7 @@ const Learning = () => {
             // They will be cleared when user sends a new message
             return;
         }
-    }, [chatMessages, currentSessionId]);
+    }, [chatMessages, currentSessionId, loading]);
 
     useEffect(() => {
         scrollToBottom();

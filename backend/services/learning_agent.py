@@ -146,6 +146,64 @@ def create_wikipedia_tool(websocket_callback=None):
     )
 
 
+def create_google_search_tool(websocket_callback=None):
+    """Create Google Search tool with WebSocket status updates (optional)"""
+    # Check for required environment variables
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    google_cse_id = os.getenv("GOOGLE_CSE_ID")
+    
+    if not google_api_key or not google_cse_id:
+        logger.info("[GoogleSearch] GOOGLE_API_KEY or GOOGLE_CSE_ID not configured, tool disabled")
+        return None
+    
+    try:
+        from langchain_google_community import GoogleSearchAPIWrapper
+    except ImportError:
+        logger.warning("[GoogleSearch] langchain-google-community not installed, tool disabled")
+        return None
+    
+    search_wrapper = GoogleSearchAPIWrapper(
+        google_api_key=google_api_key,
+        google_cse_id=google_cse_id,
+        k=3  # Number of results to return
+    )
+    
+    async def google_search(query: str) -> str:
+        """Search Google with status updates"""
+        try:
+            if websocket_callback:
+                await websocket_callback({
+                    'type': 'tool_progress',
+                    'tool': 'GoogleSearch',
+                    'message': f'🔍 Đang tìm kiếm trên Google: "{query[:50]}..."'
+                })
+            
+            result = search_wrapper.run(query)
+            
+            if websocket_callback:
+                await websocket_callback({
+                    'type': 'tool_progress',
+                    'tool': 'GoogleSearch',
+                    'message': '✅ Tìm thấy kết quả từ Google'
+                })
+            
+            return result if result else "Không tìm thấy kết quả phù hợp từ Google"
+        except Exception as e:
+            if websocket_callback:
+                await websocket_callback({
+                    'type': 'tool_progress',
+                    'tool': 'GoogleSearch',
+                    'message': f'⚠️ Lỗi tìm kiếm Google: {str(e)}'
+                })
+            return f"Error searching Google: {str(e)}"
+    
+    return Tool(
+        name="GoogleSearch",
+        description="Tìm kiếm thông tin mới nhất trên Internet. Dùng khi Wikipedia không có thông tin hoặc cần tin tức/cập nhật mới nhất.",
+        func=google_search
+    )
+
+
 def create_user_doc_search_tool(db, user_id: int, structure_id: Optional[int] = None, websocket_callback=None):
     """Smart document search - returns RELEVANT sections based on query keywords"""
     
@@ -428,6 +486,12 @@ def get_agent_tools(db, user_id: int, structure_id: Optional[int] = None, websoc
         create_python_repl_tool(websocket_callback),
         create_wikipedia_tool(websocket_callback)
     ]
+    
+    # Add Google Search if configured (optional)
+    google_tool = create_google_search_tool(websocket_callback)
+    if google_tool:
+        tools.append(google_tool)
+        logger.info(f"GoogleSearch tool enabled for user {user_id}")
     
     logger.info(f"Initialized {len(tools)} tools for user {user_id}")
     return tools
@@ -790,6 +854,11 @@ Tiếp tục với Action tiếp theo."""))
                         'name': 'Python REPL',
                         'purpose': 'Chạy code Python để xử lý dữ liệu phức tạp',
                         'action': 'Đang chạy code'
+                    },
+                    'GoogleSearch': {
+                        'name': 'Tìm kiếm Google',
+                        'purpose': 'Tìm kiếm thông tin mới nhất trên Internet',
+                        'action': 'Đang tìm kiếm'
                     }
                 }
                 
