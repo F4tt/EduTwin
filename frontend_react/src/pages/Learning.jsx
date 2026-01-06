@@ -36,6 +36,9 @@ const Learning = () => {
     // Use ref to track latest reasoning steps for saving with messages
     const reasoningStepsRef = useRef([]);
 
+    // Track current request ID for filtering WebSocket events
+    const currentRequestIdRef = useRef(null);
+
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
 
@@ -90,6 +93,7 @@ const Learning = () => {
             setReasoningSteps([]);
             setIsAgentProcessing(false);
             setIsReasoningCompleted(false);
+            currentRequestIdRef.current = null;  // Clear request tracking
 
             if (!String(currentSessionId).startsWith('draft')) {
                 joinChatSession(currentSessionId);
@@ -110,18 +114,35 @@ const Learning = () => {
         if (chatMessages.length === 0) return;
 
         const latestMessage = chatMessages[chatMessages.length - 1];
-
-        // Check if message belongs to current session
-        // Allow messages if session is draft (new session) or if session_id matches
-        const isDraftSession = String(currentSessionId).startsWith('draft');
-        const isMatchingSession = String(latestMessage.session_id) === String(currentSessionId);
-
-        // FIX: Allow reasoning events when loading (session ID may not match yet due to race condition)
-        // In production, WebSocket events may arrive before HTTP response updates currentSessionId
         const isReasoningOrAgentEvent = ['reasoning', 'tool_progress', 'agent_complete', 'self_reflection'].includes(latestMessage.type);
 
-        // If loading AND this is a reasoning event, accept it even if session doesn't match yet
-        if (!isDraftSession && !isMatchingSession && !(loading && isReasoningOrAgentEvent)) return;
+        // CRITICAL FIX: Use request_id for filtering reasoning events
+        // This is more reliable than session_id because:
+        // 1. request_id is set BEFORE HTTP request starts
+        // 2. No race condition with session creation
+        if (isReasoningOrAgentEvent) {
+            const eventRequestId = latestMessage.request_id;
+            const currentRequestId = currentRequestIdRef.current;
+
+            // Only process if we have an active request
+            if (!currentRequestId) {
+                console.log('[Learning] Ignoring reasoning event - no active request');
+                return;
+            }
+
+            // If event has request_id, it must match current request
+            if (eventRequestId && eventRequestId !== currentRequestId) {
+                console.log('[Learning] Ignoring event from different request:', eventRequestId, 'current:', currentRequestId);
+                return;
+            }
+
+            console.log('[Learning] Processing reasoning event for request:', currentRequestId);
+        } else {
+            // For non-reasoning events (chat messages), use session filter
+            const isDraftSession = String(currentSessionId).startsWith('draft');
+            const isMatchingSession = String(latestMessage.session_id) === String(currentSessionId);
+            if (!isDraftSession && !isMatchingSession) return;
+        }
 
         // Handle tool_progress - update current step's progress
         if (latestMessage.type === 'tool_progress') {
@@ -182,13 +203,9 @@ const Learning = () => {
             console.log('[Learning] agent_complete received');
             setIsAgentProcessing(false);
             setIsReasoningCompleted(true);
-
-            // DON'T add message here - let HTTP response handle it
-            // DON'T clear reasoning steps - keep them visible
-            // They will be cleared when user sends a new message
             return;
         }
-    }, [chatMessages, currentSessionId, loading]);
+    }, [chatMessages, currentSessionId]);
 
     useEffect(() => {
         scrollToBottom();
@@ -286,8 +303,10 @@ const Learning = () => {
         const controller = new AbortController();
         setAbortController(controller);
 
-        // Generate request_id for cancel tracking
+        // Generate request_id for tracking - CRITICAL for WebSocket filtering
         const requestId = `learning_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        currentRequestIdRef.current = requestId;  // Set BEFORE making request
+        console.log('[Learning] Starting request:', requestId);
 
         try {
             const payload = {
@@ -335,9 +354,12 @@ const Learning = () => {
             }
             setIsAgentProcessing(false);
             setIsReasoningCompleted(true);
+            // Clear request_id on error so we don't get stuck
+            currentRequestIdRef.current = null;
         } finally {
             setLoading(false);
             setAbortController(null);
+            // Note: Don't clear currentRequestIdRef on success - it helps filter late-arriving events
         }
     };
 

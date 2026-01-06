@@ -27,6 +27,7 @@ router = APIRouter(prefix="/learning", tags=["learning"])
 class LearningRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    request_id: Optional[str] = None  # Unique ID to track reasoning events
 
 
 
@@ -91,14 +92,20 @@ async def learning_chat(request: LearningRequest, db: Session = Depends(get_db),
         db.add(user_message)
         db.commit()
 
+        # Generate request_id if not provided
+        import uuid
+        request_id = request.request_id or f"req_{uuid.uuid4().hex[:12]}"
+        logger.info(f"[Learning API] Request ID: {request_id}")
+
         # WebSocket callback for real-time updates
         async def websocket_callback(data: Dict[str, Any]):
             """Send real-time updates to frontend via user room"""
             try:
                 data['session_id'] = session_id
+                data['request_id'] = request_id  # Include request_id for frontend tracking
                 # Send to user room (user always joins this room on connect)
                 await sio.emit('chat_message', data, room=user_room)
-                logger.debug(f"[WS] Sent to room {user_room}: {data.get('type', 'unknown')}")
+                logger.debug(f"[WS] Sent to room {user_room}: type={data.get('type', 'unknown')}, request_id={request_id}")
             except Exception as e:
                 logger.error(f"[WS] Failed to send message: {e}")
 
