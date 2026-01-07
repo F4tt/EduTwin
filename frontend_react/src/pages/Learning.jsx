@@ -89,11 +89,14 @@ const Learning = () => {
         if (currentSessionId) {
             fetchMessages(currentSessionId);
 
-            // FIX: Clear reasoning from previous session when switching sessions
-            setReasoningSteps([]);
-            setIsAgentProcessing(false);
-            setIsReasoningCompleted(false);
-            currentRequestIdRef.current = null;  // Clear request tracking
+            // CRITICAL FIX: Only clear reasoning if NOT actively processing
+            // This prevents reasoning from disappearing when session_id updates after HTTP response
+            // (which happens when draft session gets real ID)
+            if (!loading && !isAgentProcessing) {
+                setReasoningSteps([]);
+                setIsReasoningCompleted(false);
+                currentRequestIdRef.current = null;
+            }
 
             if (!String(currentSessionId).startsWith('draft')) {
                 joinChatSession(currentSessionId);
@@ -107,7 +110,7 @@ const Learning = () => {
                 leaveChatSession(currentSessionId);
             }
         };
-    }, [currentSessionId, joinChatSession, leaveChatSession, clearChatMessages]);
+    }, [currentSessionId, joinChatSession, leaveChatSession, clearChatMessages, loading, isAgentProcessing]);
 
     // Single useEffect to handle ALL chatMessages events
     useEffect(() => {
@@ -116,27 +119,30 @@ const Learning = () => {
         const latestMessage = chatMessages[chatMessages.length - 1];
         const isReasoningOrAgentEvent = ['reasoning', 'tool_progress', 'agent_complete', 'self_reflection'].includes(latestMessage.type);
 
-        // CRITICAL FIX: Use request_id for filtering reasoning events
-        // This is more reliable than session_id because:
-        // 1. request_id is set BEFORE HTTP request starts
-        // 2. No race condition with session creation
+        // CRITICAL FIX: Relaxed filtering for reasoning events
+        // Accept events if:
+        // 1. We have a matching request_id, OR
+        // 2. We're still loading (HTTP in progress), OR
+        // 3. Agent is still processing (waiting for more events)
         if (isReasoningOrAgentEvent) {
             const eventRequestId = latestMessage.request_id;
             const currentRequestId = currentRequestIdRef.current;
 
-            // Only process if we have an active request
-            if (!currentRequestId) {
-                console.log('[Learning] Ignoring reasoning event - no active request');
+            // Accept if we're actively processing OR loading
+            const shouldAccept = currentRequestId || loading || isAgentProcessing;
+
+            if (!shouldAccept) {
+                console.log('[Learning] Ignoring reasoning event - no active request and not processing');
                 return;
             }
 
-            // If event has request_id, it must match current request
-            if (eventRequestId && eventRequestId !== currentRequestId) {
+            // If both have request_id and they don't match, reject
+            if (eventRequestId && currentRequestId && eventRequestId !== currentRequestId) {
                 console.log('[Learning] Ignoring event from different request:', eventRequestId, 'current:', currentRequestId);
                 return;
             }
 
-            console.log('[Learning] Processing reasoning event for request:', currentRequestId);
+            console.log('[Learning] Processing reasoning event:', latestMessage.type);
         } else {
             // For non-reasoning events (chat messages), use session filter
             const isDraftSession = String(currentSessionId).startsWith('draft');
@@ -325,13 +331,23 @@ const Learning = () => {
             const botMsg = {
                 role: 'assistant',
                 content: data.answer || data.response || '(Không có phản hồi)',
+                // Note: reasoningSteps from ref may be incomplete if WebSocket is slower than HTTP
+                // The live ReasoningDisplay component will show the complete steps
                 reasoningSteps: [...reasoningStepsRef.current]
             };
             setMessages(prev => [...prev, botMsg]);
 
-            // Agent finished - mark reasoning as completed but DON'T clear steps yet
-            setIsAgentProcessing(false);
-            setIsReasoningCompleted(true);
+            // CRITICAL FIX: Don't immediately mark processing as complete
+            // Wait for agent_complete WebSocket event to ensure all reasoning steps are received
+            // Only set timeout fallback in case agent_complete never arrives
+            const thisRequestId = requestId;  // Capture for closure
+            setTimeout(() => {
+                if (currentRequestIdRef.current === thisRequestId && isAgentProcessing) {
+                    console.log('[Learning] Timeout waiting for agent_complete, marking complete');
+                    setIsAgentProcessing(false);
+                    setIsReasoningCompleted(true);
+                }
+            }, 3000);  // 3 second timeout for late WebSocket events
 
             if (data.session_id && String(currentSessionId).startsWith('draft')) {
                 const realId = data.session_id;
@@ -826,9 +842,9 @@ const Learning = () => {
                         );
                     })}
 
-                    {/* Show reasoning steps ONLY while processing (before response arrives) */}
-                    {/* Once response is in messages, reasoning is shown with the message above */}
-                    {reasoningSteps.length > 0 && isAgentProcessing && (
+                    {/* Show reasoning steps during processing AND after response until user sends new message */}
+                    {/* This ensures reasoning stays visible even if HTTP response arrives before WebSocket events */}
+                    {reasoningSteps.length > 0 && (
                         <ReasoningDisplay
                             steps={reasoningSteps}
                             isProcessing={isAgentProcessing}
