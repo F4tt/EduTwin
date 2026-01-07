@@ -52,6 +52,19 @@ const Learning = () => {
         };
     }, []);
 
+    // Track joined session ref for cleanup
+    const joinedSessionRefForCleanup = useRef(null);
+
+    // Sync joinedSessionRefForCleanup with joinedSessionRef
+    useEffect(() => {
+        return () => {
+            // Leave session on unmount
+            if (joinedSessionRefForCleanup.current) {
+                leaveChatSession(joinedSessionRefForCleanup.current);
+            }
+        };
+    }, [leaveChatSession]);
+
     useEffect(() => {
         fetchSessions();
         fetchDocuments();
@@ -85,32 +98,54 @@ const Learning = () => {
         }
     };
 
+    // Track loading/processing state in refs for use in effects without causing re-runs
+    const loadingRef = useRef(loading);
+    const isAgentProcessingRef = useRef(isAgentProcessing);
+
+    useEffect(() => {
+        loadingRef.current = loading;
+    }, [loading]);
+
+    useEffect(() => {
+        isAgentProcessingRef.current = isAgentProcessing;
+    }, [isAgentProcessing]);
+
+    // Track which session we've already joined to prevent duplicate join/leave
+    const joinedSessionRef = useRef(null);
+
     useEffect(() => {
         if (currentSessionId) {
-            fetchMessages(currentSessionId);
-
-            // CRITICAL FIX: Only clear reasoning if NOT actively processing
-            // This prevents reasoning from disappearing when session_id updates after HTTP response
-            // (which happens when draft session gets real ID)
-            if (!loading && !isAgentProcessing) {
+            // CRITICAL: Only fetch messages if NOT currently processing
+            // This prevents overwriting local messages with server state during processing
+            if (!loadingRef.current && !isAgentProcessingRef.current) {
+                fetchMessages(currentSessionId);
                 setReasoningSteps([]);
                 setIsReasoningCompleted(false);
                 currentRequestIdRef.current = null;
             }
 
-            if (!String(currentSessionId).startsWith('draft')) {
+            // Only join if this is a real session AND we haven't joined it yet
+            const isRealSession = !String(currentSessionId).startsWith('draft');
+            const alreadyJoined = joinedSessionRef.current === currentSessionId;
+
+            if (isRealSession && !alreadyJoined) {
+                // Leave previous session if any
+                if (joinedSessionRef.current) {
+                    leaveChatSession(joinedSessionRef.current);
+                }
                 joinChatSession(currentSessionId);
+                joinedSessionRef.current = currentSessionId;
+                joinedSessionRefForCleanup.current = currentSessionId;  // Sync for cleanup
             }
 
             clearChatMessages();
         }
 
+        // Cleanup function - only leave when component unmounts or session truly changes
         return () => {
-            if (currentSessionId && !String(currentSessionId).startsWith('draft')) {
-                leaveChatSession(currentSessionId);
-            }
+            // Don't leave here - let the next effect iteration handle it
         };
-    }, [currentSessionId, joinChatSession, leaveChatSession, clearChatMessages, loading, isAgentProcessing]);
+    }, [currentSessionId, joinChatSession, leaveChatSession, clearChatMessages]);
 
     // Single useEffect to handle ALL chatMessages events
     useEffect(() => {
@@ -842,13 +877,14 @@ const Learning = () => {
                         );
                     })}
 
-                    {/* Show reasoning steps during processing AND after response until user sends new message */}
-                    {/* This ensures reasoning stays visible even if HTTP response arrives before WebSocket events */}
-                    {reasoningSteps.length > 0 && (
+                    {/* Show reasoning steps in real-time while agent is processing (before bot response) */}
+                    {/* This ONLY shows when isAgentProcessing is true - once response arrives, */}
+                    {/* the ReasoningDisplay inside messages.map() takes over */}
+                    {isAgentProcessing && reasoningSteps.length > 0 && (
                         <ReasoningDisplay
                             steps={reasoningSteps}
-                            isProcessing={isAgentProcessing}
-                            isCompleted={isReasoningCompleted}
+                            isProcessing={true}
+                            isCompleted={false}
                         />
                     )}
 
