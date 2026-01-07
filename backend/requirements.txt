@@ -39,6 +39,7 @@ langchain-google-community>=0.0.1
 python-multipart>=0.0.6
 httpx>=0.25.2
 python-socketio>=5.10.0
+aioredis>=2.0.0  # Required for Socket.IO Redis adapter (multi-worker broadcasting)
 aiofiles>=23.2.1
 
 # Document processing

@@ -20,8 +20,7 @@ from sqlalchemy.orm import Session
 
 # LangChain imports
 from langchain_core.tools import Tool
-from langchain_community.tools import WikipediaQueryRun
-from langchain_community.utilities import WikipediaAPIWrapper
+# Wikipedia removed - using Google Search only
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -102,50 +101,7 @@ def create_calculator_tool(websocket_callback=None):
     )
 
 
-def create_wikipedia_tool(websocket_callback=None):
-    """Create Wikipedia tool with WebSocket status updates"""
-    wikipedia_wrapper = WikipediaAPIWrapper(
-        top_k_results=2,
-        doc_content_chars_max=2000,
-        lang="vi"
-    )
-    
-    async def wikipedia_search(query: str) -> str:
-        """Search Wikipedia with status updates"""
-        try:
-            if websocket_callback:
-                await websocket_callback({
-                    'type': 'tool_progress',
-                    'tool': 'Wikipedia',
-                    'message': f'🌐 Đang tìm kiếm trên Wikipedia: "{query[:50]}..."'
-                })
-            
-            result = wikipedia_wrapper.run(query)
-            
-            if websocket_callback:
-                await websocket_callback({
-                    'type': 'tool_progress',
-                    'tool': 'Wikipedia',
-                    'message': f'✅ Tìm thấy thông tin từ Wikipedia'
-                })
-            
-            return result
-        except Exception as e:
-            if websocket_callback:
-                await websocket_callback({
-                    'type': 'tool_progress',
-                    'tool': 'Wikipedia',
-                    'message': f'⚠️ Lỗi tìm kiếm Wikipedia: {str(e)}'
-                })
-            return f"Error searching Wikipedia: {str(e)}"
-    
-    return Tool(
-        name="Wikipedia",
-        description="Useful for looking up general knowledge, historical facts, scientific concepts, geography, etc. Input should be a search query in Vietnamese or English.",
-        func=wikipedia_search
-    )
-
-
+# Wikipedia tool removed - using Google Search instead
 def create_google_search_tool(websocket_callback=None):
     """Create Google Search tool with WebSocket status updates (optional)"""
     # Check for required environment variables
@@ -484,20 +440,19 @@ def get_agent_tools(db, user_id: int, structure_id: Optional[int] = None, websoc
         create_user_doc_search_tool(db, user_id, structure_id, websocket_callback),
         create_calculator_tool(websocket_callback),
         create_python_repl_tool(websocket_callback),
-        # create_wikipedia_tool(websocket_callback)  # TEMPORARILY DISABLED - Testing Google Search
+        # Wikipedia completely disabled - using Google Search only
     ]
     
-    # Add Google Search as primary external search tool
+    # Add Google Search as the ONLY external search tool
     google_tool = create_google_search_tool(websocket_callback)
     if google_tool:
         tools.append(google_tool)
         logger.info(f"GoogleSearch tool enabled for user {user_id}")
     else:
-        # Fallback to Wikipedia if Google Search is not configured
-        logger.warning(f"GoogleSearch not configured, falling back to Wikipedia for user {user_id}")
-        tools.append(create_wikipedia_tool(websocket_callback))
+        # No external search tool available - agent will rely on user documents only
+        logger.warning(f"GoogleSearch not configured for user {user_id}. No external search tool available.")
     
-    logger.info(f"Initialized {len(tools)} tools for user {user_id}")
+    logger.info(f"Initialized {len(tools)} tools for user {user_id}: {[t.name for t in tools]}")
     return tools
 
 

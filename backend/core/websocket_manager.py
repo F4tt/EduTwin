@@ -2,6 +2,7 @@
 WebSocket Manager for EduTwin
 Handles real-time communication for chatbot, notifications, and study updates
 """
+import os
 import socketio
 from typing import Dict, Set, Optional
 import asyncio
@@ -10,13 +11,30 @@ from core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Create Socket.IO server instance
-sio = socketio.AsyncServer(
-    async_mode='asgi',
-    cors_allowed_origins='*',
-    logger=False,
-    engineio_logger=False
-)
+# Get Redis URL from environment
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Create Socket.IO server instance with Redis adapter for multi-worker broadcasting
+# This is CRITICAL for production where multiple Gunicorn workers handle requests
+# Without Redis adapter, emit from worker A won't reach users connected to worker B
+try:
+    mgr = socketio.AsyncRedisManager(REDIS_URL)
+    logger.info(f"[WebSocket] Using Redis adapter for multi-worker broadcasting: {REDIS_URL.split('@')[-1] if '@' in REDIS_URL else REDIS_URL}")
+    sio = socketio.AsyncServer(
+        async_mode='asgi',
+        cors_allowed_origins='*',
+        logger=False,
+        engineio_logger=False,
+        client_manager=mgr
+    )
+except Exception as e:
+    logger.warning(f"[WebSocket] Failed to connect to Redis adapter: {e}. Falling back to single-worker mode.")
+    sio = socketio.AsyncServer(
+        async_mode='asgi',
+        cors_allowed_origins='*',
+        logger=False,
+        engineio_logger=False
+    )
 
 # Track active connections
 user_sessions: Dict[int, Set[str]] = {}  # user_id -> set of session_ids
