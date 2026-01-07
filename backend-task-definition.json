@@ -98,6 +98,14 @@
         {
           "name": "REDIS_URL",
           "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/redis-url"
+        },
+        {
+          "name": "GOOGLE_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/google-api-key"
+        },
+        {
+          "name": "GOOGLE_CSE_ID",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:${AWS_ACCOUNT_ID}:secret:edutwin/google-cse-id"
         }
       ],
       "logConfiguration": {

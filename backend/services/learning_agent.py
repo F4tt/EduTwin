@@ -484,14 +484,18 @@ def get_agent_tools(db, user_id: int, structure_id: Optional[int] = None, websoc
         create_user_doc_search_tool(db, user_id, structure_id, websocket_callback),
         create_calculator_tool(websocket_callback),
         create_python_repl_tool(websocket_callback),
-        create_wikipedia_tool(websocket_callback)
+        # create_wikipedia_tool(websocket_callback)  # TEMPORARILY DISABLED - Testing Google Search
     ]
     
-    # Add Google Search if configured (optional)
+    # Add Google Search as primary external search tool
     google_tool = create_google_search_tool(websocket_callback)
     if google_tool:
         tools.append(google_tool)
         logger.info(f"GoogleSearch tool enabled for user {user_id}")
+    else:
+        # Fallback to Wikipedia if Google Search is not configured
+        logger.warning(f"GoogleSearch not configured, falling back to Wikipedia for user {user_id}")
+        tools.append(create_wikipedia_tool(websocket_callback))
     
     logger.info(f"Initialized {len(tools)} tools for user {user_id}")
     return tools

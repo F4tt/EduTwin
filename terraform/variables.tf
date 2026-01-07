@@ -39,3 +39,17 @@ variable "environment" {
   type        = string
   default     = "production"
 }
+
+variable "google_api_key" {
+  description = "Google API Key for Google Custom Search"
+  type        = string
+  sensitive   = true
+  default     = ""  # Optional - falls back to Wikipedia if empty
+}
+
+variable "google_cse_id" {
+  description = "Google Custom Search Engine ID"
+  type        = string
+  sensitive   = true
+  default     = ""  # Optional - falls back to Wikipedia if empty
+}
